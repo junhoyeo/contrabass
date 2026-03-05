@@ -852,3 +852,78 @@ func TestOrchestrator_EmitEventDropLogged(t *testing.T) {
 		})
 	}
 }
+
+
+func TestOrchestrator_CompleteRunPostsComment(t *testing.T) {
+	mt := newObservingTracker([]types.Issue{{ID: "ISS-1", Title: "Test", State: types.Unclaimed}})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{
+		Events: []types.AgentEvent{{Type: "turn/completed"}},
+		Delay:  10 * time.Millisecond,
+	}
+	cfg := &staticConfig{cfg: testConfig()}
+	orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+	events := newEventCollector(orch.Events())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	require.Eventually(t, func() bool {
+		phase, ok := events.FinishedPhase("ISS-1")
+		return ok && phase == types.Succeeded
+	}, 2*time.Second, 10*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-done)
+
+	comments := mt.base.Comments["ISS-1"]
+	require.NotEmpty(t, comments, "expected at least one comment posted")
+	assert.Contains(t, comments[0], "Agent run completed")
+	assert.Contains(t, comments[0], "phase=Succeeded")
+}
+
+func TestOrchestrator_ReconcileAssignsTimedOut(t *testing.T) {
+	mt := newObservingTracker(nil)
+	mw := workspace.NewMockManager(t.TempDir())
+	runner := &agent.MockRunner{}
+	cfg := testConfig()
+	cfg.AgentTimeoutMsRaw = 1 // 1ms timeout
+	orch := NewOrchestrator(mt, mw, runner, &staticConfig{cfg: cfg}, nil)
+	go func() { for range orch.Events() {} }()
+
+	// Seed a running entry with StartTime in the past
+	done := make(chan error, 1)
+	entry := &runEntry{
+		issue:   types.Issue{ID: "ISS-TIMEOUT-1", State: types.Running},
+		attempt: types.RunAttempt{
+			IssueID:   "ISS-TIMEOUT-1",
+			Phase:     types.StreamingTurn,
+			Attempt:   1,
+			StartTime: time.Now().Add(-10 * time.Second),
+		},
+		process: &agent.AgentProcess{PID: 99, SessionID: "timeout-test", Done: done},
+		cancel:  func() {},
+	}
+
+	orch.mu.Lock()
+	orch.running["ISS-TIMEOUT-1"] = entry
+	orch.stats.Running = 1
+	orch.mu.Unlock()
+
+	orch.reconcileRunning(context.Background(), cfg)
+
+	orch.mu.Lock()
+	e, ok := orch.running["ISS-TIMEOUT-1"]
+	var phase types.RunPhase
+	var errMsg string
+	if ok {
+		phase = e.attempt.Phase
+		errMsg = e.attempt.Error
+	}
+	orch.mu.Unlock()
+
+	require.True(t, ok, "entry should still be in running map (stopRun handles removal)")
+	assert.Equal(t, types.TimedOut, phase)
+	assert.Equal(t, "run timed out", errMsg)
+}

@@ -97,6 +97,21 @@ func (o *Orchestrator) completeRun(ctx context.Context, issueID string, doneErr 
 		},
 	})
 
+	// Post completion comment (best-effort)
+	commentBody := fmt.Sprintf(
+		"Agent run completed: phase=%s attempt=%d tokens_in=%d tokens_out=%d",
+		finalAttempt.Phase.String(),
+		finalAttempt.Attempt,
+		finalAttempt.TokensIn,
+		finalAttempt.TokensOut,
+	)
+	if finalAttempt.Error != "" {
+		commentBody += fmt.Sprintf(" error=%q", finalAttempt.Error)
+	}
+	if err := o.tracker.PostComment(ctx, issueID, commentBody); err != nil {
+		logging.LogIssueEvent(o.logger, issueID, "post_comment_failed", "err", err)
+	}
+
 	if finalAttempt.Phase == types.Succeeded {
 		o.releaseIssue(ctx, issueID, types.Running, finalAttempt.Attempt)
 		logging.LogAgentEvent(o.logger, issueID, "finished", "status", finalAttempt.Phase.String())
@@ -295,10 +310,10 @@ func (o *Orchestrator) reconcileRunning(ctx context.Context, cfg *config.Workflo
 			continue
 		}
 		if now.Sub(entry.attempt.StartTime) > timeout && isActiveRunPhase(entry.attempt.Phase) {
-			if err := TransitionRunPhase(entry.attempt.Phase, types.CanceledByReconciliation); err == nil {
-				entry.attempt.Phase = types.CanceledByReconciliation
+			if err := TransitionRunPhase(entry.attempt.Phase, types.TimedOut); err == nil {
+				entry.attempt.Phase = types.TimedOut
 			}
-			entry.attempt.Error = "run exceeded timeout"
+			entry.attempt.Error = "run timed out"
 			orphaned = append(orphaned, issueID)
 		}
 	}

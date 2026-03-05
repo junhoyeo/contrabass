@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -336,3 +337,28 @@ func TestModel_StatusUpdatePopulatesHeaderModelProject(t *testing.T) {
 		})
 	}
 }
+
+// TestStartEventBridge_NilProgramNoOp verifies that nil program is handled gracefully.
+func TestStartEventBridge_NilProgramNoOp(t *testing.T) {
+	ctx := context.Background()
+	events := make(chan orchestrator.OrchestratorEvent)
+
+	// Should return immediately without starting goroutine
+	StartEventBridge(ctx, nil, events)
+
+	// No panic should occur
+	assert.True(t, true)
+}
+
+// TestStartEventBridge_NilEventsNoOp verifies that nil events channel is handled gracefully.
+func TestStartEventBridge_NilEventsNoOp(t *testing.T) {
+	ctx := context.Background()
+	p := tea.NewProgram(NewModel())
+
+	// Should return immediately without starting goroutine
+	StartEventBridge(ctx, p, nil)
+
+	// No panic should occur
+	assert.True(t, true)
+}
+

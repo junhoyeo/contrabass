@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -88,14 +89,25 @@ func (m Model) View() tea.View {
 	return tea.NewView(rendered)
 }
 
-func StartEventBridge(p *tea.Program, events <-chan orchestrator.OrchestratorEvent) {
+func StartEventBridge(ctx context.Context, p *tea.Program, events <-chan orchestrator.OrchestratorEvent) {
 	if p == nil || events == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	go func() {
-		for event := range events {
-			p.Send(OrchestratorEventMsg{Event: event})
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				p.Send(OrchestratorEventMsg{Event: event})
+			}
 		}
 	}()
 }

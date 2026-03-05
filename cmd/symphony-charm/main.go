@@ -31,7 +31,9 @@ var (
 	runTUIProgram       = func(p *tea.Program) (tea.Model, error) {
 		return p.Run()
 	}
-	startTUIEventBridge   = tui.StartEventBridge
+	startTUIEventBridge   = func(ctx context.Context, p *tea.Program, events <-chan orchestrator.OrchestratorEvent) {
+		tui.StartEventBridge(ctx, p, events)
+	}
 	runTUIShutdownTimeout = 6 * time.Second
 )
 
@@ -218,7 +220,7 @@ func runTUI(ctx context.Context, orch *orchestrator.Orchestrator) error {
 	model := tui.NewModel()
 	p := tea.NewProgram(model)
 
-	startTUIEventBridge(p, orch.Events())
+	startTUIEventBridge(tuiCtx, p, orch.Events())
 
 	orchDone := make(chan error, 1)
 	orchestratorRunner := runTUIOrchestrator

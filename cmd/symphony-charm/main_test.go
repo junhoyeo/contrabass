@@ -87,7 +87,7 @@ func TestRunTUIPropagatesOrchestratorError(t *testing.T) {
 	runTUIOrchestrator = func(_ context.Context, _ *orchestrator.Orchestrator) error {
 		return orchErr
 	}
-	startTUIEventBridge = func(_ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
+	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 50 * time.Millisecond
 
 	err := runTUI(context.Background(), orch)
@@ -106,7 +106,7 @@ func TestRunTUIRecoversOrchestratorPanic(t *testing.T) {
 	runTUIOrchestrator = func(_ context.Context, _ *orchestrator.Orchestrator) error {
 		panic("boom")
 	}
-	startTUIEventBridge = func(_ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
+	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 50 * time.Millisecond
 
 	err := runTUI(context.Background(), orch)
@@ -130,7 +130,7 @@ func TestRunTUITimeoutReturnsMeaningfulError(t *testing.T) {
 		<-block
 		return nil
 	}
-	startTUIEventBridge = func(_ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
+	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 10 * time.Millisecond
 
 	err := runTUI(context.Background(), orch)
