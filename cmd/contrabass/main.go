@@ -123,11 +123,15 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) erro
 	}()
 
 	// 6. Create tracker (Linear client)
+	assigneeID := trackerAssigneeID(cfg)
 	linearClient := tracker.NewLinearClient(tracker.LinearConfig{
 		APIKey:      os.Getenv("LINEAR_API_KEY"),
 		ProjectSlug: projectSlug(cfg),
-		AssigneeID:  cfg.TrackerAssigneeID(),
+		AssigneeID:  assigneeID,
 	})
+	if assigneeID == "" {
+		logger.Warn("linear assignee is not configured; set tracker.assignee_id or LINEAR_ASSIGNEE")
+	}
 
 	// 7. Create workspace manager (uses cwd as repo root)
 	repoPath, err := os.Getwd()
@@ -298,4 +302,12 @@ func projectSlug(cfg *config.WorkflowConfig) string {
 		return parts[len(parts)-1]
 	}
 	return ""
+}
+
+// trackerAssigneeID extracts assignee from config with env fallback.
+func trackerAssigneeID(cfg *config.WorkflowConfig) string {
+	if cfgAssignee := cfg.TrackerAssigneeID(); cfgAssignee != "" {
+		return cfgAssignee
+	}
+	return os.Getenv("LINEAR_ASSIGNEE")
 }
