@@ -79,6 +79,12 @@ func splitFrontMatter(content string) (frontMatter string, prompt string, hasFro
 		startOffset = 5
 	}
 
+	// Guard against panic on minimal front matter input (e.g., "---", "---\n")
+	// Treat as empty, terminated front matter block
+	if len(content) <= startOffset {
+		return "", "", true, true
+	}
+
 	remainder := content[startOffset:]
 	lines := strings.SplitAfter(remainder, "\n")
 	var yamlBuilder strings.Builder
@@ -110,16 +116,46 @@ func resolveEnvReferences(cfg *WorkflowConfig) {
 		return
 	}
 
-	v := reflect.ValueOf(cfg).Elem()
+	resolveEnvReferencesValue(reflect.ValueOf(cfg).Elem())
+}
+
+func resolveEnvReferencesValue(v reflect.Value) {
+	if !v.IsValid() {
+		return
+	}
+
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return
+		}
+		resolveEnvReferencesValue(v.Elem())
+		return
+	}
+
+	if v.Kind() != reflect.Struct {
+		return
+	}
+
 	for i := 0; i < v.NumField(); i++ {
 		field := v.Field(i)
-		if field.Kind() != reflect.String || !field.CanSet() {
+		if !field.CanSet() {
 			continue
 		}
 
-		resolved, ok := resolveEnvToken(field.String())
-		if ok {
-			field.SetString(resolved)
+		fieldType := v.Type().Field(i)
+
+		if fieldType.Name == "PromptTemplate" {
+			continue
+		}
+
+		switch field.Kind() {
+		case reflect.String:
+			resolved, ok := resolveEnvToken(field.String())
+			if ok {
+				field.SetString(resolved)
+			}
+		case reflect.Struct, reflect.Pointer:
+			resolveEnvReferencesValue(field)
 		}
 	}
 }

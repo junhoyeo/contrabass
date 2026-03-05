@@ -14,9 +14,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/junhoyeo/symphony-charm/internal/hub"
-	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/hub"
+	"github.com/junhoyeo/contrabass/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 func TestHandleSSESetsHeadersAndSendsSnapshot(t *testing.T) {
@@ -79,7 +79,10 @@ func TestHandleSSEStreamsHubEvents(t *testing.T) {
 	assert.Contains(t, frame, "retry: 1000")
 
 	data := mustSSEData(t, frame)
-	var got orchestrator.OrchestratorEvent
+	var got struct {
+		Type    orchestrator.EventType `json:"Type"`
+		IssueID string                 `json:"IssueID"`
+	}
 	require.NoError(t, json.Unmarshal([]byte(data), &got))
 	assert.Equal(t, event.Type, got.Type)
 	assert.Equal(t, event.IssueID, got.IssueID)

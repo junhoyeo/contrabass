@@ -9,7 +9,7 @@ build-dashboard:
 
 # Build the Go binary with embedded dashboard
 build: build-dashboard
-	go build -o symphony-charm ./cmd/symphony-charm
+	go build -o contrabass ./cmd/contrabass
 
 # Start Vite dev server for dashboard development (with hot reload)
 dev-dashboard:
@@ -17,7 +17,7 @@ dev-dashboard:
 
 # Run Go binary in dev mode
 dev:
-	go run ./cmd/symphony-charm --port 8080
+	go run ./cmd/contrabass --port 8080
 
 # Run all Go tests
 test:
@@ -32,7 +32,7 @@ test-all: test test-dashboard
 
 # Remove build artifacts
 clean:
-	rm -rf packages/dashboard/dist packages/landing/dist symphony-charm
+	rm -rf packages/dashboard/dist packages/landing/dist contrabass
 
 # Run Go linter
 lint:

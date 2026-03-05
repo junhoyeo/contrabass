@@ -2,11 +2,11 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sort"
 	"sync"
-
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 type MockManager struct {
@@ -24,20 +24,24 @@ func NewMockManager(baseDir string) *MockManager {
 }
 
 func (m *MockManager) Create(_ context.Context, issue types.Issue) (string, error) {
-	workspacePath := filepath.Join(m.baseDir, "workspaces", issue.ID)
+	if issue.ID == "" {
+		return "", errors.New("issue ID is required")
+	}
 
+	workspacePath := filepath.Join(m.baseDir, "workspaces", issue.ID)
 	m.mu.Lock()
 	m.active[issue.ID] = workspacePath
 	m.mu.Unlock()
-
 	return workspacePath, nil
 }
 
 func (m *MockManager) Cleanup(_ context.Context, issueID string) error {
+	if issueID == "" {
+		return errors.New("issue ID is required")
+	}
 	m.mu.Lock()
 	delete(m.active, issueID)
 	m.mu.Unlock()
-
 	return nil
 }
 

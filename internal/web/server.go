@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/hub"
-	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/hub"
+	"github.com/junhoyeo/contrabass/internal/orchestrator"
 )
 
 const defaultListenAddr = "localhost:8080"

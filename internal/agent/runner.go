@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 // AgentRunner defines the interface for running a coding agent.

@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -18,7 +18,7 @@ func TestTableWithRows(t *testing.T) {
 		{IssueID: "ISSUE-123", Stage: "StreamingTurn", PID: 4567, Age: "2m", Turn: 3, TokensIn: 1500, TokensOut: 800, SessionID: "sess-abc", LastEvent: "tool_use", Phase: types.StreamingTurn},
 		{IssueID: "ISSUE-456", Stage: "BuildingPrompt", PID: 7890, Age: "30s", Turn: 1, TokensIn: 500, TokensOut: 100, SessionID: "sess-def", LastEvent: "init", Phase: types.BuildingPrompt},
 	}
-	tbl := NewTable().Update(rows)
+	tbl := NewTable().Update(rows, "●")
 	out := tbl.View()
 	assert.Contains(t, out, "ID")
 	assert.Contains(t, out, "STAGE")
@@ -26,7 +26,16 @@ func TestTableWithRows(t *testing.T) {
 	assert.Contains(t, out, "ISSUE-456")
 }
 
-func TestStatusDot(t *testing.T) {
+func TestStatusIndicator(t *testing.T) {
+	activePhases := map[types.RunPhase]bool{
+		types.StreamingTurn:         true,
+		types.Finishing:             true,
+		types.InitializingSession:   true,
+		types.LaunchingAgentProcess: true,
+		types.PreparingWorkspace:    true,
+		types.BuildingPrompt:        true,
+	}
+
 	tests := []struct {
 		name  string
 		phase types.RunPhase
@@ -45,9 +54,15 @@ func TestStatusDot(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dot := statusDot(tt.phase)
-			assert.NotEmpty(t, dot)
-			assert.Contains(t, dot, "●")
+			result := statusIndicator(tt.phase, "⠋")
+			assert.NotEmpty(t, result)
+			stripped := stripANSI(result)
+			if activePhases[tt.phase] {
+				assert.NotContains(t, stripped, "●", "active phase should use spinner frame")
+				assert.Contains(t, stripped, "⠋", "active phase should contain spinner frame")
+			} else {
+				assert.Contains(t, stripped, "●", "terminal phase should use static dot")
+			}
 		})
 	}
 }
@@ -94,7 +109,7 @@ func TestFormatTokensShort(t *testing.T) {
 func TestTableSetWidth(t *testing.T) {
 	tbl := NewTable().SetWidth(120)
 	rows := []AgentRow{{IssueID: "X-1", Phase: types.Succeeded}}
-	tbl = tbl.Update(rows)
+	tbl = tbl.Update(rows, "●")
 	out := tbl.View()
 	assert.Contains(t, out, "X-1")
 }

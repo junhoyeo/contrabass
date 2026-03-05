@@ -3,7 +3,7 @@ package config
 import (
 	"github.com/osteele/liquid"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 func RenderPrompt(template string, issue types.Issue) (string, error) {

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/config"
-	"github.com/junhoyeo/symphony-charm/internal/logging"
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/logging"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 func (o *Orchestrator) handleRunSignal(ctx context.Context, signal runSignal) {
@@ -97,6 +97,21 @@ func (o *Orchestrator) completeRun(ctx context.Context, issueID string, doneErr 
 		},
 	})
 
+	// Post completion comment (best-effort)
+	commentBody := fmt.Sprintf(
+		"Agent run completed: phase=%s attempt=%d tokens_in=%d tokens_out=%d",
+		finalAttempt.Phase.String(),
+		finalAttempt.Attempt,
+		finalAttempt.TokensIn,
+		finalAttempt.TokensOut,
+	)
+	if finalAttempt.Error != "" {
+		commentBody += fmt.Sprintf(" error=%q", finalAttempt.Error)
+	}
+	if err := o.tracker.PostComment(ctx, issueID, commentBody); err != nil {
+		logging.LogIssueEvent(o.logger, issueID, "post_comment_failed", "err", err)
+	}
+
 	if finalAttempt.Phase == types.Succeeded {
 		o.releaseIssue(ctx, issueID, types.Running, finalAttempt.Attempt)
 		logging.LogAgentEvent(o.logger, issueID, "finished", "status", finalAttempt.Phase.String())
@@ -147,7 +162,9 @@ func resolveFinalPhase(phase types.RunPhase, message string, doneErr error) (typ
 	}
 
 	if isActiveRunPhase(finalPhase) {
-		if err := TransitionRunPhase(finalPhase, types.Finishing); err == nil {
+		if canCompleteWithoutEvents(finalPhase) {
+			finalPhase = types.Succeeded
+		} else if err := TransitionRunPhase(finalPhase, types.Finishing); err == nil {
 			finalPhase = types.Finishing
 		}
 	}
@@ -177,7 +194,7 @@ func (o *Orchestrator) enqueueBackoffFromRunResult(ctx context.Context, issue ty
 		})
 	}
 
-	delayMs := CalculateBackoff(attempt.Attempt, o.currentConfig().MaxRetryBackoffMs())
+	delayMs := CalculateBackoff(issue.ID, attempt.Attempt, o.currentConfig().MaxRetryBackoffMs())
 	retryAt := time.Now().Add(time.Duration(delayMs) * time.Millisecond)
 	nextAttempt := attempt.Attempt + 1
 
@@ -190,7 +207,7 @@ func (o *Orchestrator) enqueueBackoffFromRunResult(ctx context.Context, issue ty
 
 	o.mu.Lock()
 	o.backoff = upsertBackoff(o.backoff, entry)
-	o.issueCache[issue.ID] = issue
+	o.putIssueCacheLocked(issue.ID, issue)
 	o.mu.Unlock()
 
 	o.emitEvent(OrchestratorEvent{
@@ -234,7 +251,7 @@ func (o *Orchestrator) releaseClaimAndQueueContinuation(ctx context.Context, iss
 }
 
 func (o *Orchestrator) enqueueContinuation(issueID string, attempt int, message string) {
-	delayMs := CalculateBackoff(0, o.currentConfig().MaxRetryBackoffMs())
+	delayMs := CalculateBackoff(issueID, 0, o.currentConfig().MaxRetryBackoffMs())
 	retryAt := time.Now().Add(time.Duration(delayMs) * time.Millisecond)
 
 	entry := types.BackoffEntry{
@@ -283,22 +300,34 @@ func (o *Orchestrator) reconcileRunning(ctx context.Context, cfg *config.Workflo
 
 	now := time.Now()
 	orphaned := make([]string, 0)
+	forceRemoved := make([]string, 0)
 
 	o.mu.Lock()
 	for issueID, entry := range o.running {
 		if entry == nil || entry.process == nil || entry.process.Done == nil {
-			orphaned = append(orphaned, issueID)
+			delete(o.running, issueID)
+			forceRemoved = append(forceRemoved, issueID)
 			continue
 		}
 		if now.Sub(entry.attempt.StartTime) > timeout && isActiveRunPhase(entry.attempt.Phase) {
-			if err := TransitionRunPhase(entry.attempt.Phase, types.CanceledByReconciliation); err == nil {
-				entry.attempt.Phase = types.CanceledByReconciliation
+			if err := TransitionRunPhase(entry.attempt.Phase, types.TimedOut); err == nil {
+				entry.attempt.Phase = types.TimedOut
 			}
-			entry.attempt.Error = "run exceeded timeout"
+			entry.attempt.Error = "run timed out"
 			orphaned = append(orphaned, issueID)
 		}
 	}
+	o.stats.Running = len(o.running)
 	o.mu.Unlock()
+
+	for _, issueID := range forceRemoved {
+		logging.LogOrchestratorEvent(
+			o.logger,
+			"run_force_removed",
+			"issue_id", issueID,
+			"reason", "missing_process_or_done",
+		)
+	}
 
 	for _, issueID := range orphaned {
 		o.stopRun(ctx, issueID)
@@ -313,7 +342,7 @@ func (o *Orchestrator) detectStalledRuns(ctx context.Context, cfg *config.Workfl
 		if entry == nil || !isActiveRunPhase(entry.attempt.Phase) {
 			continue
 		}
-		if DetectStall(entry.lastEventAt, cfg.StallTimeoutMs()) {
+		if detectStall(entry.lastEventAt, cfg.StallTimeoutMs()) {
 			if err := TransitionRunPhase(entry.attempt.Phase, types.Stalled); err == nil {
 				entry.attempt.Phase = types.Stalled
 			}
@@ -341,7 +370,38 @@ func (o *Orchestrator) stopRun(_ context.Context, issueID string) {
 		logging.LogAgentEvent(o.logger, issueID, "stop_failed", "err", err)
 	}
 
-	logging.LogOrchestratorEvent(o.logger, "run_stopped", "issue_id", issueID)
+	if entry.process != nil && entry.process.Done != nil {
+		graceTimer := time.NewTimer(5 * time.Second)
+		select {
+		case _, ok := <-entry.process.Done:
+			if !ok {
+				logging.LogOrchestratorEvent(o.logger, "run_stop_done_closed", "issue_id", issueID)
+			}
+		case <-graceTimer.C:
+			logging.LogOrchestratorEvent(
+				o.logger,
+				"run_stop_timeout",
+				"issue_id", issueID,
+				"grace_timeout", "5s",
+			)
+		}
+		if !graceTimer.Stop() {
+			select {
+			case <-graceTimer.C:
+			default:
+			}
+		}
+	}
+
+	o.mu.Lock()
+	current, stillRunning := o.running[issueID]
+	if stillRunning && current == entry {
+		delete(o.running, issueID)
+		o.stats.Running = len(o.running)
+	}
+	o.mu.Unlock()
+
+	logging.LogOrchestratorEvent(o.logger, "run_stopped", "issue_id", issueID, "cleaned_up", true)
 }
 
 func (o *Orchestrator) releaseIssue(ctx context.Context, issueID string, from types.IssueState, attempt int) {
@@ -368,12 +428,16 @@ func (o *Orchestrator) emitStatusUpdate() {
 	stats := o.stats
 	backoffQueue := len(o.backoff)
 	o.mu.Unlock()
-
+	cfg := o.currentConfig()
+	modelName, _ := cfg.Model()
+	projectURL, _ := cfg.ProjectURL()
 	o.emitEvent(OrchestratorEvent{
 		Type: EventStatusUpdate,
 		Data: StatusUpdate{
 			Stats:        stats,
 			BackoffQueue: backoffQueue,
+			ModelName:    modelName,
+			ProjectURL:   projectURL,
 		},
 	})
 }
@@ -400,7 +464,7 @@ func (o *Orchestrator) canDispatch(maxAgents int) bool {
 	running := len(o.running)
 	o.mu.Unlock()
 
-	return CheckBoundedConcurrency(running, maxAgents)
+	return checkBoundedConcurrency(running, maxAgents)
 }
 
 func (o *Orchestrator) isManagedIssue(issueID string) bool {
@@ -419,30 +483,41 @@ func (o *Orchestrator) isManagedIssue(issueID string) bool {
 	return false
 }
 
-func (o *Orchestrator) shutdown(ctx context.Context) {
-	o.mu.Lock()
-	runs := make([]*runEntry, 0, len(o.running))
-	for _, run := range o.running {
-		runs = append(runs, run)
-	}
-	clear(o.running)
-	o.stats.Running = 0
-	o.mu.Unlock()
+func (o *Orchestrator) gracefulShutdown(ctx context.Context) error {
+	var cleanupAllErr error
 
-	for _, run := range runs {
-		if run == nil {
-			continue
+	o.shutdownOnce.Do(func() {
+		o.mu.Lock()
+		runs := make([]*runEntry, 0, len(o.running))
+		for _, run := range o.running {
+			runs = append(runs, run)
 		}
-		run.cancel()
-		_ = o.agent.Stop(run.process)
-		_ = o.workspace.Cleanup(ctx, run.issue.ID)
-		_ = o.tracker.UpdateIssueState(ctx, run.issue.ID, types.Released)
-		_ = o.tracker.ReleaseIssue(ctx, run.issue.ID)
-	}
+		clear(o.running)
+		o.stats.Running = 0
+		o.mu.Unlock()
 
-	if err := o.workspace.CleanupAll(ctx); err != nil {
-		logging.LogOrchestratorEvent(o.logger, "cleanup_all_failed", "err", err)
-	}
+		for _, run := range runs {
+			if run == nil {
+				continue
+			}
+			if run.cancel != nil {
+				run.cancel()
+			}
+			_ = o.agent.Stop(run.process)
+			_ = o.workspace.Cleanup(ctx, run.issue.ID)
+			_ = o.tracker.UpdateIssueState(ctx, run.issue.ID, types.Released)
+			_ = o.tracker.ReleaseIssue(ctx, run.issue.ID)
+		}
+
+		if err := o.workspace.CleanupAll(ctx); err != nil {
+			cleanupAllErr = err
+			logging.LogOrchestratorEvent(o.logger, "cleanup_all_failed", "err", err)
+		}
+
+		logging.LogOrchestratorEvent(o.logger, "graceful_shutdown_completed", "released_runs", len(runs))
+	})
+
+	return cleanupAllErr
 }
 
 func (o *Orchestrator) currentConfig() *config.WorkflowConfig {

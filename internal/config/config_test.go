@@ -146,3 +146,42 @@ func TestWorkflowConfig_RequiredFields(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkflowConfig_NewSectionDefaults(t *testing.T) {
+	t.Parallel()
+
+	var nilCfg *WorkflowConfig
+
+	assert.Equal(t, defaultTrackerType, nilCfg.TrackerType())
+	assert.Equal(t, "", nilCfg.TrackerProjectURL())
+	assert.Equal(t, "", nilCfg.TrackerTeamID())
+	assert.Equal(t, "", nilCfg.TrackerAssigneeID())
+	assert.Equal(t, defaultPollIntervalMs, nilCfg.PollingIntervalMs())
+	assert.Equal(t, defaultBackoffStrategy, nilCfg.PollingBackoffStrategy())
+	assert.Equal(t, defaultWorkspaceBaseDir, nilCfg.WorkspaceBaseDir())
+	assert.Equal(t, defaultBranchPrefix, nilCfg.WorkspaceBranchPrefix())
+	assert.Equal(t, "", nilCfg.HookBeforeRun())
+	assert.Equal(t, "", nilCfg.HookAfterRun())
+	assert.Equal(t, "", nilCfg.HookBeforeRemove())
+	assert.Equal(t, defaultCodexBinaryPath, nilCfg.CodexBinaryPath())
+	assert.Equal(t, "", nilCfg.CodexModel())
+	assert.Equal(t, defaultApprovalPolicy, nilCfg.CodexApprovalPolicy())
+	assert.Equal(t, defaultSandbox, nilCfg.CodexSandbox())
+
+	cfg := &WorkflowConfig{}
+	assert.Equal(t, defaultTrackerType, cfg.TrackerType())
+	assert.Equal(t, defaultPollIntervalMs, cfg.PollingIntervalMs())
+	assert.Equal(t, defaultBackoffStrategy, cfg.PollingBackoffStrategy())
+	assert.Equal(t, defaultWorkspaceBaseDir, cfg.WorkspaceBaseDir())
+	assert.Equal(t, defaultBranchPrefix, cfg.WorkspaceBranchPrefix())
+	assert.Equal(t, defaultCodexBinaryPath, cfg.CodexBinaryPath())
+	assert.Equal(t, defaultApprovalPolicy, cfg.CodexApprovalPolicy())
+	assert.Equal(t, defaultSandbox, cfg.CodexSandbox())
+
+	legacyCfg := &WorkflowConfig{
+		ModelRaw:      "openai/gpt-5-codex",
+		ProjectURLRaw: "https://linear.app/example/project/legacy",
+	}
+	assert.Equal(t, "openai/gpt-5-codex", legacyCfg.CodexModel())
+	assert.Equal(t, "https://linear.app/example/project/legacy", legacyCfg.TrackerProjectURL())
+}

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 const (
@@ -83,13 +83,16 @@ func TransitionRunPhase(current, target types.RunPhase) error {
 	return &InvalidTransitionError{From: current, To: target}
 }
 
-func CalculateBackoff(attempt int, maxMs int) (delayMs int) {
-	if attempt <= 0 {
-		return continuationBackoffMs
-	}
-
+func CalculateBackoff(issueID string, attempt int, maxMs int) (delayMs int) {
 	if maxMs <= 0 {
 		return 0
+	}
+
+	if attempt <= 0 {
+		if continuationBackoffMs > maxMs {
+			return maxMs
+		}
+		return continuationBackoffMs
 	}
 
 	baseDelay := calculateFailureBackoff(attempt, maxMs)
@@ -98,7 +101,7 @@ func CalculateBackoff(attempt int, maxMs int) (delayMs int) {
 		return baseDelay
 	}
 
-	offset := deterministicJitterOffset(attempt, maxMs, jitterRange)
+	offset := deterministicJitterOffset(issueID, attempt, maxMs, jitterRange)
 	delayMs = baseDelay + offset
 	if delayMs < 0 {
 		return 0
@@ -110,11 +113,11 @@ func CalculateBackoff(attempt int, maxMs int) (delayMs int) {
 	return delayMs
 }
 
-func CheckBoundedConcurrency(running, max int) bool {
+func checkBoundedConcurrency(running, max int) bool {
 	return running < max
 }
 
-func DetectStall(lastEventTime time.Time, stallTimeoutMs int) bool {
+func detectStall(lastEventTime time.Time, stallTimeoutMs int) bool {
 	return detectStallAt(time.Now(), lastEventTime, stallTimeoutMs)
 }
 
@@ -153,14 +156,38 @@ func isFailureRunPhase(phase types.RunPhase) bool {
 	}
 }
 
-func deterministicJitterOffset(attempt, maxMs, jitterRange int) int {
+func canCompleteWithoutEvents(phase types.RunPhase) bool {
+	return phase == types.InitializingSession
+}
+
+func deterministicJitterOffset(issueID string, attempt, maxMs, jitterRange int) int {
 	span := (2 * jitterRange) + 1
 	if span <= 0 {
 		return 0
 	}
 
-	seed := uint64(uint32(attempt))*1_103_515_245 + uint64(uint32(maxMs))*12_345 + 0x9e3779b97f4a7c15
+	seed := deterministicBackoffSeed(issueID, attempt, maxMs)
 	return int(seed%uint64(span)) - jitterRange
+}
+
+func deterministicBackoffSeed(issueID string, attempt, maxMs int) uint64 {
+	const (
+		offsetBasis = uint64(1469598103934665603)
+		prime       = uint64(1099511628211)
+	)
+
+	seed := offsetBasis
+	for i := 0; i < len(issueID); i++ {
+		seed ^= uint64(issueID[i])
+		seed *= prime
+	}
+
+	seed ^= uint64(uint32(attempt))
+	seed *= prime
+	seed ^= uint64(uint32(maxMs))
+	seed *= prime
+
+	return seed
 }
 
 func calculateFailureBackoff(attempt int, maxMs int) int {

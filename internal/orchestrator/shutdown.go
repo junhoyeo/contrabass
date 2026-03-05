@@ -3,8 +3,9 @@ package orchestrator
 import (
 	"context"
 	"errors"
-	"log"
 	"time"
+
+	"github.com/charmbracelet/log"
 )
 
 const shutdownPollInterval = 10 * time.Millisecond
@@ -47,14 +48,14 @@ func GracefulShutdown(
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), cfg.DrainTimeout)
 	defer drainCancel()
 
-	if !waitForDrain(drainCtx, orch) {
-		forceKillRemaining(orch, logger)
+	if !waitForDrain(drainCtx, orch) && logger != nil {
+		logger.Warn("drain timeout reached; forcing shutdown")
 	}
 
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cfg.CleanupTimeout)
 	defer cleanupCancel()
 
-	return orch.workspace.CleanupAll(cleanupCtx)
+	return orch.gracefulShutdown(cleanupCtx)
 }
 
 func waitForDrain(ctx context.Context, orch *Orchestrator) bool {
@@ -73,31 +74,6 @@ func waitForDrain(ctx context.Context, orch *Orchestrator) bool {
 			if orch.RunningCount() == 0 {
 				return true
 			}
-		}
-	}
-}
-
-func forceKillRemaining(orch *Orchestrator, logger *log.Logger) {
-	orch.mu.Lock()
-	runs := make([]*runEntry, 0, len(orch.running))
-	for _, run := range orch.running {
-		runs = append(runs, run)
-	}
-	clear(orch.running)
-	orch.stats.Running = 0
-	orch.mu.Unlock()
-
-	for _, run := range runs {
-		if run == nil {
-			continue
-		}
-
-		if run.cancel != nil {
-			run.cancel()
-		}
-
-		if err := orch.agent.Stop(run.process); err != nil && logger != nil {
-			logger.Printf("force-stop failed for issue %s: %v", run.issue.ID, err)
 		}
 	}
 }

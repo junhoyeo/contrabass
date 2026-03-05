@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 type EventType int
@@ -36,14 +36,23 @@ func (t EventType) String() string {
 type OrchestratorEvent struct {
 	Type      EventType
 	IssueID   string
-	Data      interface{}
+	Data      EventPayload
 	Timestamp time.Time
+}
+
+// EventPayload is a marker interface for typed orchestrator event payloads.
+type EventPayload interface {
+	eventPayload()
 }
 
 type StatusUpdate struct {
 	Stats        Stats
 	BackoffQueue int
+	ModelName    string
+	ProjectURL   string
 }
+
+func (StatusUpdate) eventPayload() {}
 
 type AgentStarted struct {
 	Attempt   int
@@ -51,6 +60,8 @@ type AgentStarted struct {
 	SessionID string
 	Workspace string
 }
+
+func (AgentStarted) eventPayload() {}
 
 type AgentFinished struct {
 	Attempt   int
@@ -60,12 +71,18 @@ type AgentFinished struct {
 	Error     string
 }
 
+func (AgentFinished) eventPayload() {}
+
 type BackoffEnqueued struct {
 	Attempt int
 	RetryAt time.Time
 	Error   string
 }
 
+func (BackoffEnqueued) eventPayload() {}
+
 type IssueReleased struct {
 	Attempt int
 }
+
+func (IssueReleased) eventPayload() {}

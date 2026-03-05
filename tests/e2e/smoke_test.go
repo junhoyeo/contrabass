@@ -9,12 +9,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/junhoyeo/symphony-charm/internal/agent"
-	"github.com/junhoyeo/symphony-charm/internal/config"
-	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
-	"github.com/junhoyeo/symphony-charm/internal/tracker"
-	"github.com/junhoyeo/symphony-charm/internal/types"
-	"github.com/junhoyeo/symphony-charm/internal/workspace"
+	"github.com/junhoyeo/contrabass/internal/agent"
+	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/tracker"
+	"github.com/junhoyeo/contrabass/internal/types"
+	"github.com/junhoyeo/contrabass/internal/workspace"
 )
 
 type staticConfig struct {

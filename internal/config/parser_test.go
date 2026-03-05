@@ -120,6 +120,57 @@ prompt
 			wantErr:        nil,
 			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) { assert.Equal(t, "", cfg.PromptTemplate) },
 		},
+		{
+			name:    "minimal front matter: just opening delimiter",
+			content: "---",
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Equal(t, "", cfg.PromptTemplate)
+			},
+		},
+		{
+			name:    "minimal front matter: opening delimiter with newline",
+			content: "---\n",
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Equal(t, "", cfg.PromptTemplate)
+			},
+		},
+		{
+			name:    "minimal front matter: empty YAML block",
+			content: "---\n---",
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Equal(t, "", cfg.PromptTemplate)
+			},
+		},
+		{
+			name:    "minimal front matter: empty YAML block with trailing newline",
+			content: "---\n---\n",
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Equal(t, "", cfg.PromptTemplate)
+			},
+		},
+		{
+			name: "prompt template preserves literal $VARIABLE patterns",
+			content: `---
+model: openai/gpt-5-codex
+project_url: https://linear.app/example/project/test
+---
+Fix $ISSUE_ID in the codebase.
+`,
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Contains(t, cfg.PromptTemplate, "Fix $ISSUE_ID")
+				assert.NotContains(t, cfg.PromptTemplate, "Fix  in")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -147,6 +198,181 @@ prompt
 
 			if tt.assertionsFunc != nil {
 				tt.assertionsFunc(t, cfg)
+			}
+		})
+	}
+}
+
+func TestParseWorkflow_FullSpecSections(t *testing.T) {
+	t.Parallel()
+
+	content := `---
+max_concurrency: 5
+poll_interval_ms: 17000
+model: openai/gpt-5.3-codex
+project_url: https://linear.app/example/project/legacy
+tracker:
+  type: jira
+  project_url: https://linear.app/example/project/nested
+  team_id: team-42
+  assignee_id: user-77
+polling:
+  interval_ms: 12000
+  backoff_strategy: linear
+workspace:
+  base_dir: /tmp/worktrees
+  branch_prefix: task/
+hooks:
+  before_run: ./scripts/before.sh
+  after_run: ./scripts/after.sh
+  before_remove: ./scripts/cleanup.sh
+codex:
+  binary_path: /usr/local/bin/codex
+  model: openai/gpt-5.3-codex-mini
+  approval_policy: manual
+  sandbox: none
+---
+Prompt body.
+`
+
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	cfg, err := ParseWorkflow(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	assert.Equal(t, "jira", cfg.TrackerType())
+	assert.Equal(t, "https://linear.app/example/project/nested", cfg.TrackerProjectURL())
+	assert.Equal(t, "team-42", cfg.TrackerTeamID())
+	assert.Equal(t, "user-77", cfg.TrackerAssigneeID())
+	assert.Equal(t, 12_000, cfg.PollingIntervalMs())
+	assert.Equal(t, "linear", cfg.PollingBackoffStrategy())
+	assert.Equal(t, "/tmp/worktrees", cfg.WorkspaceBaseDir())
+	assert.Equal(t, "task/", cfg.WorkspaceBranchPrefix())
+	assert.Equal(t, "./scripts/before.sh", cfg.HookBeforeRun())
+	assert.Equal(t, "./scripts/after.sh", cfg.HookAfterRun())
+	assert.Equal(t, "./scripts/cleanup.sh", cfg.HookBeforeRemove())
+	assert.Equal(t, "/usr/local/bin/codex", cfg.CodexBinaryPath())
+	assert.Equal(t, "openai/gpt-5.3-codex-mini", cfg.CodexModel())
+	assert.Equal(t, "manual", cfg.CodexApprovalPolicy())
+	assert.Equal(t, "none", cfg.CodexSandbox())
+
+	model, modelErr := cfg.Model()
+	require.NoError(t, modelErr)
+	assert.Equal(t, "openai/gpt-5.3-codex", model)
+
+	projectURL, projectURLErr := cfg.ProjectURL()
+	require.NoError(t, projectURLErr)
+	assert.Equal(t, "https://linear.app/example/project/legacy", projectURL)
+}
+
+func TestParseWorkflow_BackwardCompatibleMinimal(t *testing.T) {
+	t.Parallel()
+
+	content := `---
+model: openai/gpt-5-codex
+project_url: https://linear.app/example/project/minimal
+---
+Minimal prompt.
+`
+
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	cfg, err := ParseWorkflow(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	model, modelErr := cfg.Model()
+	require.NoError(t, modelErr)
+	assert.Equal(t, "openai/gpt-5-codex", model)
+
+	projectURL, projectURLErr := cfg.ProjectURL()
+	require.NoError(t, projectURLErr)
+	assert.Equal(t, "https://linear.app/example/project/minimal", projectURL)
+
+	assert.Equal(t, defaultTrackerType, cfg.TrackerType())
+	assert.Equal(t, defaultPollIntervalMs, cfg.PollingIntervalMs())
+	assert.Equal(t, defaultBackoffStrategy, cfg.PollingBackoffStrategy())
+	assert.Equal(t, defaultWorkspaceBaseDir, cfg.WorkspaceBaseDir())
+	assert.Equal(t, defaultBranchPrefix, cfg.WorkspaceBranchPrefix())
+	assert.Equal(t, defaultCodexBinaryPath, cfg.CodexBinaryPath())
+	assert.Equal(t, "openai/gpt-5-codex", cfg.CodexModel())
+	assert.Equal(t, defaultApprovalPolicy, cfg.CodexApprovalPolicy())
+	assert.Equal(t, defaultSandbox, cfg.CodexSandbox())
+}
+
+
+func TestSplitFrontMatter_CRLFLineEnding(t *testing.T) {
+	t.Parallel()
+
+	// Test that CRLF line endings (\r\n) are handled correctly in front matter splitting
+	content := "---\r\nmodel: openai/gpt-5-codex\r\nproject_url: https://linear.app/example/project/crlf\r\n---\r\nPrompt with CRLF.\r\n"
+
+	frontMatter, prompt, hasFrontMatter, terminated := splitFrontMatter(content)
+
+	require.True(t, hasFrontMatter)
+	require.True(t, terminated)
+	assert.Contains(t, frontMatter, "model: openai/gpt-5-codex")
+	assert.Contains(t, frontMatter, "project_url: https://linear.app/example/project/crlf")
+	assert.Contains(t, prompt, "Prompt with CRLF")
+}
+
+func TestResolveEnvToken_InvalidPattern(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		want  string
+		ok    bool
+	}{
+		{
+			name:  "valid env var pattern",
+			value: "$VALID_VAR",
+			want:  "", // will be empty since env var not set
+			ok:    true,
+		},
+		{
+			name:  "invalid: starts with number",
+			value: "$123INVALID",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "invalid: contains hyphen",
+			value: "$INVALID-VAR",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "invalid: contains dot",
+			value: "$INVALID.VAR",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "no dollar sign",
+			value: "PLAIN_STRING",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "empty after dollar",
+			value: "$",
+			want:  "",
+			ok:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := resolveEnvToken(tt.value)
+			assert.Equal(t, tt.ok, ok)
+			if ok {
+				assert.Equal(t, tt.want, result)
 			}
 		})
 	}

@@ -3,7 +3,7 @@ package tui
 import (
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/orchestrator"
 )
 
 type OrchestratorEventMsg struct {

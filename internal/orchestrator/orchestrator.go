@@ -9,14 +9,15 @@ import (
 	"github.com/charmbracelet/log"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/junhoyeo/symphony-charm/internal/agent"
-	"github.com/junhoyeo/symphony-charm/internal/config"
-	"github.com/junhoyeo/symphony-charm/internal/logging"
-	"github.com/junhoyeo/symphony-charm/internal/tracker"
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/agent"
+	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/logging"
+	"github.com/junhoyeo/contrabass/internal/tracker"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 const defaultEventBufferSize = 256
+const maxIssueCacheSize = 1000
 
 type WorkspaceManager interface {
 	Create(ctx context.Context, issue types.Issue) (string, error)
@@ -53,13 +54,15 @@ type Orchestrator struct {
 	config    ConfigProvider
 	logger    *log.Logger
 
-	mu      sync.Mutex
-	running map[string]*runEntry
-	backoff []types.BackoffEntry
-	events  chan OrchestratorEvent
-	stats   Stats
+	mu           sync.Mutex
+	shutdownOnce sync.Once
+	running      map[string]*runEntry
+	backoff      []types.BackoffEntry
+	events       chan OrchestratorEvent
+	stats        Stats
 
-	issueCache map[string]types.Issue
+	issueCache      map[string]types.Issue
+	issueCacheOrder []string
 }
 
 type runSignal struct {
@@ -129,7 +132,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			o.shutdown(shutdownCtx)
+			_ = o.gracefulShutdown(shutdownCtx)
 			cancel()
 			_ = supervisor.Wait()
 			return nil
@@ -166,7 +169,7 @@ func (o *Orchestrator) runCycle(ctx context.Context, supervisor *errgroup.Group,
 
 	o.mu.Lock()
 	for id, issue := range issuesByID {
-		o.issueCache[id] = issue
+		o.putIssueCacheLocked(id, issue)
 	}
 	o.mu.Unlock()
 
@@ -274,10 +277,11 @@ func (o *Orchestrator) dispatchIssue(
 	}
 
 	runAttempt := types.RunAttempt{
-		IssueID:   issue.ID,
-		Attempt:   attemptNumber,
-		Phase:     types.PreparingWorkspace,
-		StartTime: time.Now(),
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		Attempt:         attemptNumber,
+		Phase:           types.PreparingWorkspace,
+		StartTime:       time.Now(),
 	}
 
 	workspacePath, err := o.workspace.Create(ctx, issue)
@@ -286,6 +290,7 @@ func (o *Orchestrator) dispatchIssue(
 		o.releaseClaimAndQueueContinuation(ctx, issue.ID, runAttempt.Attempt, err)
 		return
 	}
+	runAttempt.WorkspacePath = workspacePath
 
 	if phaseErr := TransitionRunPhase(runAttempt.Phase, types.BuildingPrompt); phaseErr == nil {
 		runAttempt.Phase = types.BuildingPrompt
@@ -338,7 +343,7 @@ func (o *Orchestrator) dispatchIssue(
 
 	o.mu.Lock()
 	o.running[issue.ID] = entry
-	o.issueCache[issue.ID] = issue
+	o.putIssueCacheLocked(issue.ID, issue)
 	o.stats.Running = len(o.running)
 	o.mu.Unlock()
 
@@ -432,4 +437,21 @@ func (o *Orchestrator) sendRunSignal(ctx context.Context, runSignals chan<- runS
 	case runSignals <- signal:
 		return true
 	}
+}
+
+// putIssueCacheLocked inserts or updates an entry in the issue cache.
+// If the cache exceeds maxIssueCacheSize, the oldest entry is evicted.
+// Caller must hold o.mu.
+func (o *Orchestrator) putIssueCacheLocked(id string, issue types.Issue) {
+	if _, exists := o.issueCache[id]; exists {
+		o.issueCache[id] = issue
+		return
+	}
+	if len(o.issueCache) >= maxIssueCacheSize {
+		oldest := o.issueCacheOrder[0]
+		o.issueCacheOrder = o.issueCacheOrder[1:]
+		delete(o.issueCache, oldest)
+	}
+	o.issueCache[id] = issue
+	o.issueCacheOrder = append(o.issueCacheOrder, id)
 }

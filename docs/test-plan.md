@@ -1,4 +1,4 @@
-# Test Plan — Symphony-Charm (Ported from Elixir)
+# Test Plan — Contrabass (Ported from Elixir)
 
 This document ports scenario intent from Elixir ExUnit tests into Go-oriented test planning.
 Each scenario records behavior, setup, expected outcome, source mapping, and target package.

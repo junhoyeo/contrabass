@@ -11,15 +11,16 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 type Manager struct {
 	baseDir   string
 	gitBinary string
 
-	mu     sync.RWMutex
-	active map[string]string
+	mu         sync.RWMutex
+	active     map[string]string
+	issueLocks sync.Map
 }
 
 func NewManager(baseDir string) *Manager {
@@ -34,6 +35,9 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 	if issue.ID == "" {
 		return "", errors.New("issue id is required")
 	}
+
+	unlock := m.lockIssue(issue.ID)
+	defer unlock()
 
 	workspacePath := m.workspacePath(issue.ID)
 
@@ -75,6 +79,9 @@ func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
 		return nil
 	}
 
+	unlock := m.lockIssue(issueID)
+	defer unlock()
+
 	workspacePath := m.workspacePath(issueID)
 	if _, err := os.Stat(workspacePath); errors.Is(err, os.ErrNotExist) {
 		m.mu.Lock()
@@ -97,6 +104,9 @@ func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
 	return nil
 }
 
+// CleanupAll snapshots issue IDs tracked at the call start and cleans up only
+// that snapshot. Any Create that starts after the snapshot may leave new active
+// workspaces that require a later CleanupAll call.
 func (m *Manager) CleanupAll(ctx context.Context) error {
 	issueIDs := m.List()
 	var errs []error
@@ -140,6 +150,13 @@ func (m *Manager) List() []string {
 
 func (m *Manager) workspacePath(issueID string) string {
 	return filepath.Join(m.baseDir, "workspaces", issueID)
+}
+
+func (m *Manager) lockIssue(issueID string) func() {
+	issueLock, _ := m.issueLocks.LoadOrStore(issueID, &sync.Mutex{})
+	mu := issueLock.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (m *Manager) runGit(ctx context.Context, args ...string) (string, error) {

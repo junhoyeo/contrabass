@@ -1,4 +1,4 @@
-package symphonycharm
+package contrabass
 
 import "embed"
 

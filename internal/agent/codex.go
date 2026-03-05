@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"strconv"
@@ -16,13 +15,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/charmbracelet/log"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 const (
 	initializeRequestID  = 1
 	threadStartRequestID = 2
 	turnStartRequestID   = 3
+	maxJSONLineSize      = 10 * 1024 * 1024 // 10MB
 )
 
 type CodexRunner struct {
@@ -38,7 +39,33 @@ type codexProcess struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	done   chan error
-	stderr *bytes.Buffer
+	stderr *safeBuffer
+
+	doneOnce sync.Once
+}
+
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (p *codexProcess) finish(err error) {
+	p.doneOnce.Do(func() {
+		p.done <- err
+		close(p.done)
+	})
 }
 
 func NewCodexRunner(binaryPath string, timeout time.Duration) *CodexRunner {
@@ -49,7 +76,7 @@ func NewCodexRunner(binaryPath string, timeout time.Duration) *CodexRunner {
 	return &CodexRunner{
 		binaryPath: binaryPath,
 		timeout:    timeout,
-		logger:     log.New(io.Discard, "", 0),
+		logger:     log.NewWithOptions(io.Discard, log.Options{}),
 		procs:      make(map[int]*codexProcess),
 	}
 }
@@ -82,7 +109,7 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		return nil, fmt.Errorf("start codex process: %w", err)
 	}
 
-	stderrBuf := &bytes.Buffer{}
+	stderrBuf := &safeBuffer{}
 	go func() {
 		_, _ = io.Copy(stderrBuf, stderrPipe)
 	}()
@@ -99,16 +126,15 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 	r.mu.Unlock()
 
 	writer := bufio.NewWriter(stdin)
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	reader := bufio.NewReader(stdout)
 
 	if err := r.sendMessage(writer, map[string]interface{}{
 		"id":     initializeRequestID,
 		"method": "initialize",
 		"params": map[string]interface{}{
 			"clientInfo": map[string]interface{}{
-				"name":    "symphony-charm",
-				"title":   "Symphony Charm",
+				"name":    "contrabass",
+				"title":   "Contrabass",
 				"version": "0.1.0",
 			},
 			"capabilities": map[string]interface{}{"experimentalApi": true},
@@ -118,7 +144,7 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		return nil, err
 	}
 
-	if _, err := r.awaitResponse(scanner, initializeRequestID); err != nil {
+	if _, err := r.awaitResponse(reader, initializeRequestID); err != nil {
 		r.cleanupOnStartFailure(process)
 		return nil, r.withStderr(err, stderrBuf)
 	}
@@ -142,7 +168,7 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		return nil, err
 	}
 
-	threadResult, err := r.awaitResponse(scanner, threadStartRequestID)
+	threadResult, err := r.awaitResponse(reader, threadStartRequestID)
 	if err != nil {
 		r.cleanupOnStartFailure(process)
 		return nil, r.withStderr(err, stderrBuf)
@@ -170,7 +196,7 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		return nil, err
 	}
 
-	turnResult, err := r.awaitResponse(scanner, turnStartRequestID)
+	turnResult, err := r.awaitResponse(reader, turnStartRequestID)
 	if err != nil {
 		r.cleanupOnStartFailure(process)
 		return nil, r.withStderr(err, stderrBuf)
@@ -182,9 +208,9 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		sessionID = threadID + "-" + turnID
 	}
 
-	events := make(chan types.AgentEvent, 64)
+	events := make(chan types.AgentEvent, 128)
 
-	go r.streamEventsAndWait(process, scanner, events)
+	go r.streamEventsAndWait(process, reader, events)
 
 	return &AgentProcess{
 		PID:       cmd.Process.Pid,
@@ -233,45 +259,66 @@ func (r *CodexRunner) Stop(proc *AgentProcess) error {
 	}
 }
 
-func (r *CodexRunner) streamEventsAndWait(process *codexProcess, scanner *bufio.Scanner, events chan types.AgentEvent) {
+func (r *CodexRunner) streamEventsAndWait(process *codexProcess, reader *bufio.Reader, events chan types.AgentEvent) {
 	defer close(events)
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxJSONLineSize)
 
 	for scanner.Scan() {
-		line := scanner.Text()
-		msg := map[string]interface{}{}
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			r.logger.Printf("codex malformed JSON: %v", err)
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
 			continue
 		}
-
+		msg := map[string]interface{}{}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			rawPreview := string(line)
+			if len(rawPreview) > 512 {
+				rawPreview = rawPreview[:512] + "...(truncated)"
+			}
+			r.logger.Warn("codex malformed JSON", "err", err)
+			event := types.AgentEvent{
+				Type: "protocol/error",
+				Data: map[string]interface{}{
+					"error": fmt.Sprintf("malformed JSON: %s", err.Error()),
+					"raw":   rawPreview,
+				},
+				Timestamp: time.Now(),
+			}
+			select {
+			case events <- event:
+			default:
+			}
+			continue
+		}
 		method, _ := msg["method"].(string)
 		if method == "" {
 			continue
 		}
-
 		data := map[string]interface{}{}
 		if params, ok := msg["params"].(map[string]interface{}); ok {
 			data = params
 		}
 
-		events <- types.AgentEvent{
+		event := types.AgentEvent{
 			Type:      method,
 			Data:      data,
 			Timestamp: time.Now(),
 		}
+		select {
+		case events <- event:
+		default:
+		}
 	}
 
-	scanErr := scanner.Err()
+	readErr := scanner.Err()
 	waitErr := process.cmd.Wait()
-	if scanErr != nil {
-		process.done <- scanErr
-	} else if waitErr != nil {
-		process.done <- r.withStderr(waitErr, process.stderr)
+	if waitErr != nil {
+		process.finish(r.withStderr(waitErr, process.stderr))
+	} else if readErr != nil {
+		process.finish(readErr)
 	} else {
-		process.done <- nil
+		process.finish(nil)
 	}
-	close(process.done)
-
 	r.mu.Lock()
 	delete(r.procs, process.cmd.Process.Pid)
 	r.mu.Unlock()
@@ -284,27 +331,38 @@ func (r *CodexRunner) cleanupOnStartFailure(process *codexProcess) {
 	if process.cmd.Process != nil {
 		_ = process.cmd.Process.Kill()
 	}
-	_, _ = process.cmd.Process.Wait()
+	_ = process.cmd.Wait()
 
 	r.mu.Lock()
 	delete(r.procs, process.cmd.Process.Pid)
 	r.mu.Unlock()
 }
 
-func (r *CodexRunner) awaitResponse(scanner *bufio.Scanner, requestID int) (map[string]interface{}, error) {
+func (r *CodexRunner) awaitResponse(reader *bufio.Reader, requestID int) (map[string]interface{}, error) {
 	deadline := time.Now().Add(r.timeout)
 
-	for time.Now().Before(deadline) {
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return nil, err
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("handshake timeout waiting for response id=%d after %s", requestID, r.timeout)
+		}
+
+		line, err := r.readLineWithTimeout(reader, remaining)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) == 0 {
+			if errors.Is(err, io.EOF) {
+				return nil, io.EOF
 			}
-			return nil, io.EOF
+			continue
 		}
 
 		msg := map[string]interface{}{}
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			r.logger.Printf("codex malformed JSON while waiting response: %v", err)
+		if err := json.Unmarshal(trimmed, &msg); err != nil {
+			r.logger.Warn("codex malformed JSON while waiting response", "err", err)
 			continue
 		}
 
@@ -323,8 +381,29 @@ func (r *CodexRunner) awaitResponse(scanner *bufio.Scanner, requestID int) (map[
 
 		return map[string]interface{}{}, nil
 	}
+}
 
-	return nil, fmt.Errorf("timeout waiting for response id=%d", requestID)
+func (r *CodexRunner) readLineWithTimeout(reader *bufio.Reader, timeout time.Duration) ([]byte, error) {
+	type lineReadResult struct {
+		line []byte
+		err  error
+	}
+
+	resultCh := make(chan lineReadResult, 1)
+	go func() {
+		line, err := reader.ReadBytes('\n')
+		resultCh <- lineReadResult{line: line, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-resultCh:
+		return result.line, result.err
+	case <-timer.C:
+		return nil, fmt.Errorf("handshake timeout waiting for read after %s", timeout)
+	}
 }
 
 func (r *CodexRunner) sendMessage(writer *bufio.Writer, msg map[string]interface{}) error {
@@ -341,7 +420,7 @@ func (r *CodexRunner) sendMessage(writer *bufio.Writer, msg map[string]interface
 	return nil
 }
 
-func (r *CodexRunner) withStderr(err error, stderr *bytes.Buffer) error {
+func (r *CodexRunner) withStderr(err error, stderr interface{ String() string }) error {
 	if err == nil {
 		return nil
 	}

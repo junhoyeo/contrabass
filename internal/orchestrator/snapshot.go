@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 // StateSnapshot represents a thread-safe point-in-time copy of orchestrator state.
