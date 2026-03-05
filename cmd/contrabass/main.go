@@ -218,7 +218,7 @@ func runTUI(ctx context.Context, orch *orchestrator.Orchestrator) error {
 	defer tuiCancel()
 
 	model := tui.NewModel()
-	p := tea.NewProgram(model)
+	p := tea.NewProgram(withViewportProgramOptions(model))
 
 	startTUIEventBridge(tuiCtx, p, orch.Events())
 
@@ -253,6 +253,31 @@ func runTUI(ctx context.Context, orch *orchestrator.Orchestrator) error {
 	}
 
 	return tuiErr
+}
+
+type viewportProgramModel struct {
+	model tea.Model
+}
+
+func withViewportProgramOptions(model tea.Model) tea.Model {
+	return viewportProgramModel{model: model}
+}
+
+func (m viewportProgramModel) Init() tea.Cmd {
+	return m.model.Init()
+}
+
+func (m viewportProgramModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.model.Update(msg)
+	m.model = next
+	return m, cmd
+}
+
+func (m viewportProgramModel) View() tea.View {
+	v := m.model.View()
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }
 
 // projectSlug extracts the Linear project slug from env or config.

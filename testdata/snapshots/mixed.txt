@@ -7,6 +7,34 @@
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   ID           STAGE              PID     AGE     TOKENS         SESSION          EVENT             
   ────────────────────────────────────────────────────────────────────────────────────────────────  
-  ● ISSUE-1      InitializingSession 20001   3m15s   0/0            sess-mix111      AgentStarted   
-  ● ISSUE-2      InitializingSession 20002   3m10s   0/0            sess-mix222      AgentStarted   
+  ●  ISSUE-1      InitializingSession 20001   3m15s   0/0            sess-mix111      AgentStarted  
+  ●  ISSUE-2      InitializingSession 20002   3m10s   0/0            sess-mix222      AgentStarted  
   ↻ ISSUE-3  attempt 2  retry in 0s  error: context deadline exceeded                               
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+↑/k scroll up • ↓/j scroll down • ? toggle help • q quit                                            

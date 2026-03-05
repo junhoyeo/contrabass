@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,9 +17,14 @@ import (
 var update = flag.Bool("update", false, "update golden files")
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+var spinnerRegex = regexp.MustCompile(`[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]`)
 
 func stripANSI(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
+}
+
+func normalizeSpinner(s string) string {
+	return spinnerRegex.ReplaceAllString(s, "●")
 }
 
 func goldenPath(name string) string {
@@ -45,6 +51,11 @@ func newSnapshotModel() Model {
 	m.header = m.header.SetWidth(100)
 	m.table = m.table.SetWidth(100)
 	m.backoff = m.backoff.SetWidth(100)
+	m.help.SetWidth(100)
+	m.viewport.SetWidth(100)
+	headerH := lipgloss.Height(m.header.View())
+	helpH := lipgloss.Height(m.help.View(m.keys))
+	m.viewport.SetHeight(40 - headerH - helpH)
 	return m
 }
 
@@ -65,7 +76,7 @@ func TestSnapshotIdle(t *testing.T) {
 	m := newSnapshotModel()
 	// Refresh to sync tables and header
 	m = refreshModel(m, time.Now())
-	rendered := stripANSI(m.View().Content)
+	rendered := normalizeSpinner(stripANSI(m.View().Content))
 	assertGolden(t, "idle", rendered)
 }
 
@@ -104,7 +115,7 @@ func TestSnapshotSingleAgent(t *testing.T) {
 	// Refresh to update derived fields (Age, etc.)
 	m = refreshModel(m, now.Add(2*time.Minute+30*time.Second))
 
-	rendered := stripANSI(m.View().Content)
+	rendered := normalizeSpinner(stripANSI(m.View().Content))
 	assertGolden(t, "single_agent", rendered)
 }
 
@@ -167,7 +178,7 @@ func TestSnapshotMultipleAgents(t *testing.T) {
 	// Refresh to update derived fields
 	m = refreshModel(m, now.Add(5*time.Minute))
 
-	rendered := stripANSI(m.View().Content)
+	rendered := normalizeSpinner(stripANSI(m.View().Content))
 	assertGolden(t, "multiple_agents", rendered)
 }
 
@@ -202,7 +213,7 @@ func TestSnapshotBackoffQueue(t *testing.T) {
 	// Refresh to update derived fields
 	m = refreshModel(m, now)
 
-	rendered := stripANSI(m.View().Content)
+	rendered := normalizeSpinner(stripANSI(m.View().Content))
 	assertGolden(t, "backoff_queue", rendered)
 }
 
@@ -265,6 +276,6 @@ func TestSnapshotMixed(t *testing.T) {
 	// Refresh to update derived fields
 	m = refreshModel(m, now.Add(3*time.Minute+15*time.Second))
 
-	rendered := stripANSI(m.View().Content)
+	rendered := normalizeSpinner(stripANSI(m.View().Content))
 	assertGolden(t, "mixed", rendered)
 }

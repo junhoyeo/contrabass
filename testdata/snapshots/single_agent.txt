@@ -7,5 +7,34 @@
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   ID           STAGE              PID     AGE     TOKENS         SESSION          EVENT             
   ────────────────────────────────────────────────────────────────────────────────────────────────  
-  ● ISSUE-1      InitializingSession 12345   2m30s   0/0            sess-abc123      AgentStarted   
+  ●  ISSUE-1      InitializingSession 12345   2m30s   0/0            sess-abc123      AgentStarted  
                                                                                                     
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+↑/k scroll up • ↓/j scroll down • ? toggle help • q quit                                            

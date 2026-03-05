@@ -1,6 +1,13 @@
 package tui
 
 import (
+	"sort"
+	"time"
+
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"context"
@@ -8,16 +15,18 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
 	"github.com/junhoyeo/contrabass/internal/types"
-	"sort"
-	"time"
 )
 
 const refreshInterval = time.Second
 
 type Model struct {
-	header  Header
-	table   Table
-	backoff Backoff
+	header   Header
+	table    Table
+	backoff  Backoff
+	viewport viewport.Model
+	keys     KeyMap
+	spinner  spinner.Model
+	help     help.Model
 
 	width    int
 	height   int
@@ -34,10 +43,19 @@ type Model struct {
 
 func NewModel() Model {
 	now := time.Now()
+	vp := viewport.New()
+	vp.MouseWheelEnabled = true
+	s := spinner.New(
+		spinner.WithSpinner(spinner.Dot),
+	)
 	return Model{
 		header:         NewHeader(),
 		table:          NewTable(),
 		backoff:        NewBackoff(),
+		viewport:       vp,
+		keys:           NewKeyMap(),
+		spinner:        s,
+		help:           help.New(),
 		agents:         make(map[string]AgentRow),
 		agentStartTime: make(map[string]time.Time),
 		backoffs:       make(map[string]BackoffRow),
@@ -50,23 +68,48 @@ func NewModel() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return doTick()
+	return tea.Batch(doTick(), m.spinner.Tick)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
+		switch {
+		case key.Matches(msg, m.keys.Quit):
 			m.quitting = true
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.Help):
+			m.help.ShowAll = !m.help.ShowAll
+			headerH := lipgloss.Height(m.header.View())
+			helpH := lipgloss.Height(m.help.View(m.keys))
+			m.viewport.SetHeight(m.height - headerH - helpH)
+			m.syncTables()
+			return m, nil
 		}
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		return m, vpCmd
+	case tea.MouseMsg:
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		return m, vpCmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.header = m.header.SetWidth(msg.Width)
 		m.table = m.table.SetWidth(msg.Width)
 		m.backoff = m.backoff.SetWidth(msg.Width)
+		m.help.SetWidth(msg.Width)
+		headerH := lipgloss.Height(m.header.View())
+		helpH := lipgloss.Height(m.help.View(m.keys))
+		m.viewport.SetWidth(msg.Width)
+		m.viewport.SetHeight(msg.Height - headerH - helpH)
+		m.syncTables()
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		m.syncTables()
+		return m, cmd
 	case OrchestratorEventMsg:
 		m = m.applyOrchestratorEvent(msg.Event)
 	case tickMsg:
@@ -83,8 +126,8 @@ func (m Model) View() tea.View {
 	rendered := lipgloss.JoinVertical(
 		lipgloss.Left,
 		m.header.View(),
-		m.table.View(),
-		m.backoff.View(),
+		m.viewport.View(),
+		m.help.View(m.keys),
 	)
 	return tea.NewView(rendered)
 }
@@ -272,8 +315,13 @@ func (m Model) refreshDerivedFields(now time.Time) Model {
 }
 
 func (m *Model) syncTables() {
-	m.table = m.table.Update(agentRowsSorted(m.agents))
+	m.table = m.table.Update(agentRowsSorted(m.agents), m.spinner.View())
 	m.backoff = m.backoff.Update(backoffRowsSorted(m.backoffs))
+	content := m.table.View()
+	if bv := m.backoff.View(); bv != "" {
+		content += "\n" + bv
+	}
+	m.viewport.SetContent(content)
 }
 
 func agentRowsSorted(items map[string]AgentRow) []AgentRow {

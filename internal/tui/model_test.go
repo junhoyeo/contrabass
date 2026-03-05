@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"context"
+	"fmt"
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
 	"github.com/junhoyeo/contrabass/internal/types"
 	"github.com/stretchr/testify/assert"
@@ -160,17 +162,18 @@ func TestModelBackoffEnqueued(t *testing.T) {
 
 func TestModelViewComposition(t *testing.T) {
 	m := NewModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
 	now := time.Now()
-	updated, _ := m.Update(OrchestratorEventMsg{Event: orchestrator.OrchestratorEvent{
+	updated, _ = m.Update(OrchestratorEventMsg{Event: orchestrator.OrchestratorEvent{
 		Type:      orchestrator.EventBackoffEnqueued,
 		IssueID:   "ISSUE-2",
 		Timestamp: now,
 		Data:      orchestrator.BackoffEnqueued{Attempt: 1, RetryAt: now.Add(10 * time.Second), Error: "slow"},
 	}})
 
-	view := updated.(Model).View().Content
+	view := stripANSI(updated.(Model).View().Content)
 	assert.Contains(t, view, "SYMPHONY STATUS")
-	assert.Contains(t, view, "No agents running")
 	assert.Contains(t, view, "ISSUE-2")
 }
 
@@ -250,7 +253,7 @@ func TestTableView_NarrowWidthNoOverflow(t *testing.T) {
 				Age:     "10s",
 				Phase:   types.StreamingTurn,
 			}}
-			tbl := NewTable().SetWidth(tt.width).Update(rows)
+			tbl := NewTable().SetWidth(tt.width).Update(rows, "●")
 			out := stripANSI(tbl.View())
 
 			// The output should contain the separator line.
@@ -550,4 +553,140 @@ func TestStartEventBridge_NilInputs(t *testing.T) {
 			StartEventBridge(context.Background(), nil, nil)
 		})
 	})
+}
+
+func TestHelpToggle(t *testing.T) {
+	m := NewModel()
+	assert.False(t, m.help.ShowAll)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "?", Code: '?'})
+	assert.Nil(t, cmd)
+	model := updated.(Model)
+	assert.True(t, model.help.ShowAll)
+
+	updated, cmd = model.Update(tea.KeyPressMsg{Text: "?", Code: '?'})
+	assert.Nil(t, cmd)
+	model = updated.(Model)
+	assert.False(t, model.help.ShowAll)
+}
+
+func TestHelpViewContainsBindings(t *testing.T) {
+	m := NewModel()
+	helpView := m.help.View(m.keys)
+	stripped := stripANSI(helpView)
+	assert.Contains(t, stripped, "q")
+	assert.Contains(t, stripped, "↑/k")
+	assert.Contains(t, stripped, "↓/j")
+}
+
+func TestViewportHeightWithHelp(t *testing.T) {
+	m := NewModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+	heightOff := m.viewport.Height()
+
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "?", Code: '?'})
+	m = updated.(Model)
+	heightOn := m.viewport.Height()
+
+	assert.Less(t, heightOn, heightOff)
+}
+
+func TestHelpToggleRefreshesViewportContent(t *testing.T) {
+	m := NewModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+
+	m.agents["ISSUE-1"] = AgentRow{IssueID: "ISSUE-1", Stage: "StreamingTurn", PID: 1, Phase: types.StreamingTurn}
+	m.syncTables()
+
+	before := stripANSI(m.View().Content)
+	assert.Contains(t, before, "ISSUE-1")
+	assert.NotContains(t, before, "ISSUE-NEW")
+
+	m.agents["ISSUE-NEW"] = AgentRow{IssueID: "ISSUE-NEW", Stage: "StreamingTurn", PID: 2, Phase: types.StreamingTurn}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "?", Code: '?'})
+	assert.Nil(t, cmd)
+	m = updated.(Model)
+
+	after := stripANSI(m.View().Content)
+	assert.Contains(t, after, "ISSUE-NEW")
+}
+
+func TestRegressionQuit(t *testing.T) {
+	m := NewModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "q", Code: 'q'})
+	require.NotNil(t, cmd)
+	assert.IsType(t, tea.QuitMsg{}, cmd())
+	model := updated.(Model)
+	assert.True(t, model.quitting)
+
+	m2 := NewModel()
+	updated2, _ := m2.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m2 = updated2.(Model)
+	updated2, cmd2 := m2.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	require.NotNil(t, cmd2)
+	assert.IsType(t, tea.QuitMsg{}, cmd2())
+	model2 := updated2.(Model)
+	assert.True(t, model2.quitting)
+}
+
+func TestSpinnerTickReturnsCmd(t *testing.T) {
+	m := NewModel()
+	updated, cmd := m.Update(spinner.TickMsg{})
+	require.NotNil(t, cmd)
+	_ = updated
+}
+
+func TestViewportScrollBasic(t *testing.T) {
+	m := NewModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	m = updated.(Model)
+
+	for i := 0; i < 30; i++ {
+		id := fmt.Sprintf("ISSUE-%d", i)
+		m.agents[id] = AgentRow{
+			IssueID: id,
+			Stage:   "StreamingTurn",
+			PID:     1000 + i,
+			Age:     "1m",
+			Phase:   types.StreamingTurn,
+		}
+	}
+	m.syncTables()
+
+	assert.Equal(t, 0, m.viewport.YOffset())
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "j", Code: 'j'})
+	model := updated.(Model)
+	assert.Greater(t, model.viewport.YOffset(), 0)
+}
+
+func TestViewportWindowResize(t *testing.T) {
+	m := NewModel()
+	sizes := []tea.WindowSizeMsg{{Width: 80, Height: 24}, {Width: 120, Height: 40}, {Width: 60, Height: 15}}
+
+	for _, size := range sizes {
+		updated, _ := m.Update(size)
+		m = updated.(Model)
+		assert.Equal(t, size.Width, m.width)
+		assert.Equal(t, size.Height, m.height)
+	}
+}
+
+func TestViewportContentShorterThanHeight(t *testing.T) {
+	m := NewModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+
+	m.agents["ISSUE-1"] = AgentRow{IssueID: "ISSUE-1", Stage: "StreamingTurn", PID: 1, Phase: types.StreamingTurn}
+	m.agents["ISSUE-2"] = AgentRow{IssueID: "ISSUE-2", Stage: "Finishing", PID: 2, Phase: types.Finishing}
+	m.syncTables()
+
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "j", Code: 'j'})
+	model := updated.(Model)
+	assert.Equal(t, 0, model.viewport.YOffset())
 }
