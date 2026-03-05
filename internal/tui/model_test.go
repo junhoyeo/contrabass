@@ -68,8 +68,6 @@ func TestViewportHeightWithHelp(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyPressMsg{Text: "?", Code: '?'})
 	m = updated.(Model)
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	m = updated.(Model)
 	heightOn := m.viewport.Height()
 
 	assert.Less(t, heightOn, heightOff)

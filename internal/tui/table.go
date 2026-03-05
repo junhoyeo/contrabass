@@ -73,6 +73,8 @@ func statusIndicator(phase types.RunPhase, spinnerView string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("●")
 	case types.CanceledByReconciliation:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("●")
+	case types.Succeeded:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("●")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render("●")
 	}

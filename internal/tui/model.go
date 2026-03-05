@@ -77,8 +77,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
+			headerH := lipgloss.Height(m.header.View())
+			helpH := lipgloss.Height(m.help.View(m.keys))
+			m.viewport.SetHeight(m.height - headerH - helpH)
 			return m, nil
 		}
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		return m, vpCmd
+	case tea.MouseMsg:
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		return m, vpCmd
