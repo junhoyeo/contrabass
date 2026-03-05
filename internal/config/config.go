@@ -14,7 +14,7 @@ const (
 	defaultBackoffStrategy   = "exponential"
 	defaultWorkspaceBaseDir  = "."
 	defaultBranchPrefix      = "symphony/"
-	defaultCodexBinaryPath   = "codex"
+	defaultCodexBinaryPath   = "codex app-server"
 	defaultApprovalPolicy    = "auto-edit"
 	defaultSandbox           = "docker"
 )
