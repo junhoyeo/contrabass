@@ -1,0 +1,47 @@
+.rate-limits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.rate-limits__item {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.rate-limits__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.2rem 0;
+}
+
+.rate-limits__row dt {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.rate-limits__row dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.rate-limits__mono {
+  font-family: var(--font-mono);
+}
+
+.rate-limits--empty {
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  padding: 1rem;
+  background: var(--bg-secondary);
+}
+
+.rate-limits__empty-text {
+  color: var(--text-secondary);
+}
