@@ -192,7 +192,7 @@ func (o *Orchestrator) enqueueBackoffFromRunResult(ctx context.Context, issue ty
 
 	o.mu.Lock()
 	o.backoff = upsertBackoff(o.backoff, entry)
-	o.issueCache[issue.ID] = issue
+	o.putIssueCacheLocked(issue.ID, issue)
 	o.mu.Unlock()
 
 	o.emitEvent(OrchestratorEvent{

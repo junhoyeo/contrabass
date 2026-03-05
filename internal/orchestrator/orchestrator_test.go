@@ -1,13 +1,15 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
+	"github.com/charmbracelet/log"
 	"github.com/junhoyeo/symphony-charm/internal/agent"
 	"github.com/junhoyeo/symphony-charm/internal/config"
 	"github.com/junhoyeo/symphony-charm/internal/tracker"
@@ -744,6 +746,109 @@ func TestOrchestrator_ReconcileForceRemovesBrokenDone(t *testing.T) {
 			_, exists := orch.running[tt.issue]
 			orch.mu.Unlock()
 			assert.False(t, exists)
+		})
+	}
+}
+
+func TestOrchestrator_IssueCacheEvictsOldest(t *testing.T) {
+	tests := []struct {
+		name       string
+		prefill    int
+		insertID   string
+		expectSize int
+		expectGone string
+	}{
+		{
+			name:       "evicts_oldest_when_exceeding_max",
+			prefill:    maxIssueCacheSize,
+			insertID:   "ISS-OVERFLOW",
+			expectSize: maxIssueCacheSize,
+			expectGone: "ISS-0",
+		},
+		{
+			name:       "no_eviction_below_limit",
+			prefill:    5,
+			insertID:   "ISS-NEW",
+			expectSize: 6,
+			expectGone: "",
+		},
+		{
+			name:       "update_existing_key_does_not_grow",
+			prefill:    maxIssueCacheSize,
+			insertID:   "ISS-0",
+			expectSize: maxIssueCacheSize,
+			expectGone: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mt := newObservingTracker(nil)
+			mw := workspace.NewMockManager(t.TempDir())
+			mr := &agent.MockRunner{}
+			orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+
+			// Prefill the cache with tt.prefill entries
+			orch.mu.Lock()
+			for i := 0; i < tt.prefill; i++ {
+				id := fmt.Sprintf("ISS-%d", i)
+				orch.putIssueCacheLocked(id, types.Issue{ID: id, Title: fmt.Sprintf("Issue %d", i)})
+			}
+			orch.mu.Unlock()
+
+			// Insert the new entry
+			orch.mu.Lock()
+			orch.putIssueCacheLocked(tt.insertID, types.Issue{ID: tt.insertID, Title: "Overflow"})
+			cacheSize := len(orch.issueCache)
+			orderLen := len(orch.issueCacheOrder)
+			_, newExists := orch.issueCache[tt.insertID]
+			var goneExists bool
+			if tt.expectGone != "" {
+				_, goneExists = orch.issueCache[tt.expectGone]
+			}
+			orch.mu.Unlock()
+
+			assert.Equal(t, tt.expectSize, cacheSize, "cache size")
+			assert.Equal(t, tt.expectSize, orderLen, "order slice size")
+			assert.True(t, newExists, "new entry should be in cache")
+			if tt.expectGone != "" {
+				assert.False(t, goneExists, "oldest entry should be evicted")
+			}
+		})
+	}
+}
+
+func TestOrchestrator_EmitEventDropLogged(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{name: "dropped_event_is_logged"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := log.NewWithOptions(&buf, log.Options{Level: log.InfoLevel})
+
+			mt := newObservingTracker(nil)
+			mw := workspace.NewMockManager(t.TempDir())
+			mr := &agent.MockRunner{}
+			orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, logger)
+
+			// Fill the events channel to capacity
+			for i := 0; i < defaultEventBufferSize; i++ {
+				orch.events <- OrchestratorEvent{Type: EventStatusUpdate}
+			}
+
+			// This event should be dropped and logged
+			orch.emitEvent(OrchestratorEvent{
+				Type:    EventAgentStarted,
+				IssueID: "ISS-DROP",
+			})
+
+			logOutput := buf.String()
+			assert.Contains(t, logOutput, "event_dropped")
+			assert.Contains(t, logOutput, "ISS-DROP")
 		})
 	}
 }
