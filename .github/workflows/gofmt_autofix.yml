@@ -36,12 +36,12 @@ jobs:
         id: autofix
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         run: |
-          GO_FILES=$(git ls-files "*.go")
+          GO_FILES=$(git ls-files | grep '\.go$')
           if [ -z "$GO_FILES" ]; then
             exit 0
           fi
 
-          gofmt -w $GO_FILES
+          echo "$GO_FILES" | xargs gofmt -w
 
           if ! git diff --quiet; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
@@ -59,12 +59,12 @@ jobs:
 
       - name: Check formatting (strict)
         run: |
-          GO_FILES=$(git ls-files "*.go")
+          GO_FILES=$(git ls-files | grep '\.go$')
           if [ -z "$GO_FILES" ]; then
             exit 0
           fi
 
-          UNFORMATTED=$(gofmt -l $GO_FILES)
+          UNFORMATTED=$(echo "$GO_FILES" | xargs gofmt -l)
           if [ -n "$UNFORMATTED" ]; then
             echo "Unformatted files detected:"
             printf "%s\n" "$UNFORMATTED"
