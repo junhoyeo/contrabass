@@ -545,63 +545,65 @@ func TestFailedAgentBackoff(t *testing.T) {
 }
 
 func TestOrchestrator_FollowUpTurnContinuation(t *testing.T) {
-	issue := types.Issue{
-		ID:         "ISS-FOLLOW-1",
-		Identifier: "CORE-422",
-		Title:      "Follow up",
-		State:      types.Unclaimed,
-	}
-	mt := newObservingTracker([]types.Issue{issue})
-	mw := workspace.NewMockManager(t.TempDir())
-	mr := &agent.MockRunner{
-		HandshakeEvents: []types.AgentEvent{{Type: "turn/started"}},
-		Events:          []types.AgentEvent{{Type: "turn/failed", Data: map[string]interface{}{"message": "follow-up still active"}}},
-		Delay:           10 * time.Millisecond,
-	}
-
-	workflowCfg := testConfig()
-	workflowCfg.MaxRetryBackoffMsRaw = 5_000
-	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: workflowCfg}, nil)
-	events := newEventCollector(orch.Events())
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	done := startOrchestrator(ctx, orch)
-
-	require.Eventually(t, func() bool {
-		entries := backoffSnapshot(orch)
-		if len(entries) != 1 {
-			return false
+	t.Run("core_test.exs", func(t *testing.T) {
+		issue := types.Issue{
+			ID:         "ISS-FOLLOW-1",
+			Identifier: "CORE-422",
+			Title:      "Follow up",
+			State:      types.Unclaimed,
 		}
-		state, ok := mt.State(issue.ID)
-		if !ok || state != types.RetryQueued {
-			return false
+		mt := newObservingTracker([]types.Issue{issue})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{
+			HandshakeEvents: []types.AgentEvent{{Type: "turn/started"}},
+			Events:          []types.AgentEvent{{Type: "turn/failed", Data: map[string]interface{}{"message": "follow-up still active"}}},
+			Delay:           10 * time.Millisecond,
 		}
-		return entries[0].IssueID == issue.ID && entries[0].Attempt == 2
-	}, 2*time.Second, 10*time.Millisecond)
 
-	events.mu.Lock()
-	deferred := append([]OrchestratorEvent(nil), events.events...)
-	events.mu.Unlock()
+		workflowCfg := testConfig()
+		workflowCfg.MaxRetryBackoffMsRaw = 5_000
+		orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: workflowCfg}, nil)
+		events := newEventCollector(orch.Events())
 
-	var backoffPayload BackoffEnqueued
-	foundBackoff := false
-	for _, event := range deferred {
-		if event.Type != EventBackoffEnqueued || event.IssueID != issue.ID {
-			continue
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		require.Eventually(t, func() bool {
+			entries := backoffSnapshot(orch)
+			if len(entries) != 1 {
+				return false
+			}
+			state, ok := mt.State(issue.ID)
+			if !ok || state != types.RetryQueued {
+				return false
+			}
+			return entries[0].IssueID == issue.ID && entries[0].Attempt == 2
+		}, 2*time.Second, 10*time.Millisecond)
+
+		events.mu.Lock()
+		deferred := append([]OrchestratorEvent(nil), events.events...)
+		events.mu.Unlock()
+
+		var backoffPayload BackoffEnqueued
+		foundBackoff := false
+		for _, event := range deferred {
+			if event.Type != EventBackoffEnqueued || event.IssueID != issue.ID {
+				continue
+			}
+			payload, ok := event.Data.(BackoffEnqueued)
+			require.True(t, ok)
+			backoffPayload = payload
+			foundBackoff = true
+			break
 		}
-		payload, ok := event.Data.(BackoffEnqueued)
-		require.True(t, ok)
-		backoffPayload = payload
-		foundBackoff = true
-		break
-	}
-	require.True(t, foundBackoff)
-	assert.Equal(t, 2, backoffPayload.Attempt)
-	assert.Equal(t, "follow-up still active", backoffPayload.Error)
+		require.True(t, foundBackoff)
+		assert.Equal(t, 2, backoffPayload.Attempt)
+		assert.Equal(t, "follow-up still active", backoffPayload.Error)
 
-	cancel()
-	require.NoError(t, <-done)
+		cancel()
+		require.NoError(t, <-done)
+	})
 }
 
 func TestContextCancellation(t *testing.T) {

@@ -327,6 +327,58 @@ func TestManager_CreateContextCancelled(t *testing.T) {
 	assert.True(t, errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "git"))
 }
 
+func TestManager_CleanupContinuesWhenBeforeRemoveHookTimesOut(t *testing.T) {
+	t.Parallel()
+
+	t.Run("workspace_and_config_test.exs", func(t *testing.T) {
+		repoDir := initGitRepo(t)
+		mgr := NewManager(repoDir)
+		ctx := context.Background()
+
+		gitPath, err := exec.LookPath("git")
+		require.NoError(t, err)
+
+		issueFail := "ISSUE-HOOK-TIMEOUT"
+		issueOK := "ISSUE-OK"
+		failWorkspace := filepath.Join(repoDir, "workspaces", issueFail)
+		okWorkspace := filepath.Join(repoDir, "workspaces", issueOK)
+
+		require.NoError(t, os.MkdirAll(failWorkspace, 0o755))
+		require.NoError(t, os.MkdirAll(okWorkspace, 0o755))
+
+		mgr.mu.Lock()
+		mgr.active[issueFail] = failWorkspace
+		mgr.active[issueOK] = okWorkspace
+		mgr.mu.Unlock()
+
+		fakeGitPath := filepath.Join(t.TempDir(), "fake-git.sh")
+		script := "#!/bin/sh\n" +
+			"if [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"remove\" ]; then\n" +
+			"  case \"$3\" in\n" +
+			"    *ISSUE-HOOK-TIMEOUT)\n" +
+			"      echo \"before_remove hook timed out\" >&2\n" +
+			"      exit 1\n" +
+			"      ;;\n" +
+			"    *)\n" +
+			"      rm -rf \"$3\"\n" +
+			"      exit 0\n" +
+			"      ;;\n" +
+			"  esac\n" +
+			"fi\n" +
+			"exec \"" + gitPath + "\" \"$@\"\n"
+		require.NoError(t, os.WriteFile(fakeGitPath, []byte(script), 0o755))
+
+		mgr.gitBinary = fakeGitPath
+
+		err = mgr.CleanupAll(ctx)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "before_remove hook timed out")
+
+		assert.True(t, mgr.Exists(issueFail), "failing cleanup should keep active workspace")
+		assert.False(t, mgr.Exists(issueOK), "cleanup should continue to succeeding workspace")
+	})
+}
+
 func initGitRepo(t *testing.T) string {
 	t.Helper()
 

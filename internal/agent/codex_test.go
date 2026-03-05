@@ -258,65 +258,71 @@ func TestCodexRunner_MalformedJSONEmitsProtocolError(t *testing.T) {
 }
 
 func TestCodexRunner_TimestampedUpdatesForwardedToRecipient(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "timestamped-updates"), 2*time.Second)
+	t.Run("core_test.exs", func(t *testing.T) {
+		runner := NewCodexRunner(helperCommand(t, "timestamped-updates"), 2*time.Second)
 
-	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-35", Identifier: "CORE-422", Title: "Continuation update"}, t.TempDir(), "hello")
-	require.NoError(t, err)
+		proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-35", Identifier: "CORE-422", Title: "Continuation update"}, t.TempDir(), "hello")
+		require.NoError(t, err)
 
-	events := collectEvents(t, proc.Events, proc.Done, 2, 5*time.Second)
-	require.Len(t, events, 2)
+		events := collectEvents(t, proc.Events, proc.Done, 2, 5*time.Second)
+		require.Len(t, events, 2)
 
-	assert.Equal(t, "turn/update", events[0].Type)
-	assert.False(t, events[0].Timestamp.IsZero())
-	assert.Equal(t, "recipient-1", events[0].Data["recipient"])
-	assert.Equal(t, "2026-03-05T12:34:56Z", events[0].Data["timestamp"])
-	assert.Equal(t, "follow-up turn still active", events[0].Data["message"])
+		assert.Equal(t, "turn/update", events[0].Type)
+		assert.False(t, events[0].Timestamp.IsZero())
+		assert.Equal(t, "recipient-1", events[0].Data["recipient"])
+		assert.Equal(t, "2026-03-05T12:34:56Z", events[0].Data["timestamp"])
+		assert.Equal(t, "follow-up turn still active", events[0].Data["message"])
 
-	assert.Equal(t, "turn/completed", events[1].Type)
-	assertDoneEventually(t, proc.Done)
+		assert.Equal(t, "turn/completed", events[1].Type)
+		assertDoneEventually(t, proc.Done)
+	})
 }
 
 func TestCodexRunner_ApprovalPolicyNeverAutoApproves(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "approval-never"), 2*time.Second)
+	t.Run("app_server_test.exs", func(t *testing.T) {
+		runner := NewCodexRunner(helperCommand(t, "approval-never"), 2*time.Second)
 
-	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-35", Identifier: "APP-321", Title: "Approval policy never"}, t.TempDir(), "hello")
-	require.NoError(t, err)
+		proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-35", Identifier: "APP-321", Title: "Approval policy never"}, t.TempDir(), "hello")
+		require.NoError(t, err)
 
-	events := collectEvents(t, proc.Events, proc.Done, 3, 5*time.Second)
-	require.Len(t, events, 3)
+		events := collectEvents(t, proc.Events, proc.Done, 3, 5*time.Second)
+		require.Len(t, events, 3)
 
-	assert.Equal(t, "item/commandExecution/requestApproval", events[0].Type)
-	assert.Equal(t, "helper/sequence", events[1].Type)
-	methodsRaw, ok := events[1].Data["methods"].([]interface{})
-	require.True(t, ok)
+		assert.Equal(t, "item/commandExecution/requestApproval", events[0].Type)
+		assert.Equal(t, "helper/sequence", events[1].Type)
+		methodsRaw, ok := events[1].Data["methods"].([]interface{})
+		require.True(t, ok)
 
-	methods := make([]string, 0, len(methodsRaw))
-	for _, method := range methodsRaw {
-		methods = append(methods, fmt.Sprint(method))
-	}
+		methods := make([]string, 0, len(methodsRaw))
+		for _, method := range methodsRaw {
+			methods = append(methods, fmt.Sprint(method))
+		}
 
-	assert.Equal(t, []string{"initialize", "initialized", "thread/start", "turn/start"}, methods)
-	assert.Equal(t, "turn/completed", events[2].Type)
-	assertDoneEventually(t, proc.Done)
+		assert.Equal(t, []string{"initialize", "initialized", "thread/start", "turn/start"}, methods)
+		assert.Equal(t, "turn/completed", events[2].Type)
+		assertDoneEventually(t, proc.Done)
+	})
 }
 
 func TestCodexRunner_StderrForwardedToLogger(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "stderr-crash"), 2*time.Second)
-	var logs bytes.Buffer
-	runner.logger = log.NewWithOptions(&logs, log.Options{Level: log.DebugLevel})
+	t.Run("app_server_test.exs", func(t *testing.T) {
+		runner := NewCodexRunner(helperCommand(t, "stderr-crash"), 2*time.Second)
+		var logs bytes.Buffer
+		runner.logger = log.NewWithOptions(&logs, log.Options{Level: log.DebugLevel})
 
-	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-35", Identifier: "APP-500", Title: "stderr forwarding"}, t.TempDir(), "hello")
-	require.NoError(t, err)
+		proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-35", Identifier: "APP-500", Title: "stderr forwarding"}, t.TempDir(), "hello")
+		require.NoError(t, err)
 
-	select {
-	case doneErr := <-proc.Done:
-		require.Error(t, doneErr)
-		assert.Contains(t, doneErr.Error(), "stderr: codex stderr side output")
-	case <-time.After(3 * time.Second):
-		t.Fatal("expected process crash to be reported")
-	}
+		select {
+		case doneErr := <-proc.Done:
+			require.Error(t, doneErr)
+			assert.Contains(t, doneErr.Error(), "stderr: codex stderr side output")
+		case <-time.After(3 * time.Second):
+			t.Fatal("expected process crash to be reported")
+		}
 
-	assert.NotNil(t, runner.logger)
+		assert.NotNil(t, runner.logger)
+	})
 }
 
 func TestCodexRunner_EmptyBinaryPath(t *testing.T) {
