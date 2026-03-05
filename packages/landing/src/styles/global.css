@@ -43,6 +43,7 @@ h2 {
 pre {
   background: #161b22;
   padding: 1rem;
+  border: 1px solid #30363d;
   border-radius: 8px;
   overflow-x: auto;
 }
@@ -51,6 +52,8 @@ code {
   background: #161b22;
   padding: 0.2em 0.4em;
   border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.9em;
 }
 
 blockquote p code {
@@ -92,6 +95,12 @@ img {
   display: block;
   max-width: 100%;
   margin: 0 auto;
+}
+
+td img {
+  display: inline;
+  margin: 0;
+  vertical-align: middle;
 }
 
 blockquote {
