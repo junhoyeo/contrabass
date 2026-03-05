@@ -912,18 +912,8 @@ func TestOrchestrator_ReconcileAssignsTimedOut(t *testing.T) {
 	orch.mu.Unlock()
 
 	orch.reconcileRunning(context.Background(), cfg)
-
-	orch.mu.Lock()
-	e, ok := orch.running["ISS-TIMEOUT-1"]
-	var phase types.RunPhase
-	var errMsg string
-	if ok {
-		phase = e.attempt.Phase
-		errMsg = e.attempt.Error
-	}
-	orch.mu.Unlock()
-
-	require.True(t, ok, "entry should still be in running map (stopRun handles removal)")
-	assert.Equal(t, types.TimedOut, phase)
-	assert.Equal(t, "run timed out", errMsg)
+	// reconcileRunning calls stopRun which removes the entry from the map,
+	// but the entry pointer was mutated in-place before removal.
+	assert.Equal(t, types.TimedOut, entry.attempt.Phase)
+	assert.Equal(t, "run timed out", entry.attempt.Error)
 }
