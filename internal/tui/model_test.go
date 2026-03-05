@@ -1,15 +1,15 @@
 package tui
 
 import (
-	"context"
-	"strings"
-	"testing"
-	"time"
 	tea "charm.land/bubbletea/v2"
+	"context"
 	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
 	"github.com/junhoyeo/symphony-charm/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"strings"
+	"testing"
+	"time"
 )
 
 func TestModelInit(t *testing.T) {
@@ -200,7 +200,7 @@ func TestModel_UnknownEventTypeHandled(t *testing.T) {
 			msg: OrchestratorEventMsg{Event: orchestrator.OrchestratorEvent{
 				Type:    orchestrator.EventAgentStarted,
 				IssueID: "ISSUE-Y",
-				Data:    "not-an-AgentStarted",
+				Data:    orchestrator.IssueReleased{Attempt: 1},
 			}},
 			want: 0,
 		},
@@ -361,4 +361,3 @@ func TestStartEventBridge_NilEventsNoOp(t *testing.T) {
 	// No panic should occur
 	assert.True(t, true)
 }
-

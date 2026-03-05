@@ -36,8 +36,13 @@ func (t EventType) String() string {
 type OrchestratorEvent struct {
 	Type      EventType
 	IssueID   string
-	Data      interface{}
+	Data      EventPayload
 	Timestamp time.Time
+}
+
+// EventPayload is a marker interface for typed orchestrator event payloads.
+type EventPayload interface {
+	eventPayload()
 }
 
 type StatusUpdate struct {
@@ -47,12 +52,16 @@ type StatusUpdate struct {
 	ProjectURL   string
 }
 
+func (StatusUpdate) eventPayload() {}
+
 type AgentStarted struct {
 	Attempt   int
 	PID       int
 	SessionID string
 	Workspace string
 }
+
+func (AgentStarted) eventPayload() {}
 
 type AgentFinished struct {
 	Attempt   int
@@ -62,12 +71,18 @@ type AgentFinished struct {
 	Error     string
 }
 
+func (AgentFinished) eventPayload() {}
+
 type BackoffEnqueued struct {
 	Attempt int
 	RetryAt time.Time
 	Error   string
 }
 
+func (BackoffEnqueued) eventPayload() {}
+
 type IssueReleased struct {
 	Attempt int
 }
+
+func (IssueReleased) eventPayload() {}
