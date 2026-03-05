@@ -27,7 +27,8 @@ var (
 	runTUIOrchestrator = func(ctx context.Context, orch *orchestrator.Orchestrator) error {
 		return orch.Run(ctx)
 	}
-	runTUIProgram = func(p *tea.Program) (tea.Model, error) {
+	runGracefulShutdown = orchestrator.GracefulShutdown
+	runTUIProgram       = func(p *tea.Program) (tea.Model, error) {
 		return p.Run()
 	}
 	startTUIEventBridge   = tui.StartEventBridge
@@ -109,9 +110,8 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) erro
 	}
 	defer watcher.Stop()
 
-	// 4. Signal-aware context — cancelled on SIGINT/SIGTERM or when run returns
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// 5. Start watching config file for changes
 	go func() {
@@ -142,6 +142,10 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) erro
 
 	// 9. Create orchestrator
 	orch := orchestrator.NewOrchestrator(linearClient, workspaceMgr, agentRunner, watcher, logger)
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signalChan)
+	startSignalShutdownHook(ctx, signalChan, cancel, orch, logger)
 
 	// 10. Select run mode
 	if dryRun {
@@ -185,6 +189,25 @@ func runHeadless(ctx context.Context, orch *orchestrator.Orchestrator, logger *l
 	}()
 
 	return orch.Run(ctx)
+}
+
+func startSignalShutdownHook(
+	ctx context.Context,
+	signalChan <-chan os.Signal,
+	cancel context.CancelFunc,
+	orch *orchestrator.Orchestrator,
+	logger *log.Logger,
+) {
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-signalChan:
+			if shutdownErr := runGracefulShutdown(cancel, orch, orchestrator.DefaultShutdownConfig(), logger); shutdownErr != nil {
+				logger.Error("graceful shutdown failed", "err", shutdownErr)
+			}
+		}
+	}()
 }
 
 // runTUI starts the orchestrator and renders the Charm TUI.

@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -136,6 +139,52 @@ func TestRunTUITimeoutReturnsMeaningfulError(t *testing.T) {
 	assert.ErrorIs(t, err, tuiErr)
 }
 
+func TestRunHandlesSignalWithGracefulShutdownOnce(t *testing.T) {
+	restoreRunTUITestHooks(t)
+
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+
+	signalChan := make(chan os.Signal, 1)
+	shutdownCalled := make(chan struct{}, 1)
+	var shutdownCalls int
+	var shutdownMu sync.Mutex
+	runGracefulShutdown = func(
+		cancel context.CancelFunc,
+		orch *orchestrator.Orchestrator,
+		cfg orchestrator.ShutdownConfig,
+		logger *log.Logger,
+	) error {
+		shutdownMu.Lock()
+		shutdownCalls++
+		shutdownMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		select {
+		case shutdownCalled <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	orch := orchestrator.NewOrchestrator(nil, nil, nil, nil, nil)
+	startSignalShutdownHook(ctx, signalChan, cancelCtx, orch, nil)
+
+	signalChan <- os.Interrupt
+	require.Eventually(t, func() bool {
+		select {
+		case <-shutdownCalled:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	shutdownMu.Lock()
+	defer shutdownMu.Unlock()
+	require.Equal(t, 1, shutdownCalls)
+}
+
 func TestRunDryRun_TimeoutNoEvents(t *testing.T) {
 	// This test validates that runDryRun handles context deadline exceeded gracefully.
 	// The timeout guard in runDryRun ensures that if the orchestrator blocks indefinitely
@@ -152,12 +201,14 @@ func restoreRunTUITestHooks(t *testing.T) {
 	t.Helper()
 
 	originalRunTUIOrchestrator := runTUIOrchestrator
+	originalRunGracefulShutdown := runGracefulShutdown
 	originalRunTUIProgram := runTUIProgram
 	originalStartTUIEventBridge := startTUIEventBridge
 	originalRunTUIShutdownTimeout := runTUIShutdownTimeout
 
 	t.Cleanup(func() {
 		runTUIOrchestrator = originalRunTUIOrchestrator
+		runGracefulShutdown = originalRunGracefulShutdown
 		runTUIProgram = originalRunTUIProgram
 		startTUIEventBridge = originalStartTUIEventBridge
 		runTUIShutdownTimeout = originalRunTUIShutdownTimeout

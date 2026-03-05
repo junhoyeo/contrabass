@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -231,6 +232,48 @@ type trackingRunner struct {
 	maxActive int
 	starts    int
 	stops     int
+}
+
+type countingWorkspace struct {
+	base *workspace.MockManager
+
+	mu              sync.Mutex
+	cleanupCalls    int
+	cleanupAllCalls int
+}
+
+func newCountingWorkspace(baseDir string) *countingWorkspace {
+	return &countingWorkspace{base: workspace.NewMockManager(baseDir)}
+}
+
+func (w *countingWorkspace) Create(ctx context.Context, issue types.Issue) (string, error) {
+	return w.base.Create(ctx, issue)
+}
+
+func (w *countingWorkspace) Cleanup(ctx context.Context, issueID string) error {
+	w.mu.Lock()
+	w.cleanupCalls++
+	w.mu.Unlock()
+	return w.base.Cleanup(ctx, issueID)
+}
+
+func (w *countingWorkspace) CleanupAll(ctx context.Context) error {
+	w.mu.Lock()
+	w.cleanupAllCalls++
+	w.mu.Unlock()
+	return w.base.CleanupAll(ctx)
+}
+
+func (w *countingWorkspace) CleanupCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.cleanupCalls
+}
+
+func (w *countingWorkspace) CleanupAllCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.cleanupAllCalls
 }
 
 var _ agent.AgentRunner = (*trackingRunner)(nil)
@@ -524,6 +567,55 @@ func TestContextCancellation(t *testing.T) {
 
 	require.GreaterOrEqual(t, runner.StopCount(), 1)
 	require.Empty(t, mw.List())
+}
+
+func TestOrchestrator_GracefulShutdownOnce(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{name: "concurrent_triggers_execute_shutdown_once"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issueID := "ISS-SHUT-1"
+			mt := newObservingTracker([]types.Issue{{ID: issueID, Title: "Shutdown", State: types.Running}})
+			ws := newCountingWorkspace(t.TempDir())
+			runner := &stopCountingRunner{}
+			orch := NewOrchestrator(mt, ws, runner, &staticConfig{cfg: testConfig()}, nil)
+
+			var cancelCalls atomic.Int32
+			orch.mu.Lock()
+			orch.running[issueID] = &runEntry{
+				issue:   types.Issue{ID: issueID, State: types.Running},
+				attempt: types.RunAttempt{IssueID: issueID, Attempt: 1},
+				process: &agent.AgentProcess{PID: 101, SessionID: "shutdown-once"},
+				cancel: func() {
+					cancelCalls.Add(1)
+				},
+			}
+			orch.stats.Running = len(orch.running)
+			orch.mu.Unlock()
+
+			ctx := context.Background()
+			var wg sync.WaitGroup
+			for i := 0; i < 16; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					_ = orch.gracefulShutdown(ctx)
+				}()
+			}
+			wg.Wait()
+
+			require.Equal(t, 1, int(cancelCalls.Load()))
+			require.Equal(t, 1, runner.StopCount())
+			require.Equal(t, 1, ws.CleanupCount())
+			require.Equal(t, 1, ws.CleanupAllCount())
+			require.Equal(t, 1, mt.ReleaseCount(issueID))
+			require.Equal(t, 0, orch.RunningCount())
+		})
+	}
 }
 
 func TestEmptyPoll(t *testing.T) {

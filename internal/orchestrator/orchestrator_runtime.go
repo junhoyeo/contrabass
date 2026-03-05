@@ -464,30 +464,41 @@ func (o *Orchestrator) isManagedIssue(issueID string) bool {
 	return false
 }
 
-func (o *Orchestrator) shutdown(ctx context.Context) {
-	o.mu.Lock()
-	runs := make([]*runEntry, 0, len(o.running))
-	for _, run := range o.running {
-		runs = append(runs, run)
-	}
-	clear(o.running)
-	o.stats.Running = 0
-	o.mu.Unlock()
+func (o *Orchestrator) gracefulShutdown(ctx context.Context) error {
+	var cleanupAllErr error
 
-	for _, run := range runs {
-		if run == nil {
-			continue
+	o.shutdownOnce.Do(func() {
+		o.mu.Lock()
+		runs := make([]*runEntry, 0, len(o.running))
+		for _, run := range o.running {
+			runs = append(runs, run)
 		}
-		run.cancel()
-		_ = o.agent.Stop(run.process)
-		_ = o.workspace.Cleanup(ctx, run.issue.ID)
-		_ = o.tracker.UpdateIssueState(ctx, run.issue.ID, types.Released)
-		_ = o.tracker.ReleaseIssue(ctx, run.issue.ID)
-	}
+		clear(o.running)
+		o.stats.Running = 0
+		o.mu.Unlock()
 
-	if err := o.workspace.CleanupAll(ctx); err != nil {
-		logging.LogOrchestratorEvent(o.logger, "cleanup_all_failed", "err", err)
-	}
+		for _, run := range runs {
+			if run == nil {
+				continue
+			}
+			if run.cancel != nil {
+				run.cancel()
+			}
+			_ = o.agent.Stop(run.process)
+			_ = o.workspace.Cleanup(ctx, run.issue.ID)
+			_ = o.tracker.UpdateIssueState(ctx, run.issue.ID, types.Released)
+			_ = o.tracker.ReleaseIssue(ctx, run.issue.ID)
+		}
+
+		if err := o.workspace.CleanupAll(ctx); err != nil {
+			cleanupAllErr = err
+			logging.LogOrchestratorEvent(o.logger, "cleanup_all_failed", "err", err)
+		}
+
+		logging.LogOrchestratorEvent(o.logger, "graceful_shutdown_completed", "released_runs", len(runs))
+	})
+
+	return cleanupAllErr
 }
 
 func (o *Orchestrator) currentConfig() *config.WorkflowConfig {

@@ -53,11 +53,12 @@ type Orchestrator struct {
 	config    ConfigProvider
 	logger    *log.Logger
 
-	mu      sync.Mutex
-	running map[string]*runEntry
-	backoff []types.BackoffEntry
-	events  chan OrchestratorEvent
-	stats   Stats
+	mu           sync.Mutex
+	shutdownOnce sync.Once
+	running      map[string]*runEntry
+	backoff      []types.BackoffEntry
+	events       chan OrchestratorEvent
+	stats        Stats
 
 	issueCache map[string]types.Issue
 }
@@ -129,7 +130,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			o.shutdown(shutdownCtx)
+			_ = o.gracefulShutdown(shutdownCtx)
 			cancel()
 			_ = supervisor.Wait()
 			return nil
