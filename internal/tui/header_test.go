@@ -157,11 +157,11 @@ func TestMosaicImageDimensions(t *testing.T) {
 	rendered := renderMosaicImage(img)
 	lines := strings.Split(rendered, "\n")
 
-	assert.Equal(t, logoBoxRows, len(lines), "mosaic row count should be %d", logoBoxRows)
+	assert.Equal(t, mosaicLogoRows, len(lines), "mosaic row count should be %d", mosaicLogoRows)
 	for i, line := range lines {
 		clean := stripANSI(line)
 		cols := len([]rune(clean))
-		assert.Equal(t, logoBoxCols, cols, "mosaic col count on line %d", i)
+		assert.Equal(t, mosaicLogoCols, cols, "mosaic col count on line %d", i)
 	}
 }
 

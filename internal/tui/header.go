@@ -23,6 +23,10 @@ import (
 const logoBoxCols = 20
 const logoBoxRows = 10
 
+// mosaicLogoCols/mosaicLogoRows are 1.2x enlarged for richer mosaic detail in TMUX.
+const mosaicLogoCols = 24
+const mosaicLogoRows = 12
+
 var (
 	headerLogoOnce sync.Once
 	headerLogoArt  string // mosaic fallback art (text-safe, passes through cell renderer)
@@ -298,18 +302,15 @@ func renderMosaicLogo() string {
 		return ""
 	}
 	img = cropToContent(img)
+	img = compositeOnBackground(img)
 	return renderMosaicImage(img)
 }
 
 func renderMosaicImage(img image.Image) string {
-	pixW := logoBoxCols * 2 // 40 pixel cols for mosaic (2 px per terminal col)
-	pixH := logoBoxRows * 2 // 20 pixel rows for mosaic (2 px per terminal row)
-	// Terminal cells are ~2:1 (height:width), so the visual display area
-	// is approximately square. Cover a visual square first, then squash
-	// to the actual pixel grid to compensate for cell aspect ratio.
+	pixW := mosaicLogoCols * 2
+	pixH := mosaicLogoRows * 2
 	img = resizeToCover(img, pixW, pixW)
 	img = resizeImage(img, pixW, pixH)
-	img = compositeOnBackground(img)
 	m := mosaic.New().Symbol(mosaic.Half)
 	return strings.TrimRight(m.Render(img), "\n")
 }
