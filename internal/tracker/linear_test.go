@@ -661,3 +661,154 @@ func TestNormalizeIssue_PopulatesExpandedFields(t *testing.T) {
 	assert.True(t, issue2.CreatedAt.IsZero())
 	assert.True(t, issue2.UpdatedAt.IsZero())
 }
+
+
+// --- UpdateIssueState Edge Case Tests ---
+
+func TestUpdateIssueState_IssueNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issue": nil,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	err := client.UpdateIssueState(context.Background(), "nonexistent-id", types.Claimed)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "issue nonexistent-id not found")
+}
+
+func TestUpdateIssueState_TeamNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issue": map[string]interface{}{
+					"team": nil,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	err := client.UpdateIssueState(context.Background(), "issue-42", types.Claimed)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "team not found for issue issue-42")
+}
+
+func TestUpdateIssueState_EmptyStateID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issue": map[string]interface{}{
+					"team": map[string]interface{}{
+						"states": map[string]interface{}{
+							"nodes": []interface{}{
+								map[string]interface{}{"id": ""},
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	err := client.UpdateIssueState(context.Background(), "issue-42", types.Claimed)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty state ID for issue issue-42")
+}
+
+func TestUpdateIssueState_UnmappedState(t *testing.T) {
+	client := NewLinearClient(LinearConfig{
+		APIKey:      "test-key",
+		ProjectSlug: "test-project",
+	})
+
+	err := client.UpdateIssueState(context.Background(), "issue-42", types.IssueState(999))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no Linear state mapping")
+}
+
+// --- parseRetryAfter Edge Case Tests ---
+
+func TestParseRetryAfter_NonNumeric(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  time.Duration
+	}{
+		{"empty string", "", 0},
+		{"non-numeric text", "not-a-number", 0},
+		{"float value", "3.14", 0},
+		{"negative number", "-5", -5 * time.Second},
+		{"valid seconds", "60", 60 * time.Second},
+		{"HTTP date format", "Wed, 21 Oct 2025 07:28:00 GMT", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseRetryAfter(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// --- FetchIssues Missing Data Field Test ---
+
+func TestFetchIssues_MissingDataField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"something_else": "unexpected",
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	_, err := client.FetchIssues(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing or invalid data field")
+}
+
+// --- truncateBody Tests ---
+
+func TestTruncateBody_LongBody(t *testing.T) {
+	tests := []struct {
+		name      string
+		bodyLen   int
+		wantTrunc bool
+	}{
+		{"short body stays intact", 100, false},
+		{"exact limit stays intact", 1000, false},
+		{"over limit gets truncated", 1001, true},
+		{"much longer gets truncated", 5000, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := make([]byte, tt.bodyLen)
+			for i := range body {
+				body[i] = 'x'
+			}
+
+			result := truncateBody(body)
+
+			if tt.wantTrunc {
+				assert.Len(t, result, 1000+len("...<truncated>"))
+				assert.Contains(t, result, "...<truncated>")
+			} else {
+				assert.Len(t, result, tt.bodyLen)
+				assert.NotContains(t, result, "...<truncated>")
+			}
+		})
+	}
+}
