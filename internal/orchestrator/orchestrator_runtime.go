@@ -413,12 +413,16 @@ func (o *Orchestrator) emitStatusUpdate() {
 	stats := o.stats
 	backoffQueue := len(o.backoff)
 	o.mu.Unlock()
-
+	cfg := o.currentConfig()
+	modelName, _ := cfg.Model()
+	projectURL, _ := cfg.ProjectURL()
 	o.emitEvent(OrchestratorEvent{
 		Type: EventStatusUpdate,
 		Data: StatusUpdate{
 			Stats:        stats,
 			BackoffQueue: backoffQueue,
+			ModelName:    modelName,
+			ProjectURL:   projectURL,
 		},
 	})
 }

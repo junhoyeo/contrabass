@@ -261,3 +261,78 @@ func TestTableView_NarrowWidthNoOverflow(t *testing.T) {
 		})
 	}
 }
+
+// TestModel_StatusUpdatePopulatesHeaderModelProject verifies that ModelName
+// and ProjectURL from StatusUpdate events are mapped to HeaderData.
+func TestModel_StatusUpdatePopulatesHeaderModelProject(t *testing.T) {
+	tests := []struct {
+		name       string
+		modelName  string
+		projectURL string
+	}{
+		{
+			name:       "both fields populated",
+			modelName:  "gpt-4o",
+			projectURL: "https://github.com/example/project",
+		},
+		{
+			name:       "only model name",
+			modelName:  "claude-3",
+			projectURL: "",
+		},
+		{
+			name:       "only project URL",
+			modelName:  "",
+			projectURL: "https://github.com/example/other",
+		},
+		{
+			name:       "empty fields preserve existing values",
+			modelName:  "",
+			projectURL: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel()
+			// Pre-set values to verify empty strings don't overwrite.
+			m.stats.ModelName = "existing-model"
+			m.stats.ProjectURL = "https://existing.url"
+
+			event := orchestrator.OrchestratorEvent{
+				Type:      orchestrator.EventStatusUpdate,
+				Timestamp: time.Now(),
+				Data: orchestrator.StatusUpdate{
+					Stats:      orchestrator.Stats{Running: 1, MaxAgents: 4},
+					ModelName:  tt.modelName,
+					ProjectURL: tt.projectURL,
+				},
+			}
+
+			updated, _ := m.Update(OrchestratorEventMsg{Event: event})
+			model := updated.(Model)
+
+			if tt.modelName != "" {
+				assert.Equal(t, tt.modelName, model.stats.ModelName)
+			} else {
+				assert.Equal(t, "existing-model", model.stats.ModelName,
+					"empty ModelName should not overwrite existing value")
+			}
+
+			if tt.projectURL != "" {
+				assert.Equal(t, tt.projectURL, model.stats.ProjectURL)
+			} else {
+				assert.Equal(t, "https://existing.url", model.stats.ProjectURL,
+					"empty ProjectURL should not overwrite existing value")
+			}
+
+			// Verify header data is synced.
+			assert.Equal(t, model.stats.ModelName, model.header.data.ModelName)
+			assert.Equal(t, model.stats.ProjectURL, model.header.data.ProjectURL)
+
+			// Verify other stats still mapped correctly.
+			assert.Equal(t, 1, model.stats.RunningAgents)
+			assert.Equal(t, 4, model.stats.MaxAgents)
+		})
+	}
+}

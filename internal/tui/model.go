@@ -129,6 +129,12 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 		m.stats.TokensIn = update.Stats.TotalTokensIn
 		m.stats.TokensOut = update.Stats.TotalTokensOut
 		m.stats.TokensTotal = update.Stats.TotalTokensIn + update.Stats.TotalTokensOut
+		if update.ModelName != "" {
+			m.stats.ModelName = update.ModelName
+		}
+		if update.ProjectURL != "" {
+			m.stats.ProjectURL = update.ProjectURL
+		}
 		m = m.refreshDerivedFields(event.Timestamp)
 	case orchestrator.EventAgentStarted:
 		started, ok := event.Data.(orchestrator.AgentStarted)

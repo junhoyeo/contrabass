@@ -43,6 +43,8 @@ type OrchestratorEvent struct {
 type StatusUpdate struct {
 	Stats        Stats
 	BackoffQueue int
+	ModelName    string
+	ProjectURL   string
 }
 
 type AgentStarted struct {
