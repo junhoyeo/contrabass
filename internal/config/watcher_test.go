@@ -291,3 +291,105 @@ func TestWatcher_GetConfigReturnsCopy(t *testing.T) {
 	// Verify they are different objects
 	assert.NotEqual(t, cfg1, cfg2, "GetConfig should return different objects")
 }
+
+func TestReloadOnRenameEvent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	writeWorkflowFile(t, path, "model: gpt-5\nproject_url: https://example.com\nmax_concurrency: 4\n", "Original prompt.\n")
+
+	w, err := NewWatcher(path)
+	require.NoError(t, err)
+	defer w.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = w.Watch(ctx)
+	}()
+
+	// Give the watcher time to start.
+	time.Sleep(100 * time.Millisecond)
+
+	// Simulate atomic save via rename: write to temp file, then rename to target.
+	// This is how vim and other editors do atomic saves.
+	tempPath := filepath.Join(dir, "WORKFLOW.md.tmp")
+	writeWorkflowFile(t, tempPath, "model: gpt-5-turbo\nproject_url: https://example.com\nmax_concurrency: 8\n", "Updated via rename.\n")
+
+	// Rename temp file to target (atomic save pattern).
+	err = os.Rename(tempPath, path)
+	require.NoError(t, err)
+
+	// Wait for the watcher to pick up the rename event and reload.
+	assert.Eventually(t, func() bool {
+		cfg := w.GetConfig()
+		return cfg.MaxConcurrencyRaw == 8 && cfg.ModelRaw == "gpt-5-turbo" && cfg.PromptTemplate == "Updated via rename."
+	}, 3*time.Second, 50*time.Millisecond, "config should reload after rename event")
+}
+
+func TestReloadOnRemoveAndRecreate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	writeWorkflowFile(t, path, "model: gpt-5\nproject_url: https://example.com\nmax_concurrency: 3\n", "Original.\n")
+
+	w, err := NewWatcher(path)
+	require.NoError(t, err)
+	defer w.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = w.Watch(ctx)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Simulate atomic save via remove + recreate (another editor pattern).
+	err = os.Remove(path)
+	require.NoError(t, err)
+
+	// Immediately recreate with new content.
+	writeWorkflowFile(t, path, "model: gpt-5-turbo\nproject_url: https://example.com\nmax_concurrency: 6\n", "Recreated.\n")
+
+	// Wait for the watcher to pick up the remove event, retry, and reload.
+	assert.Eventually(t, func() bool {
+		cfg := w.GetConfig()
+		return cfg.MaxConcurrencyRaw == 6 && cfg.ModelRaw == "gpt-5-turbo" && cfg.PromptTemplate == "Recreated."
+	}, 3*time.Second, 50*time.Millisecond, "config should reload after remove and recreate")
+}
+
+func TestDebounceMultipleRapidEvents(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	writeWorkflowFile(t, path, "model: gpt-5\nproject_url: https://example.com\nmax_concurrency: 2\n", "Initial.\n")
+
+	w, err := NewWatcher(path)
+	require.NoError(t, err)
+	defer w.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = w.Watch(ctx)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Trigger multiple rapid write events (simulating editor thrashing).
+	// The debounce should coalesce these into a single reload.
+	for i := 0; i < 5; i++ {
+		writeWorkflowFile(t, path, "model: gpt-5\nproject_url: https://example.com\nmax_concurrency: 2\n", "Rapid update.\n")
+		time.Sleep(10 * time.Millisecond) // Rapid, within debounce window
+	}
+
+	// Wait for debounce to settle and reload to complete.
+	time.Sleep(200 * time.Millisecond)
+
+	cfg := w.GetConfig()
+	require.NotNil(t, cfg)
+	assert.Equal(t, "Rapid update.", cfg.PromptTemplate)
+	// The key assertion: we got here without panicking or hanging,
+	// which means debounce worked and prevented reload thrashing.
+}

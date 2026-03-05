@@ -2,8 +2,10 @@ package config
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/fsnotify/fsnotify"
@@ -18,6 +20,10 @@ type Watcher struct {
 	config   *WorkflowConfig
 	fsw      *fsnotify.Watcher
 	stopOnce sync.Once
+
+	// debounce timer and mutex for coalescing rapid events
+	debounceTimer *time.Timer
+	debounceMu    sync.Mutex
 }
 
 // NewWatcher creates a Watcher for the given file path. It performs an initial
@@ -83,8 +89,9 @@ func (w *Watcher) Watch(ctx context.Context) error {
 	}
 }
 
-// handleEvent processes an fsnotify event. Only write and create events for
-// the watched file trigger a reload.
+// handleEvent processes an fsnotify event. Reload is triggered on Write, Create,
+// Rename, and Remove events for the watched file. Events are debounced to prevent
+// rapid reload thrashing from atomic-save patterns (e.g., vim's rename-based saves).
 func (w *Watcher) handleEvent(event fsnotify.Event) {
 	// Normalise both paths to compare reliably across platforms.
 	eventPath, err1 := filepath.Abs(event.Name)
@@ -93,17 +100,45 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 		return
 	}
 
-	if !event.Has(fsnotify.Write) && !event.Has(fsnotify.Create) {
+	// Trigger reload on Write, Create, Rename, or Remove events.
+	if !event.Has(fsnotify.Write) && !event.Has(fsnotify.Create) &&
+		!event.Has(fsnotify.Rename) && !event.Has(fsnotify.Remove) {
 		return
 	}
 
-	w.reload()
+	w.scheduleReload()
 }
 
-// reload re-parses the workflow file. On success the config is atomically
-// swapped; on failure the previous config is retained and a warning is logged.
-func (w *Watcher) reload() {
+// scheduleReload debounces reload requests. Multiple rapid events (e.g., from
+// atomic-save patterns) are coalesced into a single reload after 100ms of quiet.
+// For Remove events, a retry window is added to account for editor replace timing.
+func (w *Watcher) scheduleReload() {
+	w.debounceMu.Lock()
+	defer w.debounceMu.Unlock()
+
+	// Cancel any pending reload.
+	if w.debounceTimer != nil {
+		w.debounceTimer.Stop()
+	}
+
+	// Schedule a new reload after debounce period.
+	w.debounceTimer = time.AfterFunc(100*time.Millisecond, func() {
+		w.reloadWithRetry()
+	})
+}
+
+// reloadWithRetry attempts to reload the config, with a retry window for Remove
+// events. If the file is missing (Remove event), it retries for up to 50ms to
+// account for editor replace timing (delete + recreate).
+func (w *Watcher) reloadWithRetry() {
 	cfg, err := ParseWorkflow(w.filePath)
+
+	// If file is missing, retry briefly to handle atomic-save patterns.
+	if err != nil && !fileExists(w.filePath) {
+		time.Sleep(50 * time.Millisecond)
+		cfg, err = ParseWorkflow(w.filePath)
+	}
+
 	if err != nil {
 		log.Warn("failed to reload workflow config, keeping previous", "path", w.filePath, "err", err)
 		return
@@ -114,6 +149,12 @@ func (w *Watcher) reload() {
 	w.mu.Unlock()
 
 	log.Info("workflow config reloaded", "path", w.filePath)
+}
+
+// fileExists checks if a file exists without returning an error.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // Stop closes the underlying fsnotify watcher. It is safe to call multiple
