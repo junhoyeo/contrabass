@@ -179,7 +179,7 @@ func (o *Orchestrator) enqueueBackoffFromRunResult(ctx context.Context, issue ty
 		})
 	}
 
-	delayMs := CalculateBackoff(attempt.Attempt, o.currentConfig().MaxRetryBackoffMs())
+	delayMs := CalculateBackoff(issue.ID, attempt.Attempt, o.currentConfig().MaxRetryBackoffMs())
 	retryAt := time.Now().Add(time.Duration(delayMs) * time.Millisecond)
 	nextAttempt := attempt.Attempt + 1
 
@@ -236,7 +236,7 @@ func (o *Orchestrator) releaseClaimAndQueueContinuation(ctx context.Context, iss
 }
 
 func (o *Orchestrator) enqueueContinuation(issueID string, attempt int, message string) {
-	delayMs := CalculateBackoff(0, o.currentConfig().MaxRetryBackoffMs())
+	delayMs := CalculateBackoff(issueID, 0, o.currentConfig().MaxRetryBackoffMs())
 	retryAt := time.Now().Add(time.Duration(delayMs) * time.Millisecond)
 
 	entry := types.BackoffEntry{

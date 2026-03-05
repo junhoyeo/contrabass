@@ -136,20 +136,21 @@ func TestTransitionRunPhase_AllTransitions(t *testing.T) {
 func TestCalculateBackoff(t *testing.T) {
 	tests := []struct {
 		name    string
+		issueID string
 		attempt int
 		maxMs   int
 	}{
-		{name: "continuation_retry_uses_fixed_delay", attempt: 0, maxMs: 300_000},
-		{name: "attempt_1_uses_base_backoff_with_jitter", attempt: 1, maxMs: 300_000},
-		{name: "attempt_2_uses_exponential_backoff_with_jitter", attempt: 2, maxMs: 300_000},
-		{name: "attempt_3_uses_exponential_backoff_with_jitter", attempt: 3, maxMs: 300_000},
-		{name: "backoff_caps_at_max", attempt: 10, maxMs: 300_000},
+		{name: "continuation_retry_uses_fixed_delay", issueID: "issue-1", attempt: 0, maxMs: 300_000},
+		{name: "attempt_1_uses_base_backoff_with_jitter", issueID: "issue-1", attempt: 1, maxMs: 300_000},
+		{name: "attempt_2_uses_exponential_backoff_with_jitter", issueID: "issue-1", attempt: 2, maxMs: 300_000},
+		{name: "attempt_3_uses_exponential_backoff_with_jitter", issueID: "issue-1", attempt: 3, maxMs: 300_000},
+		{name: "backoff_caps_at_max", issueID: "issue-1", attempt: 10, maxMs: 300_000},
 	}
 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			delayMs := CalculateBackoff(tt.attempt, tt.maxMs)
+			delayMs := CalculateBackoff(tt.issueID, tt.attempt, tt.maxMs)
 
 			if tt.attempt <= 0 {
 				assert.Equal(t, 1_000, delayMs)
@@ -166,9 +167,40 @@ func TestCalculateBackoff(t *testing.T) {
 
 			assert.GreaterOrEqual(t, delayMs, minDelay)
 			assert.LessOrEqual(t, delayMs, maxDelay)
-			assert.Equal(t, delayMs, CalculateBackoff(tt.attempt, tt.maxMs), "backoff should be deterministic")
+			assert.Equal(t, delayMs, CalculateBackoff(tt.issueID, tt.attempt, tt.maxMs), "backoff should be deterministic")
 		})
 	}
+}
+
+func TestCalculateBackoff_ContinuationRespectsMax(t *testing.T) {
+	tests := []struct {
+		name    string
+		issueID string
+		attempt int
+		maxMs   int
+	}{
+		{name: "continuation_capped_when_max_below_fixed_delay", issueID: "issue-continuation", attempt: 0, maxMs: 500},
+		{name: "negative_attempt_treated_as_continuation_and_capped", issueID: "issue-continuation", attempt: -1, maxMs: 500},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			delayMs := CalculateBackoff(tt.issueID, tt.attempt, tt.maxMs)
+			assert.LessOrEqual(t, delayMs, tt.maxMs)
+			assert.Equal(t, 500, delayMs)
+		})
+	}
+}
+
+func TestCalculateBackoff_DifferentIssueIDsDifferentJitter(t *testing.T) {
+	attempt := 2
+	maxMs := 300_000
+
+	delayA := CalculateBackoff("issue-a", attempt, maxMs)
+	delayB := CalculateBackoff("issue-b", attempt, maxMs)
+
+	assert.NotEqual(t, delayA, delayB)
 }
 
 func TestCheckBoundedConcurrency(t *testing.T) {
