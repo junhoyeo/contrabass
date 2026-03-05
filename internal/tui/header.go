@@ -1,6 +1,6 @@
 package tui
-
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
 	"charm.land/lipgloss/v2"
+	"github.com/BourgeoisBear/rasterm"
 	"github.com/charmbracelet/x/mosaic"
 )
 
@@ -90,6 +90,40 @@ func (h Header) View() string {
 	return box.Render(content)
 }
 
+// termImageMode represents the detected terminal image capability.
+type termImageMode int
+
+const (
+	imageModeMosaic termImageMode = iota // fallback: half-block characters
+	imageModeKitty                       // Kitty graphics protocol
+	imageModeIterm                       // iTerm2/WezTerm inline images
+)
+
+var (
+	detectedImageMode     termImageMode
+	detectedImageModeOnce sync.Once
+)
+
+// detectImageMode checks terminal capabilities once at startup.
+func detectImageMode() termImageMode {
+	detectedImageModeOnce.Do(func() {
+		// Skip native image protocols inside tmux (they don't pass through)
+		if os.Getenv("TMUX") != "" || rasterm.IsTmuxScreen() {
+			detectedImageMode = imageModeMosaic
+			return
+		}
+		if rasterm.IsKittyCapable() {
+			detectedImageMode = imageModeKitty
+			return
+		}
+		if rasterm.IsItermCapable() {
+			detectedImageMode = imageModeIterm
+			return
+		}
+		detectedImageMode = imageModeMosaic
+	})
+	return detectedImageMode
+}
 func renderHeaderLogo() string {
 	if os.Getenv("TMUX") != "" {
 		return ""
@@ -106,17 +140,70 @@ func renderHeaderLogo() string {
 		}
 		// Crop to content bounds (remove transparent padding)
 		img = cropToContent(img)
-		// Manually resize to 2:1 pixel ratio for visually square output.
-		// Mosaic Half: 2px × 2px → 1 terminal char (1 col × 1 row).
-		// Terminal chars are ~2x taller than wide, so a 2:1 pixel W:H
-		// produces a visually square image.
-		// 120×60 px → 60 cols × 30 rows → visually square.
-		img = resizeImage(img, 120, 60)
-		img = compositeOnBackground(img)
-		m := mosaic.New().Symbol(mosaic.Half)
-		headerLogoArt = strings.TrimRight(m.Render(img), "\n")
+		mode := detectImageMode()
+		switch mode {
+		case imageModeKitty:
+			headerLogoArt = renderKittyImage(img)
+		case imageModeIterm:
+			headerLogoArt = renderItermImage(img)
+		default:
+			headerLogoArt = renderMosaicImage(img)
+		}
 	})
 	return headerLogoArt
+}
+
+// renderKittyImage renders the image using the Kitty graphics protocol.
+// The image is sent as base64-encoded PNG with display size specified in terminal cells.
+func renderKittyImage(img image.Image) string {
+	// Resize for quality — send a reasonably sized image to the terminal.
+	// The terminal will handle the final display scaling.
+	// Use a square image since the terminal respects aspect ratio.
+	img = resizeImage(img, 200, 200)
+	img = compositeOnBackground(img)
+
+	var buf bytes.Buffer
+	opts := rasterm.KittyImgOpts{
+		DstCols: 30, // display width in terminal columns
+		DstRows: 15, // display height in terminal rows
+	}
+	if err := rasterm.KittyWriteImage(&buf, img, opts); err != nil {
+		// Fall back to mosaic on error
+		return renderMosaicImage(img)
+	}
+	return buf.String()
+}
+
+// renderItermImage renders the image using the iTerm2/WezTerm inline image protocol.
+func renderItermImage(img image.Image) string {
+	// Resize for quality — send a reasonably sized image.
+	img = resizeImage(img, 200, 200)
+	img = compositeOnBackground(img)
+
+	var buf bytes.Buffer
+	opts := rasterm.ItermImgOpts{
+		DisplayInline: true,
+		Width:         "30",   // 30 character cells wide
+		Height:        "auto", // auto height preserving aspect ratio
+	}
+	if err := rasterm.ItermWriteImageWithOptions(&buf, img, opts); err != nil {
+		// Fall back to mosaic on error
+		return renderMosaicImage(img)
+	}
+	return buf.String()
+}
+
+// renderMosaicImage renders the image using mosaic half-block characters (fallback).
+func renderMosaicImage(img image.Image) string {
+	// Manually resize to 2:1 pixel ratio for visually square output.
+	// Mosaic Half: 2px × 2px → 1 terminal char (1 col × 1 row).
+	// Terminal chars are ~2x taller than wide, so a 2:1 pixel W:H
+	// produces a visually square image.
+	// 120×60 px → 60 cols × 30 rows → visually square.
+	img = resizeImage(img, 120, 60)
+	img = compositeOnBackground(img)
+	m := mosaic.New().Symbol(mosaic.Half)
+	return strings.TrimRight(m.Render(img), "\n")
 }
 
 // resizeImage scales the image to exactly targetW x targetH pixels using bilinear interpolation.

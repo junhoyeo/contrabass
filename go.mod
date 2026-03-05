@@ -6,7 +6,9 @@ require (
 	charm.land/bubbles/v2 v2.0.0
 	charm.land/bubbletea/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.0
+	github.com/BourgeoisBear/rasterm v1.1.2
 	github.com/charmbracelet/log v0.4.2
+	github.com/charmbracelet/x/mosaic v0.0.0-20260304213900-0e78e2954235
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/osteele/liquid v1.8.1
 	github.com/spf13/cobra v1.10.1
@@ -22,7 +24,6 @@ require (
 	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
-	github.com/charmbracelet/x/mosaic v0.0.0-20260304213900-0e78e2954235 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
@@ -46,6 +47,7 @@ require (
 	golang.org/x/image v0.36.0 // indirect
 	golang.org/x/mod v0.29.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/term v0.18.0 // indirect
 	golang.org/x/tools v0.38.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
