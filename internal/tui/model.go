@@ -32,8 +32,7 @@ type Model struct {
 	height   int
 	quitting bool
 
-
-	imageDirty bool
+	imageDirty     bool
 	agents         map[string]AgentRow
 	agentStartTime map[string]time.Time
 	backoffs       map[string]BackoffRow
@@ -111,6 +110,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.SetHeight(msg.Height - headerH - helpH)
 		m.syncTables()
 		m.imageDirty = true
+		// Immediately re-emit native image on resize instead of waiting for next tick
+		if rawSeq := buildNativeImageRaw(); rawSeq != "" {
+			return m, tea.Raw(rawSeq)
+		}
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
