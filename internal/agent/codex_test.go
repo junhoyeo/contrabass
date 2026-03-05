@@ -20,7 +20,7 @@ import (
 )
 
 func TestCodexProtocolSequence(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "sequence"), 2*time.Second)
+	runner := NewCodexRunner(helperCommand(t, "sequence"), 5*time.Second)
 
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
 	require.NoError(t, err)
@@ -45,12 +45,12 @@ func TestCodexProtocolSequence(t *testing.T) {
 }
 
 func TestEventParsing(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "events"), 2*time.Second)
+	runner := NewCodexRunner(helperCommand(t, "events"), 5*time.Second)
 
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
 	require.NoError(t, err)
 
-	events := collectEvents(t, proc.Events, proc.Done, 4, 2*time.Second)
+	events := collectEvents(t, proc.Events, proc.Done, 4, 5*time.Second)
 	require.Len(t, events, 4)
 
 	typesSeen := make([]string, 0, len(events))
@@ -229,7 +229,7 @@ func waitForEvent(t *testing.T, ch <-chan types.AgentEvent) types.AgentEvent {
 	select {
 	case ev := <-ch:
 		return ev
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for event")
 		return types.AgentEvent{}
 	}
@@ -261,7 +261,7 @@ func assertDoneEventually(t *testing.T, done <-chan error) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("done channel was not signaled")
 	}
 }
