@@ -113,18 +113,6 @@ type BackoffEntry struct {
 	Error   string    `json:"error"`
 }
 
-// Config represents the parsed WORKFLOW.md configuration.
-type Config struct {
-	MaxConcurrency    int    `yaml:"max_concurrency"`
-	PollIntervalMs    int    `yaml:"poll_interval_ms"`
-	MaxRetryBackoffMs int    `yaml:"max_retry_backoff_ms"`
-	Model             string `yaml:"model"`
-	ProjectURL        string `yaml:"project_url"`
-	AgentTimeoutMs    int    `yaml:"agent_timeout_ms"`
-	StallTimeoutMs    int    `yaml:"stall_timeout_ms"`
-	PromptTemplate    string `yaml:"-"`
-}
-
 // AgentEvent represents an event emitted by the coding agent.
 type AgentEvent struct {
 	Type      string                 `json:"type"`

@@ -186,7 +186,7 @@ func TestCheckBoundedConcurrency(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, CheckBoundedConcurrency(tt.running, tt.max))
+			assert.Equal(t, tt.want, checkBoundedConcurrency(tt.running, tt.max))
 		})
 	}
 }

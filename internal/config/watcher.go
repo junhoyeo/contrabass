@@ -17,7 +17,6 @@ type Watcher struct {
 	mu       sync.RWMutex
 	config   *WorkflowConfig
 	fsw      *fsnotify.Watcher
-	stopped  bool
 	stopOnce sync.Once
 }
 
@@ -122,9 +121,6 @@ func (w *Watcher) reload() {
 func (w *Watcher) Stop() error {
 	var err error
 	w.stopOnce.Do(func() {
-		w.mu.Lock()
-		w.stopped = true
-		w.mu.Unlock()
 		err = w.fsw.Close()
 	})
 	return err

@@ -313,7 +313,7 @@ func (o *Orchestrator) detectStalledRuns(ctx context.Context, cfg *config.Workfl
 		if entry == nil || !isActiveRunPhase(entry.attempt.Phase) {
 			continue
 		}
-		if DetectStall(entry.lastEventAt, cfg.StallTimeoutMs()) {
+		if detectStall(entry.lastEventAt, cfg.StallTimeoutMs()) {
 			if err := TransitionRunPhase(entry.attempt.Phase, types.Stalled); err == nil {
 				entry.attempt.Phase = types.Stalled
 			}
@@ -400,7 +400,7 @@ func (o *Orchestrator) canDispatch(maxAgents int) bool {
 	running := len(o.running)
 	o.mu.Unlock()
 
-	return CheckBoundedConcurrency(running, maxAgents)
+	return checkBoundedConcurrency(running, maxAgents)
 }
 
 func (o *Orchestrator) isManagedIssue(issueID string) bool {
