@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -113,6 +114,58 @@ func TestMalformedJSON(t *testing.T) {
 		assert.NoError(t, doneErr)
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected process to exit normally")
+	}
+}
+
+func TestCodexRunner_ConcurrentStartStop(t *testing.T) {
+	runner := NewCodexRunner(helperCommand(t, "stderr-race"), 500*time.Millisecond)
+	workspace := t.TempDir()
+
+	const attempts = 100
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, attempts)
+
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+
+			proc, err := runner.Start(context.Background(), types.Issue{ID: fmt.Sprintf("MT-%d", idx), Title: "Concurrent start-stop"}, workspace, "hello")
+			if err != nil {
+				errCh <- fmt.Errorf("start failed: %w", err)
+				return
+			}
+
+			stopDone := make(chan error, 1)
+			go func() {
+				stopDone <- runner.Stop(proc)
+			}()
+
+			select {
+			case err := <-stopDone:
+				if err != nil {
+					errCh <- fmt.Errorf("stop failed: %w", err)
+					return
+				}
+			case <-time.After(2 * time.Second):
+				errCh <- errors.New("stop timed out")
+				return
+			}
+
+			select {
+			case <-proc.Done:
+			case <-time.After(2 * time.Second):
+				errCh <- errors.New("done timed out")
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		require.NoError(t, err)
 	}
 }
 
@@ -233,6 +286,26 @@ func TestCodexHelperProcess(t *testing.T) {
 				require.NoError(t, writer.Flush())
 				writeJSON(t, writer, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
 				return
+			case "stderr-race":
+				sigCh := make(chan os.Signal, 1)
+				signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+				defer signal.Stop(sigCh)
+
+				stopWriter := make(chan struct{})
+				go func() {
+					for {
+						select {
+						case <-stopWriter:
+							return
+						default:
+							_, _ = fmt.Fprintln(os.Stderr, "helper stderr line")
+						}
+					}
+				}()
+
+				<-sigCh
+				close(stopWriter)
+				os.Exit(3)
 			default:
 				os.Exit(9)
 			}
