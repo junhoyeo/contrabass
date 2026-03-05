@@ -118,6 +118,54 @@ func TestHandleSSEReturns500WhenFlusherUnsupported(t *testing.T) {
 	assert.Contains(t, w.body.String(), "streaming unsupported")
 }
 
+func TestShouldSkipStaleEvent(t *testing.T) {
+	now := time.Now().UTC()
+
+	tests := []struct {
+		name     string
+		snapshot time.Time
+		event    time.Time
+		expected bool
+	}{
+		{
+			name:     "skip when event is before snapshot",
+			snapshot: now,
+			event:    now.Add(-time.Second),
+			expected: true,
+		},
+		{
+			name:     "skip when event equals snapshot",
+			snapshot: now,
+			event:    now,
+			expected: true,
+		},
+		{
+			name:     "do not skip when event is after snapshot",
+			snapshot: now,
+			event:    now.Add(time.Second),
+			expected: false,
+		},
+		{
+			name:     "do not skip when snapshot timestamp is zero",
+			snapshot: time.Time{},
+			event:    now,
+			expected: false,
+		},
+		{
+			name:     "do not skip when event timestamp is zero",
+			snapshot: now,
+			event:    time.Time{},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, shouldSkipStaleEvent(tt.snapshot, tt.event))
+		})
+	}
+}
+
 func newSSETestServer(t *testing.T, provider fakeSnapshotProvider) (*Server, chan orchestrator.OrchestratorEvent, *hub.Hub, func()) {
 	t.Helper()
 

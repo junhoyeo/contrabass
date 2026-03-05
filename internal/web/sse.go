@@ -30,6 +30,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	id := int64(1)
 	snapshot := s.snapshotProvider.Snapshot()
+	snapshotGeneratedAt := snapshot.GeneratedAt
 	if err := writeSSEEvent(w, "snapshot", snapshot, id); err != nil {
 		return
 	}
@@ -53,6 +54,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			if shouldSkipStaleEvent(snapshotGeneratedAt, event.Timestamp) {
+				continue
+			}
+
 			if err := writeSSEEvent(w, event.Type.String(), event, id); err != nil {
 				return
 			}
@@ -60,6 +65,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			id++
 		}
 	}
+}
+
+func shouldSkipStaleEvent(snapshotGeneratedAt, eventTimestamp time.Time) bool {
+	if snapshotGeneratedAt.IsZero() || eventTimestamp.IsZero() {
+		return false
+	}
+
+	return !eventTimestamp.After(snapshotGeneratedAt)
 }
 
 func writeSSEEvent(w http.ResponseWriter, eventType string, payload interface{}, id int64) error {

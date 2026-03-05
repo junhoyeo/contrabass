@@ -147,9 +147,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, _ *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, message string) {
