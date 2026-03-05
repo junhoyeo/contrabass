@@ -14,6 +14,7 @@ type KeyMap struct {
 	PageDown key.Binding
 	Home     key.Binding
 	End      key.Binding
+	Help     key.Binding
 }
 
 // NewKeyMap returns a new KeyMap with default bindings.
@@ -47,19 +48,23 @@ func NewKeyMap() KeyMap {
 			key.WithKeys("end"),
 			key.WithHelp("end", "bottom"),
 		),
+		Help: key.NewBinding(
+			key.WithKeys("?"),
+			key.WithHelp("?", "toggle help"),
+		),
 	}
 }
 
 // ShortHelp returns the short help for the keymap.
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Help, k.Quit}
 }
 
 // FullHelp returns the full help for the keymap.
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.PageUp, k.PageDown, k.Home, k.End},
-		{k.Quit},
+		{k.Help, k.Quit},
 	}
 }
 
