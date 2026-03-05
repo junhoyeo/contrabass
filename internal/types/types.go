@@ -83,26 +83,34 @@ func (p RunPhase) String() string {
 // Issue represents a normalized issue record from the tracker.
 type Issue struct {
 	ID          string                 `json:"id"`
+	Identifier  string                 `json:"identifier"`
 	Title       string                 `json:"title"`
 	Description string                 `json:"description"`
 	State       IssueState             `json:"state"`
+	Priority    int                    `json:"priority"`
 	Labels      []string               `json:"labels"`
 	URL         string                 `json:"url"`
+	BranchName  string                 `json:"branch_name"`
+	BlockedBy   []string               `json:"blocked_by"`
+	CreatedAt   time.Time              `json:"created_at"`
+	UpdatedAt   time.Time              `json:"updated_at"`
 	TrackerMeta map[string]interface{} `json:"tracker_meta"`
 }
 
 // RunAttempt represents one execution attempt for one issue.
 type RunAttempt struct {
-	IssueID   string    `json:"issue_id"`
-	Phase     RunPhase  `json:"phase"`
-	Attempt   int       `json:"attempt"`
-	PID       int       `json:"pid"`
-	StartTime time.Time `json:"start_time"`
-	TokensIn  int64     `json:"tokens_in"`
-	TokensOut int64     `json:"tokens_out"`
-	SessionID string    `json:"session_id"`
-	LastEvent string    `json:"last_event"`
-	Error     string    `json:"error"`
+	IssueID         string    `json:"issue_id"`
+	IssueIdentifier string    `json:"issue_identifier"`
+	Phase           RunPhase  `json:"phase"`
+	Attempt         int       `json:"attempt"`
+	PID             int       `json:"pid"`
+	StartTime       time.Time `json:"start_time"`
+	TokensIn        int64     `json:"tokens_in"`
+	TokensOut       int64     `json:"tokens_out"`
+	SessionID       string    `json:"session_id"`
+	LastEvent       string    `json:"last_event"`
+	Error           string    `json:"error"`
+	WorkspacePath   string    `json:"workspace_path"`
 }
 
 // BackoffEntry represents a scheduled retry state for an issue.

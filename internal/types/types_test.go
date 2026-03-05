@@ -1,9 +1,11 @@
 package types
 
 import (
+	"encoding/json"
 	"testing"
-
+	"time"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIssueStateString(t *testing.T) {
@@ -88,4 +90,74 @@ func TestIssueStateCount(t *testing.T) {
 func TestRunPhaseCount(t *testing.T) {
 	// Verify that RunPhase has exactly 11 values
 	assert.Equal(t, 11, int(CanceledByReconciliation)+1, "RunPhase should have exactly 11 values")
+}
+
+func TestIssue_NewFields(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	issue := Issue{
+		ID:          "issue-abc",
+		Identifier:  "ENG-123",
+		Title:       "Fix critical bug",
+		Description: "Something is broken",
+		State:       Unclaimed,
+		Priority:    2,
+		Labels:      []string{"bug"},
+		URL:         "https://linear.app/team/ENG-123",
+		BranchName:  "symphony/eng-123",
+		BlockedBy:   []string{"issue-def", "issue-ghi"},
+		CreatedAt:   now,
+		UpdatedAt:   now.Add(time.Hour),
+		TrackerMeta: map[string]interface{}{"linear_state": "Todo"},
+	}
+
+	// Verify fields
+	assert.Equal(t, "ENG-123", issue.Identifier)
+	assert.Equal(t, 2, issue.Priority)
+	assert.Equal(t, "symphony/eng-123", issue.BranchName)
+	assert.Equal(t, []string{"issue-def", "issue-ghi"}, issue.BlockedBy)
+	assert.Equal(t, now, issue.CreatedAt)
+	assert.Equal(t, now.Add(time.Hour), issue.UpdatedAt)
+
+	// Verify JSON serialization round-trip
+	data, err := json.Marshal(issue)
+	require.NoError(t, err)
+
+	var decoded Issue
+	require.NoError(t, json.Unmarshal(data, &decoded))
+
+	assert.Equal(t, issue.Identifier, decoded.Identifier)
+	assert.Equal(t, issue.Priority, decoded.Priority)
+	assert.Equal(t, issue.BranchName, decoded.BranchName)
+	assert.Equal(t, issue.BlockedBy, decoded.BlockedBy)
+	assert.True(t, issue.CreatedAt.Equal(decoded.CreatedAt))
+	assert.True(t, issue.UpdatedAt.Equal(decoded.UpdatedAt))
+}
+
+func TestRunAttempt_NewFields(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	run := RunAttempt{
+		IssueID:         "issue-abc",
+		IssueIdentifier: "ENG-123",
+		Phase:           PreparingWorkspace,
+		Attempt:         1,
+		PID:             1234,
+		StartTime:       now,
+		WorkspacePath:   "/tmp/workspaces/issue-abc",
+	}
+
+	// Verify fields
+	assert.Equal(t, "ENG-123", run.IssueIdentifier)
+	assert.Equal(t, "/tmp/workspaces/issue-abc", run.WorkspacePath)
+
+	// Verify JSON serialization round-trip
+	data, err := json.Marshal(run)
+	require.NoError(t, err)
+
+	var decoded RunAttempt
+	require.NoError(t, json.Unmarshal(data, &decoded))
+
+	assert.Equal(t, run.IssueIdentifier, decoded.IssueIdentifier)
+	assert.Equal(t, run.WorkspacePath, decoded.WorkspacePath)
+	assert.Equal(t, run.IssueID, decoded.IssueID)
+	assert.Equal(t, run.Attempt, decoded.Attempt)
 }

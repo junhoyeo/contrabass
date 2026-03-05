@@ -277,10 +277,11 @@ func (o *Orchestrator) dispatchIssue(
 	}
 
 	runAttempt := types.RunAttempt{
-		IssueID:   issue.ID,
-		Attempt:   attemptNumber,
-		Phase:     types.PreparingWorkspace,
-		StartTime: time.Now(),
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		Attempt:         attemptNumber,
+		Phase:           types.PreparingWorkspace,
+		StartTime:       time.Now(),
 	}
 
 	workspacePath, err := o.workspace.Create(ctx, issue)
@@ -289,6 +290,7 @@ func (o *Orchestrator) dispatchIssue(
 		o.releaseClaimAndQueueContinuation(ctx, issue.ID, runAttempt.Attempt, err)
 		return
 	}
+	runAttempt.WorkspacePath = workspacePath
 
 	if phaseErr := TransitionRunPhase(runAttempt.Phase, types.BuildingPrompt); phaseErr == nil {
 		runAttempt.Phase = types.BuildingPrompt

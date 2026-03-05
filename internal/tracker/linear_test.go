@@ -597,3 +597,67 @@ func TestMockTracker_Errors(t *testing.T) {
 	err = mock.PostComment(ctx, "1", "text")
 	assert.Error(t, err)
 }
+
+// --- Normalization Tests ---
+
+func TestNormalizeIssue_PopulatesExpandedFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issues": map[string]interface{}{
+					"nodes": []interface{}{
+						map[string]interface{}{
+							"id":          "issue-1",
+							"identifier":  "ENG-42",
+							"title":       "Implement feature",
+							"description": "Need this feature",
+							"priority":    float64(2),
+							"state":       map[string]interface{}{"name": "Todo"},
+							"url":         "https://linear.app/team/ENG-42",
+							"labels":      map[string]interface{}{"nodes": []interface{}{}},
+							"createdAt":   "2025-01-15T10:30:00Z",
+							"updatedAt":   "2025-01-16T14:00:00Z",
+						},
+						map[string]interface{}{
+							"id":    "issue-2",
+							"title": "No identifier issue",
+							"state": map[string]interface{}{"name": "Backlog"},
+						},
+					},
+					"pageInfo": map[string]interface{}{"hasNextPage": false},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	issues, err := client.FetchIssues(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, issues, 2)
+
+	// First issue: full fields populated
+	issue1 := issues[0]
+	assert.Equal(t, "issue-1", issue1.ID)
+	assert.Equal(t, "ENG-42", issue1.Identifier)
+	assert.Equal(t, 2, issue1.Priority)
+	assert.Equal(t, "symphony/eng-42", issue1.BranchName)
+	assert.Equal(t, []string{}, issue1.BlockedBy)
+	assert.Equal(t, types.Unclaimed, issue1.State)
+
+	expectedCreated := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+	expectedUpdated := time.Date(2025, 1, 16, 14, 0, 0, 0, time.UTC)
+	assert.True(t, expectedCreated.Equal(issue1.CreatedAt), "CreatedAt mismatch: got %v", issue1.CreatedAt)
+	assert.True(t, expectedUpdated.Equal(issue1.UpdatedAt), "UpdatedAt mismatch: got %v", issue1.UpdatedAt)
+
+	// Second issue: missing fields default to zero values
+	issue2 := issues[1]
+	assert.Equal(t, "issue-2", issue2.ID)
+	assert.Equal(t, "", issue2.Identifier)
+	assert.Equal(t, 0, issue2.Priority)
+	assert.Equal(t, "", issue2.BranchName)
+	assert.Equal(t, []string{}, issue2.BlockedBy)
+	assert.True(t, issue2.CreatedAt.IsZero())
+	assert.True(t, issue2.UpdatedAt.IsZero())
+}

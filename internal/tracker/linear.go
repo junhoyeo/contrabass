@@ -98,11 +98,15 @@ const fetchIssuesQuery = `query FetchIssues($projectSlug: String!, $first: Int!,
 	issues(filter: {project: {slugId: {eq: $projectSlug}}}, first: $first, after: $after) {
 		nodes {
 			id
+			identifier
 			title
 			description
+			priority
 			state { name }
 			url
 			labels { nodes { name } }
+			createdAt
+			updatedAt
 		}
 		pageInfo {
 			hasNextPage
@@ -418,13 +422,28 @@ func normalizeIssue(node map[string]interface{}) types.Issue {
 		linearState, _ = state["name"].(string)
 	}
 
+	identifier := getString(node, "identifier")
+	priority := getInt(node, "priority")
+	createdAt := getTime(node, "createdAt")
+	updatedAt := getTime(node, "updatedAt")
+
+	branchName := ""
+	if identifier != "" {
+		branchName = "symphony/" + strings.ToLower(identifier)
+	}
 	return types.Issue{
 		ID:          getString(node, "id"),
+		Identifier:  identifier,
 		Title:       getString(node, "title"),
 		Description: getString(node, "description"),
 		State:       types.Unclaimed, // All fetched issues start as unclaimed
+		Priority:    priority,
 		Labels:      extractLabels(node),
 		URL:         getString(node, "url"),
+		BranchName:  branchName,
+		BlockedBy:   []string{},
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
 		TrackerMeta: map[string]interface{}{
 			"linear_state": linearState,
 		},
@@ -477,6 +496,28 @@ func checkMutationSuccess(data map[string]interface{}, mutationKey string) error
 func getString(m map[string]interface{}, key string) string {
 	v, _ := m[key].(string)
 	return v
+}
+
+// getInt safely extracts an int value from a map.
+// JSON numbers decode as float64, so we convert from float64.
+func getInt(m map[string]interface{}, key string) int {
+	if v, ok := m[key].(float64); ok {
+		return int(v)
+	}
+	return 0
+}
+
+// getTime safely extracts and parses an ISO 8601 timestamp from a map.
+func getTime(m map[string]interface{}, key string) time.Time {
+	s, _ := m[key].(string)
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // parseRetryAfter parses the Retry-After header value as seconds.
