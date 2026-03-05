@@ -147,7 +147,9 @@ func resolveFinalPhase(phase types.RunPhase, message string, doneErr error) (typ
 	}
 
 	if isActiveRunPhase(finalPhase) {
-		if err := TransitionRunPhase(finalPhase, types.Finishing); err == nil {
+		if canCompleteWithoutEvents(finalPhase) {
+			finalPhase = types.Succeeded
+		} else if err := TransitionRunPhase(finalPhase, types.Finishing); err == nil {
 			finalPhase = types.Finishing
 		}
 	}

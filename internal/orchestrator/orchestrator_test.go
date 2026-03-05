@@ -203,6 +203,24 @@ func (c *eventCollector) HasStartedIssue(issueID string) bool {
 	return false
 }
 
+func (c *eventCollector) FinishedPhase(issueID string) (types.RunPhase, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, event := range c.events {
+		if event.Type != EventAgentFinished || event.IssueID != issueID {
+			continue
+		}
+		finished, ok := event.Data.(AgentFinished)
+		if !ok {
+			continue
+		}
+		return finished.Phase, true
+	}
+
+	return types.RunPhase(0), false
+}
+
 type trackingRunner struct {
 	base *agent.MockRunner
 
@@ -405,6 +423,32 @@ func TestSuccessfulAgentReleases(t *testing.T) {
 		return mt.ReleaseCount("ISS-1") > 0 &&
 			state == types.Released &&
 			!mw.Exists("ISS-1")
+	}, 2*time.Second, 10*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestNoEventSuccessResolvesToSucceeded(t *testing.T) {
+	mt := newObservingTracker([]types.Issue{{ID: "ISS-1", Title: "Test", State: types.Unclaimed}})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+	events := newEventCollector(orch.Events())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	require.Eventually(t, func() bool {
+		phase, ok := events.FinishedPhase("ISS-1")
+		if !ok {
+			return false
+		}
+		if phase != types.Succeeded {
+			return false
+		}
+		return !events.Has(EventBackoffEnqueued)
 	}, 2*time.Second, 10*time.Millisecond)
 
 	cancel()
