@@ -47,7 +47,6 @@ func NewModel() Model {
 	vp.MouseWheelEnabled = true
 	s := spinner.New(
 		spinner.WithSpinner(spinner.Dot),
-		spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("42"))),
 	)
 	return Model{
 		header:         NewHeader(),
@@ -104,6 +103,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		helpH := lipgloss.Height(m.help.View(m.keys))
 		m.viewport.SetWidth(msg.Width)
 		m.viewport.SetHeight(msg.Height - headerH - helpH)
+		m.syncTables()
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
