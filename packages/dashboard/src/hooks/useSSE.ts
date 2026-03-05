@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 import type { BackoffEntry, OrchestratorEvent, RunningEntry, StateSnapshot, Stats } from '../types'
 
-interface SSEState {
+export interface SSEState {
   state: StateSnapshot | null
   connected: boolean
   error: string | null
 }
 
-type SSEAction =
+export type SSEAction =
   | { type: 'snapshot'; data: StateSnapshot }
   | { type: 'event'; data: OrchestratorEvent }
   | { type: 'connected' }
@@ -42,13 +42,13 @@ interface IssueReleasedData {
   Attempt: number
 }
 
-const INITIAL_STATE: SSEState = {
+export const INITIAL_STATE: SSEState = {
   state: null,
   connected: false,
   error: null,
 }
 
-function applyEvent(snapshot: StateSnapshot, event: OrchestratorEvent): StateSnapshot {
+export function applyEvent(snapshot: StateSnapshot, event: OrchestratorEvent): StateSnapshot {
   switch (event.Type) {
     case 0: {
       const data = event.Data as StatusUpdateData
@@ -139,7 +139,7 @@ function applyEvent(snapshot: StateSnapshot, event: OrchestratorEvent): StateSna
   }
 }
 
-function sseReducer(state: SSEState, action: SSEAction): SSEState {
+export function sseReducer(state: SSEState, action: SSEAction): SSEState {
   switch (action.type) {
     case 'snapshot':
       return { ...state, state: action.data, connected: true, error: null }
