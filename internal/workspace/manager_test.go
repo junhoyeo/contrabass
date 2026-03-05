@@ -2,10 +2,12 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -251,6 +253,78 @@ func TestManager_CreateReturnsClearErrorWhenGitUnavailable(t *testing.T) {
 	_, err := mgr.Create(context.Background(), types.Issue{ID: "ISSUE-NOGIT"})
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "git executable not found")
+}
+
+func TestManager_CreateStaleTrackedEntry(t *testing.T) {
+	t.Parallel()
+
+	// Test that Create handles stale tracked entries (map entry exists but directory doesn't)
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+	ctx := context.Background()
+
+	issueID := "ISSUE-STALE"
+
+	// Create a workspace
+	firstPath, err := mgr.Create(ctx, types.Issue{ID: issueID})
+	require.NoError(t, err)
+	assert.DirExists(t, firstPath)
+
+	// Manually delete the directory to simulate stale entry
+	err = os.RemoveAll(firstPath)
+	require.NoError(t, err)
+	assert.NoDirExists(t, firstPath)
+
+	// Also remove the worktree entry so Create can recreate it
+	runGit(t, repoDir, "worktree", "remove", "--force", firstPath)
+
+	// Create again - should detect stale entry and recreate
+	secondPath, err := mgr.Create(ctx, types.Issue{ID: issueID})
+	require.NoError(t, err)
+	assert.Equal(t, firstPath, secondPath)
+	assert.DirExists(t, secondPath)
+	assert.True(t, mgr.Exists(issueID))
+}
+
+func TestManager_CleanupNotAWorkingTree(t *testing.T) {
+	t.Parallel()
+
+	// Test that Cleanup gracefully handles "is not a working tree" error
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+	ctx := context.Background()
+
+	issueID := "ISSUE-NOTREE"
+
+	// Create a workspace
+	path, err := mgr.Create(ctx, types.Issue{ID: issueID})
+	require.NoError(t, err)
+	assert.DirExists(t, path)
+
+	// Manually remove the worktree directory to simulate "not a working tree" scenario
+	err = os.RemoveAll(path)
+	require.NoError(t, err)
+
+	// Cleanup should not error even though git worktree remove will fail
+	err = mgr.Cleanup(ctx, issueID)
+	require.NoError(t, err)
+	assert.False(t, mgr.Exists(issueID))
+}
+
+func TestManager_CreateContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	// Test that Create respects context cancellation
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := mgr.Create(ctx, types.Issue{ID: "ISSUE-CANCEL"})
+	require.Error(t, err)
+	// Should be a context error or git command error due to cancellation
+	assert.True(t, errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "git"))
 }
 
 func initGitRepo(t *testing.T) string {

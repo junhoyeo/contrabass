@@ -302,3 +302,78 @@ Minimal prompt.
 	assert.Equal(t, defaultApprovalPolicy, cfg.CodexApprovalPolicy())
 	assert.Equal(t, defaultSandbox, cfg.CodexSandbox())
 }
+
+
+func TestSplitFrontMatter_CRLFLineEnding(t *testing.T) {
+	t.Parallel()
+
+	// Test that CRLF line endings (\r\n) are handled correctly in front matter splitting
+	content := "---\r\nmodel: openai/gpt-5-codex\r\nproject_url: https://linear.app/example/project/crlf\r\n---\r\nPrompt with CRLF.\r\n"
+
+	frontMatter, prompt, hasFrontMatter, terminated := splitFrontMatter(content)
+
+	require.True(t, hasFrontMatter)
+	require.True(t, terminated)
+	assert.Contains(t, frontMatter, "model: openai/gpt-5-codex")
+	assert.Contains(t, frontMatter, "project_url: https://linear.app/example/project/crlf")
+	assert.Contains(t, prompt, "Prompt with CRLF")
+}
+
+func TestResolveEnvToken_InvalidPattern(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		want  string
+		ok    bool
+	}{
+		{
+			name:  "valid env var pattern",
+			value: "$VALID_VAR",
+			want:  "", // will be empty since env var not set
+			ok:    true,
+		},
+		{
+			name:  "invalid: starts with number",
+			value: "$123INVALID",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "invalid: contains hyphen",
+			value: "$INVALID-VAR",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "invalid: contains dot",
+			value: "$INVALID.VAR",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "no dollar sign",
+			value: "PLAIN_STRING",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "empty after dollar",
+			value: "$",
+			want:  "",
+			ok:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := resolveEnvToken(tt.value)
+			assert.Equal(t, tt.ok, ok)
+			if ok {
+				assert.Equal(t, tt.want, result)
+			}
+		})
+	}
+}

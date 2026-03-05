@@ -5,10 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-	"sync/atomic"
-	"testing"
-	"time"
 	"github.com/charmbracelet/log"
 	"github.com/junhoyeo/symphony-charm/internal/agent"
 	"github.com/junhoyeo/symphony-charm/internal/config"
@@ -18,6 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
 )
 
 type staticConfig struct{ cfg *config.WorkflowConfig }
@@ -544,6 +544,66 @@ func TestFailedAgentBackoff(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+func TestOrchestrator_FollowUpTurnContinuation(t *testing.T) {
+	issue := types.Issue{
+		ID:         "ISS-FOLLOW-1",
+		Identifier: "CORE-422",
+		Title:      "Follow up",
+		State:      types.Unclaimed,
+	}
+	mt := newObservingTracker([]types.Issue{issue})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{
+		HandshakeEvents: []types.AgentEvent{{Type: "turn/started"}},
+		Events:          []types.AgentEvent{{Type: "turn/failed", Data: map[string]interface{}{"message": "follow-up still active"}}},
+		Delay:           10 * time.Millisecond,
+	}
+
+	workflowCfg := testConfig()
+	workflowCfg.MaxRetryBackoffMsRaw = 5_000
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: workflowCfg}, nil)
+	events := newEventCollector(orch.Events())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	require.Eventually(t, func() bool {
+		entries := backoffSnapshot(orch)
+		if len(entries) != 1 {
+			return false
+		}
+		state, ok := mt.State(issue.ID)
+		if !ok || state != types.RetryQueued {
+			return false
+		}
+		return entries[0].IssueID == issue.ID && entries[0].Attempt == 2
+	}, 2*time.Second, 10*time.Millisecond)
+
+	events.mu.Lock()
+	deferred := append([]OrchestratorEvent(nil), events.events...)
+	events.mu.Unlock()
+
+	var backoffPayload BackoffEnqueued
+	foundBackoff := false
+	for _, event := range deferred {
+		if event.Type != EventBackoffEnqueued || event.IssueID != issue.ID {
+			continue
+		}
+		payload, ok := event.Data.(BackoffEnqueued)
+		require.True(t, ok)
+		backoffPayload = payload
+		foundBackoff = true
+		break
+	}
+	require.True(t, foundBackoff)
+	assert.Equal(t, 2, backoffPayload.Attempt)
+	assert.Equal(t, "follow-up still active", backoffPayload.Error)
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
 func TestContextCancellation(t *testing.T) {
 	mt := newObservingTracker([]types.Issue{{ID: "ISS-1", Title: "Test", State: types.Unclaimed}})
 	mw := workspace.NewMockManager(t.TempDir())
@@ -853,7 +913,6 @@ func TestOrchestrator_EmitEventDropLogged(t *testing.T) {
 	}
 }
 
-
 func TestOrchestrator_CompleteRunPostsComment(t *testing.T) {
 	mt := newObservingTracker([]types.Issue{{ID: "ISS-1", Title: "Test", State: types.Unclaimed}})
 	mw := workspace.NewMockManager(t.TempDir())
@@ -890,12 +949,15 @@ func TestOrchestrator_ReconcileAssignsTimedOut(t *testing.T) {
 	cfg := testConfig()
 	cfg.AgentTimeoutMsRaw = 1 // 1ms timeout
 	orch := NewOrchestrator(mt, mw, runner, &staticConfig{cfg: cfg}, nil)
-	go func() { for range orch.Events() {} }()
+	go func() {
+		for range orch.Events() {
+		}
+	}()
 
 	// Seed a running entry with StartTime in the past
 	done := make(chan error, 1)
 	entry := &runEntry{
-		issue:   types.Issue{ID: "ISS-TIMEOUT-1", State: types.Running},
+		issue: types.Issue{ID: "ISS-TIMEOUT-1", State: types.Running},
 		attempt: types.RunAttempt{
 			IssueID:   "ISS-TIMEOUT-1",
 			Phase:     types.StreamingTurn,
@@ -921,7 +983,7 @@ func TestOrchestrator_ReconcileAssignsTimedOut(t *testing.T) {
 // --- Error Path Tests (T30) ---
 
 type failingWorkspace struct {
-	baseDir  string
+	baseDir   string
 	createErr error
 }
 
@@ -929,7 +991,7 @@ func (w *failingWorkspace) Create(_ context.Context, _ types.Issue) (string, err
 	return "", w.createErr
 }
 func (w *failingWorkspace) Cleanup(_ context.Context, _ string) error { return nil }
-func (w *failingWorkspace) CleanupAll(_ context.Context) error { return nil }
+func (w *failingWorkspace) CleanupAll(_ context.Context) error        { return nil }
 
 func TestOrchestrator_WorkspaceCreateFailure(t *testing.T) {
 	issues := []types.Issue{{ID: "ISS-WS-FAIL", Title: "ws fail", State: types.Unclaimed}}
@@ -1072,10 +1134,10 @@ func TestResolveFinalPhase_ContextCanceled(t *testing.T) {
 
 func TestParseUsageTokens_TotalTokensFallback(t *testing.T) {
 	tests := []struct {
-		name     string
-		data     map[string]interface{}
-		wantIn   int64
-		wantOut  int64
+		name    string
+		data    map[string]interface{}
+		wantIn  int64
+		wantOut int64
 	}{
 		{
 			name:    "nil_data",
@@ -1180,7 +1242,10 @@ func TestOrchestrator_NilContext(t *testing.T) {
 	mw := workspace.NewMockManager(t.TempDir())
 	mr := &agent.MockRunner{}
 	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
-	go func() { for range orch.Events() {} }()
+	go func() {
+		for range orch.Events() {
+		}
+	}()
 
 	//nolint:staticcheck // SA1012: intentionally passing nil context to test guard
 	err := orch.Run(nil)
