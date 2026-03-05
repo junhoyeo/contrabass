@@ -64,6 +64,8 @@ func (o *Orchestrator) Snapshot() StateSnapshot {
 		issuesCopy[id] = issue
 	}
 
+	generatedAt := time.Now()
+
 	o.mu.Unlock()
 
 	return StateSnapshot{
@@ -71,6 +73,6 @@ func (o *Orchestrator) Snapshot() StateSnapshot {
 		Running:     runningEntries,
 		Backoff:     backoffCopy,
 		Issues:      issuesCopy,
-		GeneratedAt: time.Now(),
+		GeneratedAt: generatedAt,
 	}
 }
