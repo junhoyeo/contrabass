@@ -153,6 +153,10 @@ func isFailureRunPhase(phase types.RunPhase) bool {
 	}
 }
 
+func canCompleteWithoutEvents(phase types.RunPhase) bool {
+	return phase == types.InitializingSession
+}
+
 func deterministicJitterOffset(attempt, maxMs, jitterRange int) int {
 	span := (2 * jitterRange) + 1
 	if span <= 0 {

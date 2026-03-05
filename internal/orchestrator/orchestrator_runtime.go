@@ -147,7 +147,9 @@ func resolveFinalPhase(phase types.RunPhase, message string, doneErr error) (typ
 	}
 
 	if isActiveRunPhase(finalPhase) {
-		if err := TransitionRunPhase(finalPhase, types.Finishing); err == nil {
+		if canCompleteWithoutEvents(finalPhase) {
+			finalPhase = types.Succeeded
+		} else if err := TransitionRunPhase(finalPhase, types.Finishing); err == nil {
 			finalPhase = types.Finishing
 		}
 	}
@@ -283,11 +285,13 @@ func (o *Orchestrator) reconcileRunning(ctx context.Context, cfg *config.Workflo
 
 	now := time.Now()
 	orphaned := make([]string, 0)
+	forceRemoved := make([]string, 0)
 
 	o.mu.Lock()
 	for issueID, entry := range o.running {
 		if entry == nil || entry.process == nil || entry.process.Done == nil {
-			orphaned = append(orphaned, issueID)
+			delete(o.running, issueID)
+			forceRemoved = append(forceRemoved, issueID)
 			continue
 		}
 		if now.Sub(entry.attempt.StartTime) > timeout && isActiveRunPhase(entry.attempt.Phase) {
@@ -298,7 +302,17 @@ func (o *Orchestrator) reconcileRunning(ctx context.Context, cfg *config.Workflo
 			orphaned = append(orphaned, issueID)
 		}
 	}
+	o.stats.Running = len(o.running)
 	o.mu.Unlock()
+
+	for _, issueID := range forceRemoved {
+		logging.LogOrchestratorEvent(
+			o.logger,
+			"run_force_removed",
+			"issue_id", issueID,
+			"reason", "missing_process_or_done",
+		)
+	}
 
 	for _, issueID := range orphaned {
 		o.stopRun(ctx, issueID)
@@ -341,7 +355,38 @@ func (o *Orchestrator) stopRun(_ context.Context, issueID string) {
 		logging.LogAgentEvent(o.logger, issueID, "stop_failed", "err", err)
 	}
 
-	logging.LogOrchestratorEvent(o.logger, "run_stopped", "issue_id", issueID)
+	if entry.process != nil && entry.process.Done != nil {
+		graceTimer := time.NewTimer(5 * time.Second)
+		select {
+		case _, ok := <-entry.process.Done:
+			if !ok {
+				logging.LogOrchestratorEvent(o.logger, "run_stop_done_closed", "issue_id", issueID)
+			}
+		case <-graceTimer.C:
+			logging.LogOrchestratorEvent(
+				o.logger,
+				"run_stop_timeout",
+				"issue_id", issueID,
+				"grace_timeout", "5s",
+			)
+		}
+		if !graceTimer.Stop() {
+			select {
+			case <-graceTimer.C:
+			default:
+			}
+		}
+	}
+
+	o.mu.Lock()
+	current, stillRunning := o.running[issueID]
+	if stillRunning && current == entry {
+		delete(o.running, issueID)
+		o.stats.Running = len(o.running)
+	}
+	o.mu.Unlock()
+
+	logging.LogOrchestratorEvent(o.logger, "run_stopped", "issue_id", issueID, "cleaned_up", true)
 }
 
 func (o *Orchestrator) releaseIssue(ctx context.Context, issueID string, from types.IssueState, attempt int) {
