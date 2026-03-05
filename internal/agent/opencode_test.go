@@ -22,7 +22,10 @@ import (
 
 func TestOpenCodeRunner_CompileTimeCheck(t *testing.T) {
 	var _ AgentRunner = (*OpenCodeRunner)(nil)
-	require.NotNil(t, NewOpenCodeRunner("opencode serve", 0, "", "", time.Second))
+	runner := NewOpenCodeRunner("opencode serve", 0, "", "", time.Second)
+	require.NotNil(t, runner)
+	assert.Equal(t, 30*time.Second, runner.httpClient.Timeout)
+	assert.Equal(t, time.Duration(0), runner.streamClient.Timeout)
 }
 
 func TestOpenCodeRunner_Start(t *testing.T) {

@@ -43,6 +43,7 @@ type OpenCodeRunner struct {
 	serverProcess *exec.Cmd
 	serverURL     string
 	httpClient    *http.Client
+	streamClient  *http.Client
 }
 
 var _ AgentRunner = (*OpenCodeRunner)(nil)
@@ -130,13 +131,14 @@ func NewOpenCodeRunner(binaryPath string, port int, password, username string, t
 	}
 
 	return &OpenCodeRunner{
-		binaryPath: binaryPath,
-		port:       port,
-		password:   password,
-		username:   username,
-		timeout:    timeout,
-		logger:     log.NewWithOptions(io.Discard, log.Options{}),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		binaryPath:   binaryPath,
+		port:         port,
+		password:     password,
+		username:     username,
+		timeout:      timeout,
+		logger:       log.NewWithOptions(io.Discard, log.Options{}),
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		streamClient: &http.Client{},
 	}
 }
 
@@ -389,7 +391,7 @@ func (r *OpenCodeRunner) streamSessionEvents(
 	defer finish(nil)
 
 	headers := map[string]string{"Accept": "text/event-stream"}
-	resp, err := r.doRequest(ctx, http.MethodGet, serverURL+"/event", nil, headers)
+	resp, err := r.doStreamRequest(ctx, http.MethodGet, serverURL+"/event", headers)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
@@ -474,6 +476,26 @@ func (r *OpenCodeRunner) doRequest(
 	body interface{},
 	headers map[string]string,
 ) (*http.Response, error) {
+	return r.doRequestWithClient(ctx, r.httpClient, method, url, body, headers)
+}
+
+func (r *OpenCodeRunner) doStreamRequest(
+	ctx context.Context,
+	method string,
+	url string,
+	headers map[string]string,
+) (*http.Response, error) {
+	return r.doRequestWithClient(ctx, r.streamClient, method, url, nil, headers)
+}
+
+func (r *OpenCodeRunner) doRequestWithClient(
+	ctx context.Context,
+	client *http.Client,
+	method string,
+	url string,
+	body interface{},
+	headers map[string]string,
+) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)
@@ -500,7 +522,7 @@ func (r *OpenCodeRunner) doRequest(
 		req.SetBasicAuth(r.username, r.password)
 	}
 
-	resp, err := r.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("perform %s %s: %w", method, url, err)
 	}
