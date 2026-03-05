@@ -36,6 +36,66 @@ func TestModelCtrlCQuit(t *testing.T) {
 	assert.True(t, model.quitting)
 }
 
+func TestHelpToggle(t *testing.T) {
+	m := NewModel()
+	assert.False(t, m.help.ShowAll)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "?", Code: '?'})
+	assert.Nil(t, cmd)
+	model := updated.(Model)
+	assert.True(t, model.help.ShowAll)
+
+	updated, cmd = model.Update(tea.KeyPressMsg{Text: "?", Code: '?'})
+	assert.Nil(t, cmd)
+	model = updated.(Model)
+	assert.False(t, model.help.ShowAll)
+}
+
+func TestHelpViewContainsBindings(t *testing.T) {
+	m := NewModel()
+	helpView := m.help.View(m.keys)
+	stripped := stripANSI(helpView)
+	assert.Contains(t, stripped, "q")
+	assert.Contains(t, stripped, "↑/k")
+	assert.Contains(t, stripped, "↓/j")
+}
+
+func TestViewportHeightWithHelp(t *testing.T) {
+	m := NewModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+	heightOff := m.viewport.Height()
+
+	updated, _ = m.Update(tea.KeyPressMsg{Text: "?", Code: '?'})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+	heightOn := m.viewport.Height()
+
+	assert.Less(t, heightOn, heightOff)
+}
+
+func TestRegressionQuit(t *testing.T) {
+	m := NewModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Text: "q", Code: 'q'})
+	require.NotNil(t, cmd)
+	assert.IsType(t, tea.QuitMsg{}, cmd())
+	model := updated.(Model)
+	assert.True(t, model.quitting)
+
+	m2 := NewModel()
+	updated2, _ := m2.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m2 = updated2.(Model)
+	updated2, cmd2 := m2.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	require.NotNil(t, cmd2)
+	assert.IsType(t, tea.QuitMsg{}, cmd2())
+	model2 := updated2.(Model)
+	assert.True(t, model2.quitting)
+}
+
 func TestModelWindowResize(t *testing.T) {
 	m := NewModel()
 	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

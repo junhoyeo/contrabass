@@ -50,9 +50,11 @@ func newSnapshotModel() Model {
 	m.header = m.header.SetWidth(100)
 	m.table = m.table.SetWidth(100)
 	m.backoff = m.backoff.SetWidth(100)
+	m.help.SetWidth(100)
 	m.viewport.SetWidth(100)
 	headerH := lipgloss.Height(m.header.View())
-	m.viewport.SetHeight(40 - headerH - 1)
+	helpH := lipgloss.Height(m.help.View(m.keys))
+	m.viewport.SetHeight(40 - headerH - helpH)
 	return m
 }
 

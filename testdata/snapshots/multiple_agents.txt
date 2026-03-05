@@ -37,3 +37,4 @@
                                                                                                     
                                                                                                     
                                                                                                     
+↑/k scroll up • ↓/j scroll down • ? toggle help • q quit                                            
