@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 type MockManager struct {

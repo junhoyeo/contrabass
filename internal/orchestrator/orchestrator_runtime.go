@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/config"
-	"github.com/junhoyeo/symphony-charm/internal/logging"
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/logging"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 func (o *Orchestrator) handleRunSignal(ctx context.Context, signal runSignal) {

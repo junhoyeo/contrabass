@@ -16,10 +16,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/junhoyeo/symphony-charm/internal/agent"
-	"github.com/junhoyeo/symphony-charm/internal/config"
-	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/agent"
+	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 func TestRootCommandHelp(t *testing.T) {
@@ -63,7 +63,7 @@ func TestFlagDefaults(t *testing.T) {
 		flag     string
 		defValue string
 	}{
-		{"log-file default", "log-file", "symphony-charm.log"},
+		{"log-file default", "log-file", "contrabass.log"},
 		{"log-level default", "log-level", "info"},
 		{"no-tui default", "no-tui", "false"},
 		{"dry-run default", "dry-run", "false"},

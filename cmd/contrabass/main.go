@@ -14,13 +14,13 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 
-	"github.com/junhoyeo/symphony-charm/internal/agent"
-	"github.com/junhoyeo/symphony-charm/internal/config"
-	"github.com/junhoyeo/symphony-charm/internal/logging"
-	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
-	"github.com/junhoyeo/symphony-charm/internal/tracker"
-	"github.com/junhoyeo/symphony-charm/internal/tui"
-	"github.com/junhoyeo/symphony-charm/internal/workspace"
+	"github.com/junhoyeo/contrabass/internal/agent"
+	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/logging"
+	"github.com/junhoyeo/contrabass/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/tracker"
+	"github.com/junhoyeo/contrabass/internal/tui"
+	"github.com/junhoyeo/contrabass/internal/workspace"
 )
 
 var (
@@ -54,9 +54,9 @@ func newRootCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "symphony-charm",
+		Use:   "contrabass",
 		Short: "Orchestrate coding agents with a Charm TUI dashboard",
-		Long: `Symphony-Charm is a Go reimplementation of OpenAI's Symphony.
+		Long: `Contrabass is a Go reimplementation of OpenAI's Symphony.
 It orchestrates coding agents against an issue tracker and visualises
 progress in a terminal UI built with the Charm stack.`,
 		SilenceUsage: true,
@@ -67,7 +67,7 @@ progress in a terminal UI built with the Charm stack.`,
 
 	cmd.Flags().StringVar(&cfgPath, "config", "", "path to WORKFLOW.md file (required)")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "headless mode — skip TUI, log events to stdout")
-	cmd.Flags().StringVar(&logFile, "log-file", "symphony-charm.log", "log output path")
+	cmd.Flags().StringVar(&logFile, "log-file", "contrabass.log", "log output path")
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "log level (debug/info/warn/error)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "exit after first poll cycle")
 
@@ -102,7 +102,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) erro
 	logger := logging.NewLogger(logging.LogOptions{
 		Level:  parseLogLevel(logLevel),
 		Output: logFile,
-		Prefix: "symphony-charm",
+		Prefix: "contrabass",
 	})
 
 	// 3. Create config watcher (live reload via fsnotify)

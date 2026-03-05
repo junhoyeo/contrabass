@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 const (
@@ -133,8 +133,8 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		"method": "initialize",
 		"params": map[string]interface{}{
 			"clientInfo": map[string]interface{}{
-				"name":    "symphony-charm",
-				"title":   "Symphony Charm",
+				"name":    "contrabass",
+				"title":   "Contrabass",
 				"version": "0.1.0",
 			},
 			"capabilities": map[string]interface{}{"experimentalApi": true},

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 // MockTracker is an in-memory implementation of the Tracker interface for testing.

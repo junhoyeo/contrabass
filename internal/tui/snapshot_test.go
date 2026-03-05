@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/orchestrator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

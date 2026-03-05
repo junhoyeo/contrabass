@@ -9,11 +9,11 @@ import (
 	"github.com/charmbracelet/log"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/junhoyeo/symphony-charm/internal/agent"
-	"github.com/junhoyeo/symphony-charm/internal/config"
-	"github.com/junhoyeo/symphony-charm/internal/logging"
-	"github.com/junhoyeo/symphony-charm/internal/tracker"
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/agent"
+	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/logging"
+	"github.com/junhoyeo/contrabass/internal/tracker"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 const defaultEventBufferSize = 256

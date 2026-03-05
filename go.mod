@@ -1,4 +1,4 @@
-module github.com/junhoyeo/symphony-charm
+module github.com/junhoyeo/contrabass
 
 go 1.25.0
 

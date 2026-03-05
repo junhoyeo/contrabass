@@ -3,8 +3,8 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 	"context"
-	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"strings"

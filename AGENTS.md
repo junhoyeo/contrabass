@@ -1,20 +1,20 @@
-# AGENTS.md — Symphony-Charm Project Guidelines
+# AGENTS.md — Contrabass Project Guidelines
 
 ## Project Overview
 
-**Project**: Symphony-Charm — Go reimplementation of OpenAI's Symphony using Charm TUI stack
+**Project**: Contrabass — Go reimplementation of OpenAI's Symphony using Charm TUI stack
 
-**Module**: `github.com/junhoyeo/symphony-charm`
+**Module**: `github.com/junhoyeo/contrabass`
 
 **Go Version**: 1.25.0
 
-**Repository**: https://github.com/junhoyeo/symphony-charm
+**Repository**: https://github.com/junhoyeo/contrabass
 
 ## Architecture
 
 ```
-symphony-charm/
-├── cmd/symphony-charm/          # CLI entry point
+contrabass/
+├── cmd/contrabass/          # CLI entry point
 ├── internal/
 │   ├── config/                  # Configuration parsing
 │   ├── tracker/                 # State tracking
@@ -82,7 +82,7 @@ Use the Go package name as the scope:
 | `tui` | `internal/tui` |
 | `logging` | `internal/logging` |
 | `types` | `internal/types` |
-| `cli` | `cmd/symphony-charm` |
+| `cli` | `cmd/contrabass` |
 | `project` | Project-wide (go.mod, .gitignore, CI, etc.) |
 | `docs` | Documentation files |
 

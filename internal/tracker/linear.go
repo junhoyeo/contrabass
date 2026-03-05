@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 // Default GraphQL endpoint for Linear API.

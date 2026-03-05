@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 const (

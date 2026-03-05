@@ -3,7 +3,7 @@ package tracker
 import (
 	"context"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 // Tracker defines the interface for interacting with an issue tracker.

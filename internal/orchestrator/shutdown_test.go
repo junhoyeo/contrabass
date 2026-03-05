@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/agent"
-	"github.com/junhoyeo/symphony-charm/internal/tracker"
-	"github.com/junhoyeo/symphony-charm/internal/types"
-	"github.com/junhoyeo/symphony-charm/internal/workspace"
+	"github.com/junhoyeo/contrabass/internal/agent"
+	"github.com/junhoyeo/contrabass/internal/tracker"
+	"github.com/junhoyeo/contrabass/internal/types"
+	"github.com/junhoyeo/contrabass/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 

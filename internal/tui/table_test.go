@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/contrabass/internal/types"
 	"github.com/stretchr/testify/assert"
 )
 
