@@ -133,6 +133,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 	linearClient := tracker.NewLinearClient(tracker.LinearConfig{
 		APIKey:      os.Getenv("LINEAR_API_KEY"),
 		ProjectSlug: projectSlug(cfg),
+		AssigneeID:  cfg.TrackerAssigneeID(),
 	})
 
 	// 7. Create workspace manager (uses cwd as repo root)
@@ -145,7 +146,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 	// 8. Create agent runner
 	codexBin := os.Getenv("CODEX_BINARY")
 	if codexBin == "" {
-		codexBin = "codex"
+		codexBin = cfg.CodexBinaryPath()
 	}
 	agentRunner := agent.NewCodexRunner(codexBin, 30*time.Second)
 
