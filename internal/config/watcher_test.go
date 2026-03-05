@@ -264,3 +264,30 @@ func TestWatchContextCancellation(t *testing.T) {
 		t.Fatal("Watch goroutine did not exit after context cancellation")
 	}
 }
+
+
+func TestWatcher_GetConfigReturnsCopy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	writeWorkflowFile(t, path, "model: gpt-5\nproject_url: https://example.com\nmax_concurrency: 5\n", "Original prompt.\n")
+
+	w, err := NewWatcher(path)
+	require.NoError(t, err)
+	defer w.Stop()
+
+	// Get the config and mutate it
+	cfg1 := w.GetConfig()
+	require.NotNil(t, cfg1)
+	originalModel := cfg1.ModelRaw
+	cfg1.ModelRaw = "mutated-model"
+	cfg1.MaxConcurrencyRaw = 999
+
+	// Get the config again and verify it's unchanged
+	cfg2 := w.GetConfig()
+	require.NotNil(t, cfg2)
+	assert.Equal(t, originalModel, cfg2.ModelRaw, "ModelRaw should not be affected by mutation")
+	assert.Equal(t, 5, cfg2.MaxConcurrencyRaw, "MaxConcurrencyRaw should not be affected by mutation")
+
+	// Verify they are different objects
+	assert.NotEqual(t, cfg1, cfg2, "GetConfig should return different objects")
+}

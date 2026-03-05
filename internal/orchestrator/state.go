@@ -110,11 +110,11 @@ func CalculateBackoff(attempt int, maxMs int) (delayMs int) {
 	return delayMs
 }
 
-func CheckBoundedConcurrency(running, max int) bool {
+func checkBoundedConcurrency(running, max int) bool {
 	return running < max
 }
 
-func DetectStall(lastEventTime time.Time, stallTimeoutMs int) bool {
+func detectStall(lastEventTime time.Time, stallTimeoutMs int) bool {
 	return detectStallAt(time.Now(), lastEventTime, stallTimeoutMs)
 }
 

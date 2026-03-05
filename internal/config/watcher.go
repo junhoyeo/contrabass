@@ -17,7 +17,6 @@ type Watcher struct {
 	mu       sync.RWMutex
 	config   *WorkflowConfig
 	fsw      *fsnotify.Watcher
-	stopped  bool
 	stopOnce sync.Once
 }
 
@@ -41,11 +40,17 @@ func NewWatcher(filePath string) (*Watcher, error) {
 	}, nil
 }
 
-// GetConfig returns the current WorkflowConfig in a thread-safe manner.
+// GetConfig returns a defensive copy of the current WorkflowConfig in a
+// thread-safe manner. The returned config is independent and safe to mutate
+// without affecting the internal state.
 func (w *Watcher) GetConfig() *WorkflowConfig {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.config
+	if w.config == nil {
+		return nil
+	}
+	cfg := *w.config // shallow copy (WorkflowConfig has no pointer/slice/map fields)
+	return &cfg
 }
 
 // Watch starts watching the file for changes. It blocks until the context is
@@ -116,9 +121,6 @@ func (w *Watcher) reload() {
 func (w *Watcher) Stop() error {
 	var err error
 	w.stopOnce.Do(func() {
-		w.mu.Lock()
-		w.stopped = true
-		w.mu.Unlock()
 		err = w.fsw.Close()
 	})
 	return err
