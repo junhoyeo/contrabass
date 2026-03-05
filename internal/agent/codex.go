@@ -314,7 +314,7 @@ func (r *CodexRunner) cleanupOnStartFailure(process *codexProcess) {
 	if process.cmd.Process != nil {
 		_ = process.cmd.Process.Kill()
 	}
-	_, _ = process.cmd.Process.Wait()
+	_ = process.cmd.Wait()
 
 	r.mu.Lock()
 	delete(r.procs, process.cmd.Process.Pid)
