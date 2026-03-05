@@ -79,6 +79,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			m.quitting = true
+			if cleanup := cleanupNativeImageRaw(); cleanup != "" {
+				return m, tea.Sequence(tea.Raw(cleanup), tea.Quit)
+			}
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll

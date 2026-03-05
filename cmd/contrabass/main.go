@@ -235,6 +235,9 @@ func runTUI(ctx context.Context, orch *orchestrator.Orchestrator) error {
 	}()
 
 	_, tuiErr := runTUIProgram(p)
+	// Clean up native Kitty image AFTER alt-screen exit so the delete
+	// command targets the main screen where the image persists.
+	tui.CleanupNativeImage()
 
 	// TUI exited — cancel orchestrator context and wait for graceful shutdown
 	tuiCancel()

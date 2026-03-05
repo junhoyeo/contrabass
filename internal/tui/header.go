@@ -212,6 +212,26 @@ func buildNativeImageRaw() string {
 	return "\x1b[s\x1b[2;3H" + nativeImageEscape + "\x1b[u"
 }
 
+// cleanupNativeImageRaw returns the escape sequence to delete all Kitty images.
+// Should be sent via tea.Raw() on quit so the image doesn't persist in the terminal.
+func cleanupNativeImageRaw() string {
+	if detectImageMode() != imageModeKitty {
+		return ""
+	}
+	// Kitty graphics: a=d (action=delete), d=a (delete all images)
+	return "\x1b_Ga=d,d=a\x1b\\"
+}
+
+// CleanupNativeImage writes the Kitty delete-all-images escape sequence
+// directly to stdout. Call this AFTER p.Run() returns so the cleanup
+// happens on the main screen (not the alt-screen which gets discarded).
+func CleanupNativeImage() {
+	if detectImageMode() != imageModeKitty {
+		return
+	}
+	fmt.Print("\x1b_Ga=d,d=a\x1b\\")
+}
+
 // buildKittyEscape renders the image using the Kitty graphics protocol.
 // Returns the raw escape sequence string (NOT safe for View()).
 func buildKittyEscape(img image.Image) string {
