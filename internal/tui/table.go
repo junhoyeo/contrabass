@@ -78,10 +78,14 @@ func (t Table) View() string {
 				return lipgloss.NewStyle().Bold(true).Faint(true).Padding(0, 1)
 			}
 			phase := t.rows[row].Phase
-			style := lipgloss.NewStyle().Padding(0, 1)
+			bg := "234"
+			if row%2 == 1 {
+				bg = "235"
+			}
+			style := lipgloss.NewStyle().Padding(0, 1).Background(lipgloss.Color(bg))
 			if isActivePhase(phase) {
 				style = style.Bold(true).Foreground(lipgloss.Color("255"))
-			} else if row%2 == 1 {
+			} else {
 				style = style.Foreground(lipgloss.Color("250"))
 			}
 
