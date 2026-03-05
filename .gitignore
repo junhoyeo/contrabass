@@ -1,8 +1,12 @@
 # symphony-charm Go Project
 # Generated binaries and build artifacts
 
-# Built binary
+# Built binaries
 symphony-charm
+contrabass
+
+# JavaScript workspace dependencies
+node_modules/
 
 # Go build artifacts
 *.exe
