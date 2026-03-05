@@ -43,25 +43,31 @@ func (h Header) SetWidth(w int) Header {
 
 func (h Header) View() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	logoStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
 	labelStyle := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("244"))
 	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
 	urlStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 
-	line1 := titleStyle.Render("SYMPHONY STATUS")
-	line2 := strings.Join([]string{
+	line1 := logoStyle.Render("   ____            _             _                      ")
+	line2 := logoStyle.Render("  / ___|___  _ __ | |_ _ __ __ _| |__   __ _ ___ ___   ")
+	line3 := logoStyle.Render(" | |   / _ \\| '_ \\| __| '__/ _` | '_ \\ / _` / __/ __|  ")
+	line4 := logoStyle.Render(" | |__| (_) | | | | |_| | | (_| | |_) | (_| \\__ \\__ \\  ")
+	line5 := logoStyle.Render("  \\____\\___/|_| |_|\\__|_|  \\__,_|_.__/ \\__,_|___/___/  ")
+	line6 := titleStyle.Render("CONTRABASS STATUS")
+	line7 := strings.Join([]string{
 		labelStyle.Render("Agents: ") + valueStyle.Render(fmt.Sprintf("%d/%d", h.data.RunningAgents, h.data.MaxAgents)),
 		labelStyle.Render("Throughput: ") + valueStyle.Render(formatThroughput(h.data.ThroughputTPS, h.data.TokensTotal)),
 		labelStyle.Render("Runtime: ") + valueStyle.Render(formatRuntime(h.data.RuntimeSeconds)),
 	}, "    ")
-	line3 := labelStyle.Render("Tokens: ") + formatTokenLine(labelStyle, valueStyle, h.data)
+	line8 := labelStyle.Render("Tokens: ") + formatTokenLine(labelStyle, valueStyle, h.data)
 	scope, fullURL := projectDetails(h.data.ProjectURL)
-	line4 := labelStyle.Render("Model: ") + valueStyle.Render(h.data.ModelName) +
+	line9 := labelStyle.Render("Model: ") + valueStyle.Render(h.data.ModelName) +
 		"    " +
 		labelStyle.Render("Scope: ") + urlStyle.Render(scope)
-	line5 := labelStyle.Render("URL: ") + urlStyle.Render(fullURL)
-	line6 := labelStyle.Render(fmt.Sprintf("Refresh in %ds", h.data.RefreshIn))
+	line10 := labelStyle.Render("URL: ") + urlStyle.Render(fullURL)
+	line11 := labelStyle.Render(fmt.Sprintf("Refresh in %ds", h.data.RefreshIn))
 
-	content := strings.Join([]string{line1, line2, line3, line4, line5, line6}, "\n")
+	content := strings.Join([]string{line1, line2, line3, line4, line5, line6, line7, line8, line9, line10, line11}, "\n")
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

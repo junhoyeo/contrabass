@@ -10,7 +10,8 @@ func TestHeaderViewContainsTitle(t *testing.T) {
 	h := NewHeader()
 	h = h.Update(HeaderData{RunningAgents: 3, MaxAgents: 10, RuntimeSeconds: 154})
 	out := h.View()
-	assert.Contains(t, out, "SYMPHONY STATUS")
+	assert.Contains(t, out, "CONTRABASS STATUS")
+	assert.Contains(t, out, "____")
 	assert.Contains(t, out, "3/10")
 	assert.Contains(t, out, "collecting...")
 }
@@ -78,7 +79,7 @@ func TestHeaderZeroData(t *testing.T) {
 	h := NewHeader()
 	assert.NotPanics(t, func() {
 		out := h.View()
-		assert.Contains(t, out, "SYMPHONY STATUS")
+		assert.Contains(t, out, "CONTRABASS STATUS")
 		assert.Contains(t, out, "0/0")
 		assert.Contains(t, out, "collecting...")
 	})
@@ -88,5 +89,5 @@ func TestHeaderSetWidth(t *testing.T) {
 	h := NewHeader().SetWidth(80)
 	h = h.Update(HeaderData{RunningAgents: 1, MaxAgents: 5})
 	out := h.View()
-	assert.Contains(t, out, "SYMPHONY STATUS")
+	assert.Contains(t, out, "CONTRABASS STATUS")
 }

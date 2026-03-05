@@ -173,7 +173,7 @@ func TestModelViewComposition(t *testing.T) {
 	}})
 
 	view := stripANSI(updated.(Model).View().Content)
-	assert.Contains(t, view, "SYMPHONY STATUS")
+	assert.Contains(t, view, "CONTRABASS STATUS")
 	assert.Contains(t, view, "ISSUE-2")
 }
 
