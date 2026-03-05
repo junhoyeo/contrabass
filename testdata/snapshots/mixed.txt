@@ -1,9 +1,4 @@
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│    ____            _             _                                                               │
-│   / ___|___  _ __ | |_ _ __ __ _| |__   __ _ ___ ___                                             │
-│  | |   / _ \| '_ \| __| '__/ _` | '_ \ / _` / __/ __|                                            │
-│  | |__| (_) | | | | |_| | | (_| | |_) | (_| \__ \__ \                                            │
-│   \____\___/|_| |_|\__|_|  \__,_|_.__/ \__,_|___/___/                                            │
 │ CONTRABASS STATUS                                                                                │
 │ Agents: 2/8    Throughput: 84.6 tok/s    Runtime: 3m 15s                                         │
 │ Tokens: in: 12,000 | out: 4,500 | total: 16,500                                                  │
@@ -16,6 +11,11 @@
    ●           ISSUE-1     Init             20001       3m15s        0/0  sess-mix111  session init 
    ●           ISSUE-2     Init             20002       3m10s        0/0  sess-mix222  session init 
   ↻ ISSUE-3  attempt 2  retry in 0s  error: context deadline exceeded                               
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
                                                                                                     
                                                                                                     
                                                                                                     

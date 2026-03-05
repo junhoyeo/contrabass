@@ -1,9 +1,4 @@
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│    ____            _             _                                                               │
-│   / ___|___  _ __ | |_ _ __ __ _| |__   __ _ ___ ___                                             │
-│  | |   / _ \| '_ \| __| '__/ _` | '_ \ / _` / __/ __|                                            │
-│  | |__| (_) | | | | |_| | | (_| | |_) | (_| \__ \__ \                                            │
-│   \____\___/|_| |_|\__|_|  \__,_|_.__/ \__,_|___/___/                                            │
 │ CONTRABASS STATUS                                                                                │
 │ Agents: 0/0    Throughput: collecting...    Runtime: 0s                                          │
 │ Tokens: collecting...                                                                            │
@@ -14,6 +9,11 @@
   No agents running                                                                                 
   ↻ ISSUE-5  attempt 2  retry in 15s  error: rate limit exceeded                                    
   ↻ ISSUE-7  attempt 4  retry in 45s  error: server overload (-32001)                               
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
                                                                                                     
                                                                                                     
                                                                                                     

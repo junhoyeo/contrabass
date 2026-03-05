@@ -11,7 +11,6 @@ func TestHeaderViewContainsTitle(t *testing.T) {
 	h = h.Update(HeaderData{RunningAgents: 3, MaxAgents: 10, RuntimeSeconds: 154})
 	out := h.View()
 	assert.Contains(t, out, "CONTRABASS STATUS")
-	assert.Contains(t, out, "____")
 	assert.Contains(t, out, "3/10")
 	assert.Contains(t, out, "collecting...")
 }
