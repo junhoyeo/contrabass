@@ -1,9 +1,9 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
-
 	tea "charm.land/bubbletea/v2"
 	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
 	"github.com/junhoyeo/symphony-charm/internal/types"
@@ -171,4 +171,93 @@ func TestModelViewComposition(t *testing.T) {
 	assert.Contains(t, view, "SYMPHONY STATUS")
 	assert.Contains(t, view, "No agents running")
 	assert.Contains(t, view, "ISSUE-2")
+}
+
+// TestModel_UnknownEventTypeHandled verifies that unknown tea.Msg types
+// and unknown orchestrator event types increment the unknownEvents counter.
+func TestModel_UnknownEventTypeHandled(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  tea.Msg
+		want int
+	}{
+		{
+			name: "unknown tea.Msg type increments counter",
+			msg:  struct{ tea.Msg }{},
+			want: 1,
+		},
+		{
+			name: "unknown orchestrator event type increments counter",
+			msg: OrchestratorEventMsg{Event: orchestrator.OrchestratorEvent{
+				Type:    orchestrator.EventType(999),
+				IssueID: "ISSUE-X",
+			}},
+			want: 1,
+		},
+		{
+			name: "bad type assertion on AgentStarted data increments zero",
+			msg: OrchestratorEventMsg{Event: orchestrator.OrchestratorEvent{
+				Type:    orchestrator.EventAgentStarted,
+				IssueID: "ISSUE-Y",
+				Data:    "not-an-AgentStarted",
+			}},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel()
+			updated, _ := m.Update(tt.msg)
+			model := updated.(Model)
+			assert.Equal(t, tt.want, model.unknownEvents)
+		})
+	}
+}
+
+// TestTableView_NarrowWidthNoOverflow verifies that the table separator
+// respects a narrow SetWidth and doesn't overflow.
+func TestTableView_NarrowWidthNoOverflow(t *testing.T) {
+	tests := []struct {
+		name     string
+		width    int
+		expected int // expected separator rune count
+	}{
+		{
+			name:     "narrow 40-char terminal",
+			width:    40,
+			expected: 36, // 40 - 4 (indent)
+		},
+		{
+			name:     "standard 80-char terminal",
+			width:    80,
+			expected: 76, // 80 - 4
+		},
+		{
+			name:     "zero width uses default 90",
+			width:    0,
+			expected: 90,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows := []AgentRow{{
+				IssueID: "X-1",
+				Stage:   "StreamingTurn",
+				PID:     1234,
+				Age:     "10s",
+				Phase:   types.StreamingTurn,
+			}}
+			tbl := NewTable().SetWidth(tt.width).Update(rows)
+			out := stripANSI(tbl.View())
+
+			// The output should contain the separator line.
+			assert.Contains(t, out, strings.Repeat("\u2500", tt.expected))
+			// But not a longer separator (unless default).
+			if tt.width > 4 {
+				assert.NotContains(t, out, strings.Repeat("\u2500", tt.expected+1))
+			}
+		})
+	}
 }

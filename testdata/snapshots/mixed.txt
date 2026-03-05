@@ -6,7 +6,7 @@
 │ Refresh in 1s                                                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   ID           STAGE              PID     AGE     TOKENS         SESSION          EVENT             
-  ──────────────────────────────────────────────────────────────────────────────────────────        
+  ────────────────────────────────────────────────────────────────────────────────────────────────  
   ● ISSUE-1      StreamingTurn      20001   3m 15s  12.0k/4.5k     sess-mix111      StatusUpdate    
   ● ISSUE-2      InitializingSession 20002   5s      0/0            sess-mix222      AgentStarted   
   ↻ ISSUE-3  attempt 2  retry in 30s  error: context deadline exceeded                              

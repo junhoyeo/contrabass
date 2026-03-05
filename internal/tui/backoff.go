@@ -33,15 +33,28 @@ func (b Backoff) View() string {
 	idStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	retryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	dimStyle := lipgloss.NewStyle().Faint(true)
-
+	maxWidth := b.width
+	if maxWidth <= 0 {
+		maxWidth = 120
+	}
 	var b2 strings.Builder
 	for i, r := range b.rows {
 		if i > 0 {
 			b2.WriteByte('\n')
 		}
+		errMsg := r.Error
+		// Truncate error to fit within terminal width.
+		// Prefix "  ↻ <id>  attempt N  retry in Ns  error: " is ~50 chars + issueID + retryIn.
+		maxErr := maxWidth - 60 - len(r.IssueID) - len(r.RetryIn)
+		if maxErr < 10 {
+			maxErr = 10
+		}
+		if len(errMsg) > maxErr {
+			errMsg = errMsg[:maxErr-3] + "..."
+		}
 		line := fmt.Sprintf("  %s %s  attempt %d  retry in %s  error: %s",
 			arrow, idStyle.Render(r.IssueID), r.Attempt,
-			retryStyle.Render(r.RetryIn), dimStyle.Render(r.Error))
+			retryStyle.Render(r.RetryIn), dimStyle.Render(errMsg))
 		b2.WriteString(line)
 	}
 	return b2.String()

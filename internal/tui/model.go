@@ -1,11 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"time"
-
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/log"
 	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
 	"github.com/junhoyeo/symphony-charm/internal/types"
 )
@@ -27,6 +28,7 @@ type Model struct {
 	backoffRetryAt map[string]time.Time
 	stats          HeaderData
 	startTime      time.Time
+	unknownEvents  int
 }
 
 func NewModel() Model {
@@ -69,8 +71,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m = m.refreshDerivedFields(time.Time(msg))
 		return m, doTick()
+	default:
+		m.unknownEvents++
+		log.Debug("unhandled tea.Msg type", "type", fmt.Sprintf("%T", msg))
 	}
-
 	return m, nil
 }
 
@@ -111,6 +115,10 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 	case orchestrator.EventStatusUpdate:
 		update, ok := event.Data.(orchestrator.StatusUpdate)
 		if !ok {
+			log.Warn("event data type assertion failed",
+				"expected", "StatusUpdate",
+				"got", fmt.Sprintf("%T", event.Data),
+				"issue_id", event.IssueID)
 			break
 		}
 		if !update.Stats.StartTime.IsZero() {
@@ -125,6 +133,10 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 	case orchestrator.EventAgentStarted:
 		started, ok := event.Data.(orchestrator.AgentStarted)
 		if !ok {
+			log.Warn("event data type assertion failed",
+				"expected", "AgentStarted",
+				"got", fmt.Sprintf("%T", event.Data),
+				"issue_id", event.IssueID)
 			break
 		}
 		delete(m.backoffs, event.IssueID)
@@ -146,6 +158,10 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 	case orchestrator.EventAgentFinished:
 		finished, ok := event.Data.(orchestrator.AgentFinished)
 		if !ok {
+			log.Warn("event data type assertion failed",
+				"expected", "AgentFinished",
+				"got", fmt.Sprintf("%T", event.Data),
+				"issue_id", event.IssueID)
 			break
 		}
 		if row, exists := m.agents[event.IssueID]; exists {
@@ -162,6 +178,10 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 	case orchestrator.EventBackoffEnqueued:
 		backoff, ok := event.Data.(orchestrator.BackoffEnqueued)
 		if !ok {
+			log.Warn("event data type assertion failed",
+				"expected", "BackoffEnqueued",
+				"got", fmt.Sprintf("%T", event.Data),
+				"issue_id", event.IssueID)
 			break
 		}
 		retryIn := durationString(backoff.RetryAt.Sub(event.Timestamp))
@@ -179,6 +199,11 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 		delete(m.backoffs, event.IssueID)
 		delete(m.backoffRetryAt, event.IssueID)
 		m.syncTables()
+	default:
+		m.unknownEvents++
+		log.Warn("unknown orchestrator event type",
+			"type", event.Type,
+			"issue_id", event.IssueID)
 	}
 
 	return m
