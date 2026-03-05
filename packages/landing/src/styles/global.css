@@ -53,6 +53,10 @@ code {
   border-radius: 4px;
 }
 
+blockquote p code {
+  white-space: nowrap;
+}
+
 pre code {
   background: transparent;
   padding: 0;
