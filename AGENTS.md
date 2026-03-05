@@ -106,6 +106,52 @@ chore(project): initialize go.mod with Charm v2 dependencies
 perf(tracker): cache workspace state to reduce file I/O
 ```
 
+## Git History & PR Branch Rules
+
+### NEVER Destroy Commit History
+
+**CRITICAL**: When resolving conflicts or updating PR branches, you MUST preserve the original commit history. Every commit represents a logical unit of work and its message documents WHY the change was made.
+
+### Conflict Resolution Strategy
+
+When a PR branch has diverged from main and needs to incorporate main's changes:
+
+1. **Use `git merge main` INTO the PR branch** — this creates a merge commit that preserves both histories
+2. **NEVER squash PR commits** — squashing destroys the granular history of the PR's development
+3. **NEVER create a new branch and cherry-pick/squash** — this rewrites history and loses the original commit SHAs
+4. **NEVER use `git rebase`** on shared/pushed PR branches without explicit owner permission — rebase rewrites commit SHAs
+
+### What a Correct PR Update Looks Like
+
+```
+git checkout <pr-branch>
+git merge main --no-edit
+# resolve conflicts
+git add -A
+git commit  # merge commit is created automatically
+git push origin <pr-branch> --force  # only if branch was previously force-pushed
+```
+
+The result should be:
+- All original PR commits preserved with their original SHAs
+- A single merge commit on top that brings in main's changes
+- The merge commit resolves any conflicts
+
+### What is FORBIDDEN
+
+- `git rebase main` on a PR branch (rewrites all commit SHAs)
+- Creating a new branch from main and squash-merging PR changes into it (destroys history)
+- `git reset --hard` on a PR branch to a different base (destroys commits)
+- Any operation that reduces N commits into 1 commit without explicit permission
+
+### Force Push Rules
+
+- **NEVER force-push to `main`** — this is always destructive
+- **Force-push to PR branches** is acceptable ONLY when:
+  1. Restoring previously destroyed history (fixing a mistake)
+  2. The PR owner explicitly requests it
+  3. The branch has already been force-pushed before (not the first push)
+
 ## Code Guidelines for AI Agents
 
 ### Go Standards
