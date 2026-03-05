@@ -79,6 +79,12 @@ func splitFrontMatter(content string) (frontMatter string, prompt string, hasFro
 		startOffset = 5
 	}
 
+	// Guard against panic on minimal front matter input (e.g., "---", "---\n")
+	// Treat as empty, terminated front matter block
+	if len(content) <= startOffset {
+		return "", "", true, true
+	}
+
 	remainder := content[startOffset:]
 	lines := strings.SplitAfter(remainder, "\n")
 	var yamlBuilder strings.Builder
@@ -114,6 +120,11 @@ func resolveEnvReferences(cfg *WorkflowConfig) {
 	for i := 0; i < v.NumField(); i++ {
 		field := v.Field(i)
 		if field.Kind() != reflect.String || !field.CanSet() {
+			continue
+		}
+
+		// Skip prompt_template field - preserve literal $VARIABLE patterns
+		if v.Type().Field(i).Name == "PromptTemplate" {
 			continue
 		}
 

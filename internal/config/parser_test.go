@@ -120,6 +120,57 @@ prompt
 			wantErr:        nil,
 			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) { assert.Equal(t, "", cfg.PromptTemplate) },
 		},
+		{
+			name:    "minimal front matter: just opening delimiter",
+			content: "---",
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Equal(t, "", cfg.PromptTemplate)
+			},
+		},
+		{
+			name:    "minimal front matter: opening delimiter with newline",
+			content: "---\n",
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Equal(t, "", cfg.PromptTemplate)
+			},
+		},
+		{
+			name:    "minimal front matter: empty YAML block",
+			content: "---\n---",
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Equal(t, "", cfg.PromptTemplate)
+			},
+		},
+		{
+			name:    "minimal front matter: empty YAML block with trailing newline",
+			content: "---\n---\n",
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Equal(t, "", cfg.PromptTemplate)
+			},
+		},
+		{
+			name: "prompt template preserves literal $VARIABLE patterns",
+			content: `---
+model: openai/gpt-5-codex
+project_url: https://linear.app/example/project/test
+---
+Fix $ISSUE_ID in the codebase.
+`,
+			wantErr: nil,
+			assertionsFunc: func(t *testing.T, cfg *WorkflowConfig) {
+				require.NotNil(t, cfg)
+				assert.Contains(t, cfg.PromptTemplate, "Fix $ISSUE_ID")
+				assert.NotContains(t, cfg.PromptTemplate, "Fix  in")
+			},
+		},
 	}
 
 	for _, tt := range tests {
