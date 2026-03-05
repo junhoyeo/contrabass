@@ -14,6 +14,7 @@ afterEach(() => {
 
 describe('RetryQueue', () => {
   it('renders retry rows and error messages', () => {
+    const longError = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890'
     const entries: BackoffEntry[] = [
       {
         issue_id: 'ISSUE-10',
@@ -27,6 +28,12 @@ describe('RetryQueue', () => {
         retry_at: '2000-01-01T00:00:00.000Z',
         error: 'process timed out',
       },
+      {
+        issue_id: 'ISSUE-30',
+        attempt: 3,
+        retry_at: '2000-01-01T00:00:00.000Z',
+        error: longError,
+      },
     ]
 
     render(<RetryQueue entries={entries} />)
@@ -36,8 +43,9 @@ describe('RetryQueue', () => {
     expectInDocument(screen.getByText('ISSUE-20'))
     expectInDocument(screen.getByText('failed to acquire lock'))
     expectInDocument(screen.getByText('process timed out'))
+    expectInDocument(screen.getByText(`${longError.slice(0, 57)}...`))
     expectInDocument(screen.getByText('Unknown'))
-    expectInDocument(screen.getByText('Ready'))
+    expect(screen.getAllByText('Ready')).toHaveLength(2)
   })
 
   it('renders empty state when queue is empty', () => {

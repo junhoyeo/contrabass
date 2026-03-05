@@ -31,7 +31,7 @@ function truncateError(error: string, limit = 60): string {
     return error
   }
 
-  return `${error.slice(0, limit - 1)}...`
+  return `${error.slice(0, limit - 3)}...`
 }
 
 export function RetryQueue({ entries }: RetryQueueProps) {
