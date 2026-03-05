@@ -54,7 +54,7 @@ func TestFetchIssues_ParsesResponse(t *testing.T) {
 		req := parseGQLRequest(t, r)
 		assert.Contains(t, req.Query, "issues")
 		assert.Equal(t, "test-project", req.Variables["projectSlug"])
-		assert.Equal(t, "Bearer test-api-key", r.Header.Get("Authorization"))
+		assert.Equal(t, "test-api-key", r.Header.Get("Authorization"))
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 
 		respondJSON(w, 200, map[string]interface{}{
@@ -661,7 +661,6 @@ func TestNormalizeIssue_PopulatesExpandedFields(t *testing.T) {
 	assert.True(t, issue2.CreatedAt.IsZero())
 	assert.True(t, issue2.UpdatedAt.IsZero())
 }
-
 
 // --- UpdateIssueState Edge Case Tests ---
 

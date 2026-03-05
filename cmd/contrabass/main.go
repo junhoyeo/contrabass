@@ -31,7 +31,7 @@ var (
 	runTUIProgram       = func(p *tea.Program) (tea.Model, error) {
 		return p.Run()
 	}
-	startTUIEventBridge   = func(ctx context.Context, p *tea.Program, events <-chan orchestrator.OrchestratorEvent) {
+	startTUIEventBridge = func(ctx context.Context, p *tea.Program, events <-chan orchestrator.OrchestratorEvent) {
 		tui.StartEventBridge(ctx, p, events)
 	}
 	runTUIShutdownTimeout = 6 * time.Second
@@ -126,6 +126,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) erro
 	linearClient := tracker.NewLinearClient(tracker.LinearConfig{
 		APIKey:      os.Getenv("LINEAR_API_KEY"),
 		ProjectSlug: projectSlug(cfg),
+		AssigneeID:  cfg.TrackerAssigneeID(),
 	})
 
 	// 7. Create workspace manager (uses cwd as repo root)
@@ -138,7 +139,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) erro
 	// 8. Create agent runner
 	codexBin := os.Getenv("CODEX_BINARY")
 	if codexBin == "" {
-		codexBin = "codex"
+		codexBin = cfg.CodexBinaryPath()
 	}
 	agentRunner := agent.NewCodexRunner(codexBin, 30*time.Second)
 

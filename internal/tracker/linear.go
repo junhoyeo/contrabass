@@ -296,7 +296,7 @@ func (c *LinearClient) doGraphQL(ctx context.Context, query string, variables ma
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
