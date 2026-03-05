@@ -6,8 +6,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 
-	"github.com/junhoyeo/symphony-charm/internal/types"
+	"github.com/junhoyeo/symphony-charm/internal/orchestrator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,149 +48,223 @@ func newSnapshotModel() Model {
 	return m
 }
 
-func syncModel(m Model) Model {
-	m.table = m.table.Update(agentRowsSorted(m.agents))
-	m.backoff = m.backoff.Update(backoffRowsSorted(m.backoffs))
-	m.header = m.header.Update(m.stats)
-	return m
+// applyEvent drives model state through the real Update() path
+func applyEvent(m Model, event orchestrator.OrchestratorEvent) Model {
+	msg := OrchestratorEventMsg{Event: event}
+	updated, _ := m.Update(msg)
+	return updated.(Model)
+}
+
+// refreshModel updates derived fields (Age, RetryIn, etc.)
+func refreshModel(m Model, now time.Time) Model {
+	updated, _ := m.Update(tickMsg(now))
+	return updated.(Model)
 }
 
 func TestSnapshotIdle(t *testing.T) {
-	m := syncModel(newSnapshotModel())
+	m := newSnapshotModel()
+	// Refresh to sync tables and header
+	m = refreshModel(m, time.Now())
 	rendered := stripANSI(m.View().Content)
 	assertGolden(t, "idle", rendered)
 }
 
 func TestSnapshotSingleAgent(t *testing.T) {
 	m := newSnapshotModel()
-	m.agents["ISSUE-1"] = AgentRow{
+	now := time.Now()
+
+	// Apply AgentStarted event
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventAgentStarted,
 		IssueID:   "ISSUE-1",
-		Stage:     "StreamingTurn",
-		PID:       12345,
-		Age:       "2m 30s",
-		Turn:      1,
-		TokensIn:  5000,
-		TokensOut: 2000,
-		SessionID: "sess-abc123",
-		LastEvent: "AgentStarted",
-		Phase:     types.StreamingTurn,
-	}
-	m = syncModel(m)
+		Timestamp: now,
+		Data: orchestrator.AgentStarted{
+			Attempt:   1,
+			PID:       12345,
+			SessionID: "sess-abc123",
+		},
+	})
+
+	// Apply StatusUpdate event
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventStatusUpdate,
+		IssueID:   "ISSUE-1",
+		Timestamp: now.Add(2*time.Minute + 30*time.Second),
+		Data: orchestrator.StatusUpdate{
+			Stats: orchestrator.Stats{
+				Running:        1,
+				MaxAgents:      8,
+				TotalTokensIn:  5000,
+				TotalTokensOut: 2000,
+				StartTime:      now,
+			},
+		},
+	})
+
+	// Refresh to update derived fields (Age, etc.)
+	m = refreshModel(m, now.Add(2*time.Minute+30*time.Second))
+
 	rendered := stripANSI(m.View().Content)
 	assertGolden(t, "single_agent", rendered)
 }
 
 func TestSnapshotMultipleAgents(t *testing.T) {
 	m := newSnapshotModel()
-	m.agents["ISSUE-1"] = AgentRow{
+	now := time.Now()
+
+	// Apply AgentStarted for ISSUE-1
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventAgentStarted,
 		IssueID:   "ISSUE-1",
-		Stage:     "InitializingSession",
-		PID:       10001,
-		Age:       "10s",
-		Turn:      1,
-		TokensIn:  100,
-		TokensOut: 50,
-		SessionID: "sess-aaa111",
-		LastEvent: "AgentStarted",
-		Phase:     types.InitializingSession,
-	}
-	m.agents["ISSUE-2"] = AgentRow{
+		Timestamp: now,
+		Data: orchestrator.AgentStarted{
+			Attempt:   1,
+			PID:       10001,
+			SessionID: "sess-aaa111",
+		},
+	})
+
+	// Apply AgentStarted for ISSUE-2
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventAgentStarted,
 		IssueID:   "ISSUE-2",
-		Stage:     "StreamingTurn",
-		PID:       10002,
-		Age:       "1m 45s",
-		Turn:      2,
-		TokensIn:  8000,
-		TokensOut: 3500,
-		SessionID: "sess-bbb222",
-		LastEvent: "StatusUpdate",
-		Phase:     types.StreamingTurn,
-	}
-	m.agents["ISSUE-3"] = AgentRow{
+		Timestamp: now.Add(10 * time.Second),
+		Data: orchestrator.AgentStarted{
+			Attempt:   2,
+			PID:       10002,
+			SessionID: "sess-bbb222",
+		},
+	})
+
+	// Apply AgentStarted for ISSUE-3
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventAgentStarted,
 		IssueID:   "ISSUE-3",
-		Stage:     "Finishing",
-		PID:       10003,
-		Age:       "5m 0s",
-		Turn:      1,
-		TokensIn:  15000,
-		TokensOut: 6000,
-		SessionID: "sess-ccc333",
-		LastEvent: "AgentFinished",
-		Phase:     types.Finishing,
-	}
-	m.stats = HeaderData{
-		RunningAgents: 3,
-		MaxAgents:     8,
-		TokensIn:      23100,
-		TokensOut:     9550,
-		TokensTotal:   32650,
-		RefreshIn:     1,
-	}
-	m = syncModel(m)
+		Timestamp: now.Add(10 * time.Second),
+		Data: orchestrator.AgentStarted{
+			Attempt:   1,
+			PID:       10003,
+			SessionID: "sess-ccc333",
+		},
+	})
+
+	// Apply StatusUpdate with all stats
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventStatusUpdate,
+		IssueID:   "ISSUE-1",
+		Timestamp: now.Add(1*time.Minute + 45*time.Second),
+		Data: orchestrator.StatusUpdate{
+			Stats: orchestrator.Stats{
+				Running:        3,
+				MaxAgents:      8,
+				TotalTokensIn:  23100,
+				TotalTokensOut: 9550,
+				StartTime:      now,
+			},
+		},
+	})
+
+	// Refresh to update derived fields
+	m = refreshModel(m, now.Add(5*time.Minute))
+
 	rendered := stripANSI(m.View().Content)
 	assertGolden(t, "multiple_agents", rendered)
 }
 
 func TestSnapshotBackoffQueue(t *testing.T) {
 	m := newSnapshotModel()
-	m.backoffs["ISSUE-5"] = BackoffRow{
-		IssueID: "ISSUE-5",
-		Attempt: 2,
-		RetryIn: "15s",
-		Error:   "rate limit exceeded",
-	}
-	m.backoffs["ISSUE-7"] = BackoffRow{
-		IssueID: "ISSUE-7",
-		Attempt: 4,
-		RetryIn: "45s",
-		Error:   "server overload (-32001)",
-	}
-	m = syncModel(m)
+	now := time.Now()
+
+	// Apply BackoffEnqueued for ISSUE-5
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventBackoffEnqueued,
+		IssueID:   "ISSUE-5",
+		Timestamp: now,
+		Data: orchestrator.BackoffEnqueued{
+			Attempt: 2,
+			RetryAt: now.Add(15 * time.Second),
+			Error:   "rate limit exceeded",
+		},
+	})
+
+	// Apply BackoffEnqueued for ISSUE-7
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventBackoffEnqueued,
+		IssueID:   "ISSUE-7",
+		Timestamp: now,
+		Data: orchestrator.BackoffEnqueued{
+			Attempt: 4,
+			RetryAt: now.Add(45 * time.Second),
+			Error:   "server overload (-32001)",
+		},
+	})
+
+	// Refresh to update derived fields
+	m = refreshModel(m, now)
+
 	rendered := stripANSI(m.View().Content)
 	assertGolden(t, "backoff_queue", rendered)
 }
 
 func TestSnapshotMixed(t *testing.T) {
 	m := newSnapshotModel()
-	m.agents["ISSUE-1"] = AgentRow{
+	now := time.Now()
+
+	// Apply AgentStarted for ISSUE-1
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventAgentStarted,
 		IssueID:   "ISSUE-1",
-		Stage:     "StreamingTurn",
-		PID:       20001,
-		Age:       "3m 15s",
-		Turn:      1,
-		TokensIn:  12000,
-		TokensOut: 4500,
-		SessionID: "sess-mix111",
-		LastEvent: "StatusUpdate",
-		Phase:     types.StreamingTurn,
-	}
-	m.agents["ISSUE-2"] = AgentRow{
+		Timestamp: now,
+		Data: orchestrator.AgentStarted{
+			Attempt:   1,
+			PID:       20001,
+			SessionID: "sess-mix111",
+		},
+	})
+
+	// Apply AgentStarted for ISSUE-2
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventAgentStarted,
 		IssueID:   "ISSUE-2",
-		Stage:     "InitializingSession",
-		PID:       20002,
-		Age:       "5s",
-		Turn:      3,
-		TokensIn:  0,
-		TokensOut: 0,
-		SessionID: "sess-mix222",
-		LastEvent: "AgentStarted",
-		Phase:     types.InitializingSession,
-	}
-	m.backoffs["ISSUE-3"] = BackoffRow{
-		IssueID: "ISSUE-3",
-		Attempt: 2,
-		RetryIn: "30s",
-		Error:   "context deadline exceeded",
-	}
-	m.stats = HeaderData{
-		RunningAgents: 2,
-		MaxAgents:     8,
-		TokensIn:      12000,
-		TokensOut:     4500,
-		TokensTotal:   16500,
-		RefreshIn:     1,
-	}
-	m = syncModel(m)
+		Timestamp: now.Add(5 * time.Second),
+		Data: orchestrator.AgentStarted{
+			Attempt:   3,
+			PID:       20002,
+			SessionID: "sess-mix222",
+		},
+	})
+
+	// Apply BackoffEnqueued for ISSUE-3
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventBackoffEnqueued,
+		IssueID:   "ISSUE-3",
+		Timestamp: now.Add(5 * time.Second),
+		Data: orchestrator.BackoffEnqueued{
+			Attempt: 2,
+			RetryAt: now.Add(35 * time.Second),
+			Error:   "context deadline exceeded",
+		},
+	})
+
+	// Apply StatusUpdate
+	m = applyEvent(m, orchestrator.OrchestratorEvent{
+		Type:      orchestrator.EventStatusUpdate,
+		IssueID:   "ISSUE-1",
+		Timestamp: now.Add(3*time.Minute + 15*time.Second),
+		Data: orchestrator.StatusUpdate{
+			Stats: orchestrator.Stats{
+				Running:        2,
+				MaxAgents:      8,
+				TotalTokensIn:  12000,
+				TotalTokensOut: 4500,
+				StartTime:      now,
+			},
+		},
+	})
+
+	// Refresh to update derived fields
+	m = refreshModel(m, now.Add(3*time.Minute+15*time.Second))
+
 	rendered := stripANSI(m.View().Content)
 	assertGolden(t, "mixed", rendered)
 }

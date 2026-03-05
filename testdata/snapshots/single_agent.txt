@@ -1,11 +1,11 @@
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ SYMPHONY STATUS                                                                                  │
-│ Agents: 0/0    Throughput: 0.0 tok/s    Runtime: 0s                                              │
-│ Tokens: in: 0 | out: 0 | total: 0                                                                │
+│ Agents: 1/8    Throughput: 46.7 tok/s    Runtime: 2m 30s                                         │
+│ Tokens: in: 5,000 | out: 2,000 | total: 7,000                                                    │
 │ Model:     Project:                                                                              │
 │ Refresh in 1s                                                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   ID           STAGE              PID     AGE     TOKENS         SESSION          EVENT             
   ────────────────────────────────────────────────────────────────────────────────────────────────  
-  ● ISSUE-1      StreamingTurn      12345   2m 30s  5.0k/2.0k      sess-abc123      AgentStarted    
+  ● ISSUE-1      InitializingSession 12345   2m30s   0/0            sess-abc123      AgentStarted   
                                                                                                     
