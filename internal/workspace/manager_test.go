@@ -149,6 +149,98 @@ func TestManager_CreateConcurrentIssueWorktrees(t *testing.T) {
 	}
 }
 
+func TestManager_CreateConcurrentSameIssueSerialized(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+	ctx := context.Background()
+
+	issueID := "ISSUE-SAME"
+	workspacePath := filepath.Join(repoDir, "workspaces", issueID)
+
+	const workers = 8
+	start := make(chan struct{})
+	errCh := make(chan error, workers)
+	pathCh := make(chan string, workers)
+
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			path, err := mgr.Create(ctx, types.Issue{ID: issueID})
+			if err != nil {
+				errCh <- err
+				return
+			}
+			pathCh <- path
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+	close(pathCh)
+
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+	for path := range pathCh {
+		assert.Equal(t, workspacePath, path)
+	}
+	assert.Equal(t, []string{issueID}, mgr.List())
+}
+
+func TestManager_CreateCleanupConcurrentSameIssueSerialized(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+	ctx := context.Background()
+
+	issueID := "ISSUE-RACE"
+	workspacePath := filepath.Join(repoDir, "workspaces", issueID)
+
+	const iterations = 40
+	for range iterations {
+		start := make(chan struct{})
+		errCh := make(chan error, 2)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := mgr.Create(ctx, types.Issue{ID: issueID})
+			errCh <- err
+		}()
+
+		go func() {
+			defer wg.Done()
+			<-start
+			errCh <- mgr.Cleanup(ctx, issueID)
+		}()
+
+		close(start)
+		wg.Wait()
+		close(errCh)
+
+		for err := range errCh {
+			require.NoError(t, err)
+		}
+
+		exists := mgr.Exists(issueID)
+		assert.Equal(t, dirExists(workspacePath), exists)
+	}
+
+	require.NoError(t, mgr.Cleanup(ctx, issueID))
+	assert.False(t, mgr.Exists(issueID))
+	assert.NoDirExists(t, workspacePath)
+}
+
 func TestManager_CreateReturnsClearErrorWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -187,4 +279,9 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	output, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "git %v failed: %s", args, string(output))
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
