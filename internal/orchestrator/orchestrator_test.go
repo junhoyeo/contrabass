@@ -12,7 +12,9 @@ import (
 	"github.com/junhoyeo/symphony-charm/internal/tracker"
 	"github.com/junhoyeo/symphony-charm/internal/types"
 	"github.com/junhoyeo/symphony-charm/internal/workspace"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 )
 
 type staticConfig struct{ cfg *config.WorkflowConfig }
@@ -566,4 +568,90 @@ func TestEventsEmitted(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-done)
+}
+
+func TestOrchestrator_StopRunCleansOrphanedEntry(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{name: "running_entry_is_removed_and_capacity_recovers"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			issue := types.Issue{ID: "ISS-STOP-1", Title: "Stop Test", State: types.Unclaimed}
+			mt := newObservingTracker([]types.Issue{issue})
+			mw := workspace.NewMockManager(t.TempDir())
+			mr := &agent.MockRunner{
+				Events: []types.AgentEvent{{Type: "turn/output"}},
+				Delay:  2 * time.Second,
+			}
+			cfg := &staticConfig{cfg: testConfig()}
+			orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+
+			runSignals := make(chan runSignal, 16)
+			supervisor := &errgroup.Group{}
+
+			orch.dispatchIssue(ctx, ctx, cfg.cfg, issue, 1, supervisor, runSignals)
+
+			require.Eventually(t, func() bool {
+				return orch.RunningCount() == 1
+			}, time.Second, 10*time.Millisecond)
+			assert.False(t, orch.canDispatch(1))
+
+			orch.stopRun(ctx, issue.ID)
+
+			require.Eventually(t, func() bool {
+				return orch.RunningCount() == 0
+			}, time.Second, 10*time.Millisecond)
+			assert.True(t, orch.canDispatch(1))
+			require.NoError(t, supervisor.Wait())
+		})
+	}
+}
+
+func TestOrchestrator_ReconcileForceRemovesBrokenDone(t *testing.T) {
+	tests := []struct {
+		name   string
+		entry  *runEntry
+		issue  string
+		config *config.WorkflowConfig
+	}{
+		{
+			name:  "nil_done_channel_is_deleted_without_stop",
+			issue: "ISS-BROKEN-DONE",
+			entry: &runEntry{
+				issue:   types.Issue{ID: "ISS-BROKEN-DONE", State: types.Running},
+				attempt: types.RunAttempt{IssueID: "ISS-BROKEN-DONE", Phase: types.InitializingSession, StartTime: time.Now()},
+				process: &agent.AgentProcess{PID: 42, SessionID: "broken", Done: nil},
+				cancel:  func() {},
+			},
+			config: testConfig(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mt := newObservingTracker(nil)
+			mw := workspace.NewMockManager(t.TempDir())
+			runner := &agent.MockRunner{}
+			orch := NewOrchestrator(mt, mw, runner, &staticConfig{cfg: tt.config}, nil)
+
+			orch.mu.Lock()
+			orch.running[tt.issue] = tt.entry
+			orch.stats.Running = len(orch.running)
+			orch.mu.Unlock()
+
+			orch.reconcileRunning(context.Background(), tt.config)
+
+			assert.Equal(t, 0, orch.RunningCount())
+			orch.mu.Lock()
+			_, exists := orch.running[tt.issue]
+			orch.mu.Unlock()
+			assert.False(t, exists)
+		})
+	}
 }
