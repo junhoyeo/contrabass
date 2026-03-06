@@ -74,6 +74,24 @@ func init() {
 	teamCmd.AddCommand(teamCancelCmd)
 }
 
+func logTeamEvents(ctx context.Context, logger *slog.Logger, events <-chan types.TeamEvent) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			logger.Info("team event",
+				"type", event.Type,
+				"team", event.TeamName,
+				"data", event.Data,
+			)
+		}
+	}
+}
+
 // createRunner creates an AgentRunner based on the workflow config.
 func createRunner(cfg *config.WorkflowConfig) (agent.AgentRunner, error) {
 	switch cfg.AgentType() {
@@ -204,15 +222,7 @@ func runTeam(cmd *cobra.Command, args []string) error {
 	}()
 
 	// 10. Start event printer goroutine
-	go func() {
-		for event := range coordinator.Events {
-			logger.Info("team event",
-				"type", event.Type,
-				"team", event.TeamName,
-				"data", event.Data,
-			)
-		}
-	}()
+	go logTeamEvents(ctx, logger, coordinator.Events)
 
 	// 11. Run team
 	if err := coordinator.Run(ctx, tasks); err != nil {
