@@ -12,7 +12,7 @@ const (
 	defaultMaxRetryBackoffMs  = 300_000
 	defaultAgentTimeoutMs     = 600_000
 	defaultStallTimeoutMs     = 120_000
-	defaultTrackerType        = "linear"
+	defaultTrackerType        = "internal"
 	defaultBackoffStrategy    = "exponential"
 	defaultWorkspaceBaseDir   = "."
 	defaultBranchPrefix       = "symphony/"
@@ -22,6 +22,8 @@ const (
 	defaultAgentType          = "codex"
 	defaultOpenCodeBinaryPath = "opencode serve"
 	defaultGitHubEndpoint     = "https://api.github.com"
+	defaultLocalBoardDir      = ".contrabass/board"
+	defaultLocalIssuePrefix   = "CB"
 
 	defaultOhMyOpenCodePluginVersion = "oh-my-opencode"
 	defaultOhMyOpenCodeAgentModel    = "anthropic/claude-sonnet-4-6"
@@ -58,16 +60,18 @@ type WorkflowConfig struct {
 }
 
 type TrackerConfig struct {
-	Type       string   `yaml:"type"`
-	ProjectURL string   `yaml:"project_url"`
-	TeamID     string   `yaml:"team_id"`
-	AssigneeID string   `yaml:"assignee_id"`
-	Owner      string   `yaml:"owner"`
-	Repo       string   `yaml:"repo"`
-	Labels     []string `yaml:"labels"`
-	Assignee   string   `yaml:"assignee"`
-	Token      string   `yaml:"token"`
-	Endpoint   string   `yaml:"endpoint"`
+	Type        string   `yaml:"type"`
+	ProjectURL  string   `yaml:"project_url"`
+	TeamID      string   `yaml:"team_id"`
+	AssigneeID  string   `yaml:"assignee_id"`
+	BoardDir    string   `yaml:"board_dir"`
+	IssuePrefix string   `yaml:"issue_prefix"`
+	Owner       string   `yaml:"owner"`
+	Repo        string   `yaml:"repo"`
+	Labels      []string `yaml:"labels"`
+	Assignee    string   `yaml:"assignee"`
+	Token       string   `yaml:"token"`
+	Endpoint    string   `yaml:"endpoint"`
 }
 
 type PollingConfig struct {
@@ -203,6 +207,20 @@ func (c *WorkflowConfig) TrackerAssigneeID() string {
 		return ""
 	}
 	return c.Tracker.AssigneeID
+}
+
+func (c *WorkflowConfig) LocalBoardDir() string {
+	if c == nil || c.Tracker.BoardDir == "" {
+		return defaultLocalBoardDir
+	}
+	return c.Tracker.BoardDir
+}
+
+func (c *WorkflowConfig) LocalIssuePrefix() string {
+	if c == nil || c.Tracker.IssuePrefix == "" {
+		return defaultLocalIssuePrefix
+	}
+	return c.Tracker.IssuePrefix
 }
 
 func (c *WorkflowConfig) PollingIntervalMs() int {

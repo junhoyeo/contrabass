@@ -73,7 +73,7 @@ progress in a terminal UI built with the Charm stack.`,
 
 	_ = cmd.MarkFlagRequired("config")
 
-	cmd.AddCommand(teamCmd)
+	cmd.AddCommand(teamCmd, boardCmd)
 
 	return cmd
 }
@@ -167,8 +167,14 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) erro
 			Assignee: cfg.GitHubAssignee(),
 			Endpoint: cfg.GitHubEndpoint(),
 		})
+	case "internal", "local":
+		trackerClient = tracker.NewLocalTracker(tracker.LocalConfig{
+			BoardDir:    cfg.LocalBoardDir(),
+			IssuePrefix: cfg.LocalIssuePrefix(),
+			Actor:       cfg.GitHubAssignee(),
+		})
 	default:
-		return fmt.Errorf("unknown tracker type: %q (supported: linear, github)", cfg.TrackerType())
+		return fmt.Errorf("unknown tracker type: %q (supported: internal, local, linear, github)", cfg.TrackerType())
 	}
 
 	// 7. Create workspace manager (uses cwd as repo root)
