@@ -38,7 +38,7 @@ func TestParseWorkflow(t *testing.T) {
 
 				projectURL, err := cfg.ProjectURL()
 				require.NoError(t, err)
-				assert.Equal(t, "https://linear.app/example/project/symphony", projectURL)
+				assert.Equal(t, "https://linear.app/contrabass/project/contrabass-symphony-demo-4bded72b77d3", projectURL)
 
 				assert.Contains(t, cfg.PromptTemplate, "{{ issue.title }}")
 				assert.Contains(t, cfg.PromptTemplate, "{{ issue.description }}")
