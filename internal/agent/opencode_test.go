@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,9 +56,11 @@ func TestOpenCodeRunner_Start(t *testing.T) {
 	}))
 	defer server.Close()
 
+	workspace := t.TempDir()
 	runner := newTestOpenCodeRunner(server.URL)
+	primeTestOpenCodeServer(runner, workspace, server.URL, 4242)
 
-	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-1", Title: "OpenCode"}, t.TempDir(), "hello")
+	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-1", Title: "OpenCode"}, workspace, "hello")
 	require.NoError(t, err)
 	require.Equal(t, "sess-1", proc.SessionID)
 	require.Equal(t, 4242, proc.PID)
@@ -97,11 +100,11 @@ func TestOpenCodeRunner_StartWithAuth(t *testing.T) {
 	}))
 	defer server.Close()
 
+	workspace := t.TempDir()
 	runner := NewOpenCodeRunner("opencode serve", 0, "secret", "alice", 2*time.Second)
-	runner.serverURL = server.URL
-	runner.serverProcess = &exec.Cmd{Process: &os.Process{Pid: 4242}}
+	primeTestOpenCodeServer(runner, workspace, server.URL, 4242)
 
-	proc, err := runner.Start(context.Background(), types.Issue{}, t.TempDir(), "hello")
+	proc, err := runner.Start(context.Background(), types.Issue{}, workspace, "hello")
 	require.NoError(t, err)
 	assertDoneNil(t, proc.Done)
 
@@ -156,8 +159,10 @@ func TestOpenCodeRunner_SessionError(t *testing.T) {
 	}))
 	defer server.Close()
 
+	workspace := t.TempDir()
 	runner := newTestOpenCodeRunner(server.URL)
-	proc, err := runner.Start(context.Background(), types.Issue{}, t.TempDir(), "hello")
+	primeTestOpenCodeServer(runner, workspace, server.URL, 4242)
+	proc, err := runner.Start(context.Background(), types.Issue{}, workspace, "hello")
 	require.NoError(t, err)
 
 	select {
@@ -230,8 +235,10 @@ func TestOpenCodeRunner_SSESessionFilter(t *testing.T) {
 	}))
 	defer server.Close()
 
+	workspace := t.TempDir()
 	runner := newTestOpenCodeRunner(server.URL)
-	proc, err := runner.Start(context.Background(), types.Issue{}, t.TempDir(), "hello")
+	primeTestOpenCodeServer(runner, workspace, server.URL, 4242)
+	proc, err := runner.Start(context.Background(), types.Issue{}, workspace, "hello")
 	require.NoError(t, err)
 
 	events := collectOpenCodeEvents(t, proc.Events, proc.Done, 2, 3*time.Second)
@@ -262,8 +269,10 @@ func TestOpenCodeRunner_HeartbeatIgnored(t *testing.T) {
 	}))
 	defer server.Close()
 
+	workspace := t.TempDir()
 	runner := newTestOpenCodeRunner(server.URL)
-	proc, err := runner.Start(context.Background(), types.Issue{}, t.TempDir(), "hello")
+	primeTestOpenCodeServer(runner, workspace, server.URL, 4242)
+	proc, err := runner.Start(context.Background(), types.Issue{}, workspace, "hello")
 	require.NoError(t, err)
 
 	events := collectOpenCodeEvents(t, proc.Events, proc.Done, 1, 3*time.Second)
@@ -309,11 +318,13 @@ func TestOpenCodeRunner_ConcurrentSessions(t *testing.T) {
 	}))
 	defer server.Close()
 
+	workspace := t.TempDir()
 	runner := newTestOpenCodeRunner(server.URL)
+	primeTestOpenCodeServer(runner, workspace, server.URL, 4242)
 
-	proc1, err := runner.Start(context.Background(), types.Issue{}, t.TempDir(), "hello-1")
+	proc1, err := runner.Start(context.Background(), types.Issue{}, workspace, "hello-1")
 	require.NoError(t, err)
-	proc2, err := runner.Start(context.Background(), types.Issue{}, t.TempDir(), "hello-2")
+	proc2, err := runner.Start(context.Background(), types.Issue{}, workspace, "hello-2")
 	require.NoError(t, err)
 
 	require.Equal(t, 4242, proc1.PID)
@@ -335,11 +346,234 @@ func TestOpenCodeRunner_ConcurrentSessions(t *testing.T) {
 	}, time.Second, 20*time.Millisecond)
 }
 
+func TestOpenCodeRunner_DefaultWorkDir(t *testing.T) {
+	runner := NewOpenCodeRunner("opencode serve", 0, "", "", time.Second)
+	runner.SetWorkDir("/tmp/existing")
+
+	assert.Equal(t, "/tmp/existing", runner.defaultWorkDir())
+}
+
+func TestOpenCodeRunner_SetExtraEnvCopiesInput(t *testing.T) {
+	runner := NewOpenCodeRunner("opencode serve", 0, "", "", time.Second)
+	env := []string{"OPENCODE_CONFIG=/tmp/opencode.json"}
+
+	runner.SetExtraEnv(env)
+	env[0] = "OPENCODE_CONFIG=/tmp/mutated.json"
+
+	assert.Equal(t, []string{"OPENCODE_CONFIG=/tmp/opencode.json"}, runner.extraEnv)
+}
+
+func TestOpenCodeRunner_PortForNewServerLocked(t *testing.T) {
+	tests := []struct {
+		name    string
+		base    int
+		servers map[string]*openCodeServer
+		want    int
+	}{
+		{
+			name: "disabled when base port unset",
+			base: 0,
+			want: 0,
+		},
+		{
+			name: "uses configured base port first",
+			base: 8787,
+			want: 8787,
+		},
+		{
+			name: "increments past ports already assigned to other workspaces",
+			base: 8787,
+			servers: map[string]*openCodeServer{
+				"workspace-a": {port: 8787},
+				"workspace-b": {port: 8788},
+			},
+			want: 8789,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := NewOpenCodeRunner("opencode serve", tt.base, "", "", time.Second)
+			runner.servers = tt.servers
+
+			runner.mu.Lock()
+			port := runner.portForNewServerLocked()
+			runner.mu.Unlock()
+
+			assert.Equal(t, tt.want, port)
+		})
+	}
+}
+
+func TestOpenCodeRunner_WorkspaceScopedServers(t *testing.T) {
+	startA := make(chan struct{})
+	startB := make(chan struct{})
+
+	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/session":
+			_, _ = io.WriteString(w, `{"id":"sess-a"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/session/sess-a/prompt_async":
+			w.WriteHeader(http.StatusNoContent)
+			close(startA)
+		case r.Method == http.MethodPost && r.URL.Path == "/session/sess-a/abort":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/event":
+			setSSEHeaders(w)
+			<-startA
+			writeSSEEvent(w, "message", `{"type":"message.part.updated","properties":{"sessionID":"sess-a"},"content":"workspace-a"}`)
+			writeSSEEvent(w, "message", `{"type":"session.status","properties":{"sessionID":"sess-a","status":{"type":"idle"}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer serverA.Close()
+
+	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/session":
+			_, _ = io.WriteString(w, `{"id":"sess-b"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/session/sess-b/prompt_async":
+			w.WriteHeader(http.StatusNoContent)
+			close(startB)
+		case r.Method == http.MethodPost && r.URL.Path == "/session/sess-b/abort":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/event":
+			setSSEHeaders(w)
+			<-startB
+			writeSSEEvent(w, "message", `{"type":"message.part.updated","properties":{"sessionID":"sess-b"},"content":"workspace-b"}`)
+			writeSSEEvent(w, "message", `{"type":"session.status","properties":{"sessionID":"sess-b","status":{"type":"idle"}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer serverB.Close()
+
+	workspaceA := t.TempDir()
+	workspaceB := t.TempDir()
+	runner := NewOpenCodeRunner("opencode serve", 0, "", "", 2*time.Second)
+	primeTestOpenCodeServer(runner, workspaceA, serverA.URL, 4242)
+	primeTestOpenCodeServer(runner, workspaceB, serverB.URL, 4343)
+
+	procA, err := runner.Start(context.Background(), types.Issue{}, workspaceA, "hello-a")
+	require.NoError(t, err)
+	procB, err := runner.Start(context.Background(), types.Issue{}, workspaceB, "hello-b")
+	require.NoError(t, err)
+
+	require.Equal(t, 4242, procA.PID)
+	require.Equal(t, 4343, procB.PID)
+
+	eventsA := collectOpenCodeEvents(t, procA.Events, procA.Done, 2, 3*time.Second)
+	eventsB := collectOpenCodeEvents(t, procB.Events, procB.Done, 2, 3*time.Second)
+
+	assert.Equal(t, "workspace-a", eventsA[0].Data["content"])
+	assert.Equal(t, "workspace-b", eventsB[0].Data["content"])
+	assertDoneNil(t, procA.Done)
+	assertDoneNil(t, procB.Done)
+
+	require.NoError(t, runner.Stop(procA))
+	require.NoError(t, runner.Stop(procB))
+}
+
+func TestOpenCodeRunner_EnsureServerStartsWorkspacesInParallel(t *testing.T) {
+	stateDir := t.TempDir()
+	binaryPath := writeTestOpenCodeServerBinary(t, stateDir)
+
+	runner := NewOpenCodeRunner(binaryPath, 8787, "", "", 2*time.Second)
+	runner.SetExtraEnv([]string{"TEST_STATE_DIR=" + stateDir})
+	t.Cleanup(func() {
+		require.NoError(t, runner.Close())
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	workspaceA := filepath.Join(stateDir, "workspace-a")
+	workspaceB := filepath.Join(stateDir, "workspace-b")
+	require.NoError(t, os.MkdirAll(workspaceA, 0o755))
+	require.NoError(t, os.MkdirAll(workspaceB, 0o755))
+
+	type result struct {
+		url string
+		pid int
+		err error
+	}
+
+	results := make(chan result, 2)
+	go func() {
+		url, pid, err := runner.ensureServer(ctx, workspaceA)
+		results <- result{url: url, pid: pid, err: err}
+	}()
+	go func() {
+		url, pid, err := runner.ensureServer(ctx, workspaceB)
+		results <- result{url: url, pid: pid, err: err}
+	}()
+
+	assert.Eventually(t, func() bool {
+		_, errA := os.Stat(filepath.Join(stateDir, "started-8787"))
+		_, errB := os.Stat(filepath.Join(stateDir, "started-8788"))
+		return errA == nil && errB == nil
+	}, time.Second, 20*time.Millisecond)
+
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "release"), []byte("ok"), 0o644))
+
+	res1 := <-results
+	res2 := <-results
+	require.NoError(t, res1.err)
+	require.NoError(t, res2.err)
+	assert.NotZero(t, res1.pid)
+	assert.NotZero(t, res2.pid)
+	assert.ElementsMatch(t, []string{
+		"http://127.0.0.1:8787",
+		"http://127.0.0.1:8788",
+	}, []string{res1.url, res2.url})
+}
+
 func newTestOpenCodeRunner(serverURL string) *OpenCodeRunner {
 	r := NewOpenCodeRunner("opencode serve", 0, "", "", 2*time.Second)
-	r.serverURL = serverURL
-	r.serverProcess = &exec.Cmd{Process: &os.Process{Pid: 4242}}
+	primeTestOpenCodeServer(r, "", serverURL, 4242)
 	return r
+}
+
+func primeTestOpenCodeServer(r *OpenCodeRunner, workspace, serverURL string, pid int) {
+	r.servers[serverKey(workspace)] = &openCodeServer{
+		url:     serverURL,
+		process: &exec.Cmd{Process: &os.Process{Pid: pid}},
+		port:    0,
+	}
+}
+
+func writeTestOpenCodeServerBinary(t *testing.T, stateDir string) string {
+	t.Helper()
+
+	scriptPath := filepath.Join(stateDir, "fake-opencode.sh")
+	script := `#!/bin/sh
+set -eu
+
+state_dir="${TEST_STATE_DIR:?TEST_STATE_DIR is required}"
+port="0"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --port)
+      port="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+touch "$state_dir/started-$port"
+while [ ! -f "$state_dir/release" ]; do
+  sleep 0.05
+done
+
+echo "listening on http://127.0.0.1:$port"
+sleep 30
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+	return scriptPath
 }
 
 func setSSEHeaders(w http.ResponseWriter) {

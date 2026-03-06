@@ -427,3 +427,118 @@ func TestParseWorkflow_BackwardCompat(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkflowConfig_OhMyOpenCodeDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		cfg               *WorkflowConfig
+		wantPluginVersion string
+		wantPlugins       []string
+		wantAgents        map[string]OhMyOpenCodeAgent
+		wantCategories    map[string]OhMyOpenCodeCategory
+		wantProviderName  string
+		wantBaseURL       string
+		wantAPIKey        string
+	}{
+		{
+			name:              "nil config returns defaults",
+			cfg:               nil,
+			wantPluginVersion: defaultOhMyOpenCodePluginVersion,
+			wantPlugins:       []string{},
+			wantAgents:        map[string]OhMyOpenCodeAgent{},
+			wantCategories:    map[string]OhMyOpenCodeCategory{},
+			wantProviderName:  "",
+			wantBaseURL:       "",
+			wantAPIKey:        "",
+		},
+		{
+			name:              "empty OhMyOpenCodeConfig returns defaults",
+			cfg:               &WorkflowConfig{},
+			wantPluginVersion: defaultOhMyOpenCodePluginVersion,
+			wantPlugins:       []string{},
+			wantAgents:        map[string]OhMyOpenCodeAgent{},
+			wantCategories:    map[string]OhMyOpenCodeCategory{},
+			wantProviderName:  "",
+			wantBaseURL:       "",
+			wantAPIKey:        "",
+		},
+		{
+			name: "populated config returns configured values",
+			cfg: &WorkflowConfig{
+				OhMyOpenCode: OhMyOpenCodeConfig{
+					PluginVersion: "oh-my-opencode@3.10.0",
+					Plugins:       []string{"opencode-antigravity-auth@1.2.7-beta.3"},
+					Agents: map[string]OhMyOpenCodeAgent{
+						"sisyphus": {Model: "anthropic/claude-opus-4-5"},
+					},
+					Categories: map[string]OhMyOpenCodeCategory{
+						"quick": {Model: "anthropic/claude-haiku-4-5"},
+					},
+					Provider: OhMyOpenCodeProvider{
+						Name:    "anthropic",
+						BaseURL: "https://proxy.example.com/v1",
+						APIKey:  "sk-test",
+					},
+				},
+			},
+			wantPluginVersion: "oh-my-opencode@3.10.0",
+			wantPlugins:       []string{"opencode-antigravity-auth@1.2.7-beta.3"},
+			wantAgents: map[string]OhMyOpenCodeAgent{
+				"sisyphus": {Model: "anthropic/claude-opus-4-5"},
+			},
+			wantCategories: map[string]OhMyOpenCodeCategory{
+				"quick": {Model: "anthropic/claude-haiku-4-5"},
+			},
+			wantProviderName: "anthropic",
+			wantBaseURL:      "https://proxy.example.com/v1",
+			wantAPIKey:       "sk-test",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.wantPluginVersion, tt.cfg.OhMyOpenCodePluginVersion())
+			assert.Equal(t, tt.wantPlugins, tt.cfg.OhMyOpenCodePlugins())
+			assert.Equal(t, tt.wantAgents, tt.cfg.OhMyOpenCodeAgents())
+			assert.Equal(t, tt.wantCategories, tt.cfg.OhMyOpenCodeCategories())
+			assert.Equal(t, tt.wantProviderName, tt.cfg.OhMyOpenCodeProviderName())
+			assert.Equal(t, tt.wantBaseURL, tt.cfg.OhMyOpenCodeProviderBaseURL())
+			assert.Equal(t, tt.wantAPIKey, tt.cfg.OhMyOpenCodeProviderAPIKey())
+		})
+	}
+}
+
+func TestParseWorkflow_OhMyOpenCodeConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ParseWorkflow("../../testdata/workflow.ohmyopencode.md")
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	assert.Equal(t, "github", cfg.TrackerType())
+	assert.Equal(t, "oh-my-opencode", cfg.AgentType())
+	assert.Equal(t, "oh-my-opencode@3.10.0", cfg.OhMyOpenCodePluginVersion())
+	assert.Equal(t, []string{"opencode-antigravity-auth@1.2.7-beta.3"}, cfg.OhMyOpenCodePlugins())
+
+	agents := cfg.OhMyOpenCodeAgents()
+	require.Contains(t, agents, "sisyphus")
+	assert.Equal(t, "anthropic/claude-sonnet-4-6", agents["sisyphus"].Model)
+
+	categories := cfg.OhMyOpenCodeCategories()
+	require.Contains(t, categories, "quick")
+	assert.Equal(t, "anthropic/claude-haiku-4-5", categories["quick"].Model)
+	require.Contains(t, categories, "visual-engineering")
+	assert.Equal(t, "anthropic/claude-sonnet-4-6", categories["visual-engineering"].Model)
+
+	assert.Equal(t, "anthropic", cfg.OhMyOpenCodeProviderName())
+	assert.Equal(t, "https://proxy.example.com/v1", cfg.OhMyOpenCodeProviderBaseURL())
+	assert.Equal(t, "sk-test-key", cfg.OhMyOpenCodeProviderAPIKey())
+
+	assert.Equal(t, "opencode serve", cfg.OpenCodeBinaryPath())
+	assert.Equal(t, 8787, cfg.OpenCodePort())
+	assert.Contains(t, cfg.PromptTemplate, "{{ issue.title }}")
+}

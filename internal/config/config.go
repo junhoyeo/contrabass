@@ -20,6 +20,9 @@ const (
 	defaultAgentType          = "codex"
 	defaultOpenCodeBinaryPath = "opencode serve"
 	defaultGitHubEndpoint     = "https://api.github.com"
+
+	defaultOhMyOpenCodePluginVersion = "oh-my-opencode"
+	defaultOhMyOpenCodeAgentModel    = "anthropic/claude-sonnet-4-6"
 )
 
 var (
@@ -28,21 +31,22 @@ var (
 )
 
 type WorkflowConfig struct {
-	MaxConcurrencyRaw    int             `yaml:"max_concurrency"`
-	PollIntervalMsRaw    int             `yaml:"poll_interval_ms"`
-	MaxRetryBackoffMsRaw int             `yaml:"max_retry_backoff_ms"`
-	ModelRaw             string          `yaml:"model"`
-	ProjectURLRaw        string          `yaml:"project_url"`
-	AgentTimeoutMsRaw    int             `yaml:"agent_timeout_ms"`
-	StallTimeoutMsRaw    int             `yaml:"stall_timeout_ms"`
-	Tracker              TrackerConfig   `yaml:"tracker"`
-	Polling              PollingConfig   `yaml:"polling"`
-	Workspace            WorkspaceConfig `yaml:"workspace"`
-	Hooks                HooksConfig     `yaml:"hooks"`
-	Codex                CodexConfig     `yaml:"codex"`
-	Agent                AgentConfig     `yaml:"agent"`
-	OpenCode             OpenCodeConfig  `yaml:"opencode"`
-	PromptTemplate       string          `yaml:"-"`
+	MaxConcurrencyRaw    int                `yaml:"max_concurrency"`
+	PollIntervalMsRaw    int                `yaml:"poll_interval_ms"`
+	MaxRetryBackoffMsRaw int                `yaml:"max_retry_backoff_ms"`
+	ModelRaw             string             `yaml:"model"`
+	ProjectURLRaw        string             `yaml:"project_url"`
+	AgentTimeoutMsRaw    int                `yaml:"agent_timeout_ms"`
+	StallTimeoutMsRaw    int                `yaml:"stall_timeout_ms"`
+	Tracker              TrackerConfig      `yaml:"tracker"`
+	Polling              PollingConfig      `yaml:"polling"`
+	Workspace            WorkspaceConfig    `yaml:"workspace"`
+	Hooks                HooksConfig        `yaml:"hooks"`
+	Codex                CodexConfig        `yaml:"codex"`
+	Agent                AgentConfig        `yaml:"agent"`
+	OpenCode             OpenCodeConfig     `yaml:"opencode"`
+	OhMyOpenCode         OhMyOpenCodeConfig `yaml:"oh_my_opencode"`
+	PromptTemplate       string             `yaml:"-"`
 }
 
 type TrackerConfig struct {
@@ -90,6 +94,33 @@ type OpenCodeConfig struct {
 	Port       int    `yaml:"port"`
 	Password   string `yaml:"password"`
 	Username   string `yaml:"username"`
+}
+
+// OhMyOpenCodeConfig holds settings for the oh-my-opencode agent runner which
+// wraps the OpenCode runner with the oh-my-opencode plugin and model routing.
+type OhMyOpenCodeConfig struct {
+	PluginVersion string                          `yaml:"plugin_version"`
+	Plugins       []string                        `yaml:"plugins"`
+	Agents        map[string]OhMyOpenCodeAgent    `yaml:"agents"`
+	Categories    map[string]OhMyOpenCodeCategory `yaml:"categories"`
+	Provider      OhMyOpenCodeProvider            `yaml:"provider"`
+}
+
+// OhMyOpenCodeAgent configures a named agent override in oh-my-opencode.
+type OhMyOpenCodeAgent struct {
+	Model string `yaml:"model"`
+}
+
+// OhMyOpenCodeCategory configures the model for a task category.
+type OhMyOpenCodeCategory struct {
+	Model string `yaml:"model"`
+}
+
+// OhMyOpenCodeProvider configures the LLM provider proxy used by opencode.
+type OhMyOpenCodeProvider struct {
+	Name    string `yaml:"name"`
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
 }
 
 func (c *WorkflowConfig) MaxConcurrency() int {
@@ -256,6 +287,55 @@ func (c *WorkflowConfig) OpenCodeUsername() string {
 		return ""
 	}
 	return c.OpenCode.Username
+}
+
+func (c *WorkflowConfig) OhMyOpenCodePluginVersion() string {
+	if c == nil || c.OhMyOpenCode.PluginVersion == "" {
+		return defaultOhMyOpenCodePluginVersion
+	}
+	return c.OhMyOpenCode.PluginVersion
+}
+
+func (c *WorkflowConfig) OhMyOpenCodePlugins() []string {
+	if c == nil || len(c.OhMyOpenCode.Plugins) == 0 {
+		return []string{}
+	}
+	return c.OhMyOpenCode.Plugins
+}
+
+func (c *WorkflowConfig) OhMyOpenCodeAgents() map[string]OhMyOpenCodeAgent {
+	if c == nil || len(c.OhMyOpenCode.Agents) == 0 {
+		return map[string]OhMyOpenCodeAgent{}
+	}
+	return c.OhMyOpenCode.Agents
+}
+
+func (c *WorkflowConfig) OhMyOpenCodeCategories() map[string]OhMyOpenCodeCategory {
+	if c == nil || len(c.OhMyOpenCode.Categories) == 0 {
+		return map[string]OhMyOpenCodeCategory{}
+	}
+	return c.OhMyOpenCode.Categories
+}
+
+func (c *WorkflowConfig) OhMyOpenCodeProviderName() string {
+	if c == nil || c.OhMyOpenCode.Provider.Name == "" {
+		return ""
+	}
+	return c.OhMyOpenCode.Provider.Name
+}
+
+func (c *WorkflowConfig) OhMyOpenCodeProviderBaseURL() string {
+	if c == nil {
+		return ""
+	}
+	return c.OhMyOpenCode.Provider.BaseURL
+}
+
+func (c *WorkflowConfig) OhMyOpenCodeProviderAPIKey() string {
+	if c == nil {
+		return ""
+	}
+	return c.OhMyOpenCode.Provider.APIKey
 }
 
 func (c *WorkflowConfig) GitHubOwner() string {

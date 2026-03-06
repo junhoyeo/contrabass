@@ -215,8 +215,14 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 			username = cfg.OpenCodeUsername()
 		}
 		agentRunner = agent.NewOpenCodeRunner(opencodeBin, port, password, username, 30*time.Second)
+	case "oh-my-opencode":
+		var ohMyErr error
+		agentRunner, ohMyErr = agent.NewOhMyOpenCodeRunner(cfg, 30*time.Second)
+		if ohMyErr != nil {
+			return fmt.Errorf("creating oh-my-opencode runner: %w", ohMyErr)
+		}
 	default:
-		return fmt.Errorf("unknown agent type: %q (supported: codex, opencode)", cfg.AgentType())
+		return fmt.Errorf("unknown agent type: %q (supported: codex, opencode, oh-my-opencode)", cfg.AgentType())
 	}
 
 	defer agentRunner.Close()

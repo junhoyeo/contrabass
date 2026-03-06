@@ -26,4 +26,6 @@ type AgentProcess struct {
 	SessionID string
 	Events    <-chan types.AgentEvent
 	Done      <-chan error
+
+	serverURL string
 }

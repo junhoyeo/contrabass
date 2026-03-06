@@ -31,6 +31,13 @@ type sseReader struct {
 	lastEventID string
 }
 
+type openCodeServer struct {
+	process *exec.Cmd
+	url     string
+	port    int
+	ready   chan struct{}
+}
+
 type OpenCodeRunner struct {
 	binaryPath string
 	port       int
@@ -39,11 +46,21 @@ type OpenCodeRunner struct {
 	timeout    time.Duration
 	logger     *log.Logger
 
-	mu            sync.Mutex
-	serverProcess *exec.Cmd
-	serverURL     string
-	httpClient    *http.Client
-	streamClient  *http.Client
+	// extraEnv holds additional environment variables (KEY=VALUE) injected
+	// into the managed opencode subprocess. These are appended to the
+	// current process's environment so callers can override config paths,
+	// NODE_PATH, etc. without mutating the parent process.
+	extraEnv []string
+
+	// workDir, when non-empty, is passed as cmd.Dir to the managed
+	// opencode subprocess when Start is invoked without an explicit
+	// workspace override.
+	workDir string
+
+	mu           sync.Mutex
+	servers      map[string]*openCodeServer
+	httpClient   *http.Client
+	streamClient *http.Client
 }
 
 var _ AgentRunner = (*OpenCodeRunner)(nil)
@@ -139,35 +156,141 @@ func NewOpenCodeRunner(binaryPath string, port int, password, username string, t
 		logger:       log.NewWithOptions(io.Discard, log.Options{}),
 		httpClient:   &http.Client{Timeout: 30 * time.Second},
 		streamClient: &http.Client{},
+		servers:      make(map[string]*openCodeServer),
 	}
 }
 
-func (r *OpenCodeRunner) ensureServer(ctx context.Context) error {
+func (r *OpenCodeRunner) SetExtraEnv(env []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.serverURL != "" {
-		return nil
-	}
+	r.extraEnv = append([]string(nil), env...)
+}
 
-	argv := strings.Fields(strings.TrimSpace(r.binaryPath))
-	if len(argv) == 0 {
-		return errors.New("opencode binary path is empty")
-	}
+func (r *OpenCodeRunner) ExtraEnv() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	if r.port > 0 {
-		argv = append(argv, "--port", strconv.Itoa(r.port))
+	return append([]string(nil), r.extraEnv...)
+}
+
+func (r *OpenCodeRunner) SetWorkDir(dir string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.workDir = dir
+}
+
+func (r *OpenCodeRunner) defaultWorkDir() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.workDir
+}
+
+func (r *OpenCodeRunner) ensureServer(ctx context.Context, workDir string) (string, int, error) {
+	key := serverKey(workDir)
+
+	for {
+		r.mu.Lock()
+		if server, ok := r.servers[key]; ok && server != nil {
+			if server.ready != nil {
+				ready := server.ready
+				r.mu.Unlock()
+				select {
+				case <-ctx.Done():
+					return "", 0, ctx.Err()
+				case <-ready:
+				}
+				continue
+			}
+
+			if server.url != "" {
+				pid := serverPID(server)
+				r.mu.Unlock()
+				return server.url, pid, nil
+			}
+
+			delete(r.servers, key)
+		}
+
+		argv := strings.Fields(strings.TrimSpace(r.binaryPath))
+		if len(argv) == 0 {
+			r.mu.Unlock()
+			return "", 0, errors.New("opencode binary path is empty")
+		}
+
+		port := r.portForNewServerLocked()
+		extraEnv := append([]string(nil), r.extraEnv...)
+		placeholder := &openCodeServer{
+			port:  port,
+			ready: make(chan struct{}),
+		}
+		r.servers[key] = placeholder
+		r.mu.Unlock()
+
+		server, err := r.startServer(ctx, argv, workDir, extraEnv, port)
+
+		r.mu.Lock()
+		current, stillCurrent := r.servers[key]
+		if stillCurrent && current == placeholder {
+			if err != nil {
+				delete(r.servers, key)
+			} else {
+				placeholder.process = server.process
+				placeholder.url = server.url
+			}
+		}
+		ready := placeholder.ready
+		placeholder.ready = nil
+		r.mu.Unlock()
+
+		if ready != nil {
+			close(ready)
+		}
+
+		if !stillCurrent || current != placeholder {
+			if err == nil {
+				_ = r.stopServer(server)
+				return "", 0, errors.New("opencode server startup interrupted")
+			}
+			return "", 0, err
+		}
+
+		if err != nil {
+			return "", 0, err
+		}
+
+		return server.url, serverPID(server), nil
+	}
+}
+
+func (r *OpenCodeRunner) startServer(
+	ctx context.Context,
+	argv []string,
+	workDir string,
+	extraEnv []string,
+	port int,
+) (*openCodeServer, error) {
+	if port > 0 {
+		argv = append(argv, "--port", strconv.Itoa(port))
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("create opencode stdout pipe: %w", err)
+		return nil, fmt.Errorf("create opencode stdout pipe: %w", err)
 	}
 	cmd.Stderr = io.Discard
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start opencode server: %w", err)
+		return nil, fmt.Errorf("start opencode server: %w", err)
 	}
 
 	urlCh := make(chan string, 1)
@@ -199,27 +322,30 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context) error {
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return ctx.Err()
+		return nil, ctx.Err()
 	case <-timer.C:
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return fmt.Errorf("timed out waiting for opencode server startup after %s", r.timeout)
+		return nil, fmt.Errorf("timed out waiting for opencode server startup after %s", r.timeout)
 	case err := <-errCh:
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return fmt.Errorf("failed to detect opencode server URL: %w", err)
+		return nil, fmt.Errorf("failed to detect opencode server URL: %w", err)
 	case url := <-urlCh:
-		r.serverURL = strings.TrimRight(url, "/")
-		r.serverProcess = cmd
-		return nil
+		return &openCodeServer{
+			process: cmd,
+			url:     strings.TrimRight(url, "/"),
+			port:    port,
+		}, nil
 	}
 }
 
-func (r *OpenCodeRunner) stopServer() error {
-	r.mu.Lock()
-	cmd := r.serverProcess
-	r.mu.Unlock()
+func (r *OpenCodeRunner) stopServer(server *openCodeServer) error {
+	if server == nil {
+		return nil
+	}
 
+	cmd := server.process
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
@@ -235,10 +361,6 @@ func (r *OpenCodeRunner) stopServer() error {
 
 	select {
 	case err := <-waitCh:
-		r.mu.Lock()
-		r.serverProcess = nil
-		r.serverURL = ""
-		r.mu.Unlock()
 		if err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return err
 		}
@@ -251,10 +373,6 @@ func (r *OpenCodeRunner) stopServer() error {
 		case <-waitCh:
 		case <-time.After(r.timeout):
 		}
-		r.mu.Lock()
-		r.serverProcess = nil
-		r.serverURL = ""
-		r.mu.Unlock()
 		return nil
 	}
 }
@@ -262,15 +380,34 @@ func (r *OpenCodeRunner) stopServer() error {
 // Close shuts down the managed OpenCode server process. It should be called
 // during application shutdown to prevent the subprocess from being orphaned.
 func (r *OpenCodeRunner) Close() error {
-	return r.stopServer()
-}
+	r.mu.Lock()
+	servers := make([]*openCodeServer, 0, len(r.servers))
+	for _, server := range r.servers {
+		servers = append(servers, server)
+	}
+	r.servers = make(map[string]*openCodeServer)
+	r.mu.Unlock()
 
-func (r *OpenCodeRunner) Start(ctx context.Context, _ types.Issue, _ string, prompt string) (*AgentProcess, error) {
-	if err := r.ensureServer(ctx); err != nil {
-		return nil, err
+	var closeErr error
+	for _, server := range servers {
+		if err := r.stopServer(server); err != nil && closeErr == nil {
+			closeErr = err
+		}
 	}
 
-	serverURL, serverPID := r.serverState()
+	return closeErr
+}
+
+func (r *OpenCodeRunner) Start(ctx context.Context, _ types.Issue, workspace string, prompt string) (*AgentProcess, error) {
+	workDir := workspace
+	if workDir == "" {
+		workDir = r.defaultWorkDir()
+	}
+
+	serverURL, serverPID, err := r.ensureServer(ctx, workDir)
+	if err != nil {
+		return nil, err
+	}
 
 	sessionID, err := r.createSession(ctx, serverURL)
 	if err != nil {
@@ -303,6 +440,7 @@ func (r *OpenCodeRunner) Start(ctx context.Context, _ types.Issue, _ string, pro
 		SessionID: sessionID,
 		Events:    events,
 		Done:      done,
+		serverURL: serverURL,
 	}, nil
 }
 
@@ -311,7 +449,10 @@ func (r *OpenCodeRunner) Stop(proc *AgentProcess) error {
 		return errors.New("process is nil")
 	}
 
-	serverURL, _ := r.serverState()
+	serverURL := proc.serverURL
+	if serverURL == "" {
+		serverURL = r.firstServerURL()
+	}
 	if serverURL == "" {
 		return nil
 	}
@@ -320,16 +461,24 @@ func (r *OpenCodeRunner) Stop(proc *AgentProcess) error {
 	return nil
 }
 
-func (r *OpenCodeRunner) serverState() (string, int) {
+func (r *OpenCodeRunner) firstServerURL() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	pid := 0
-	if r.serverProcess != nil && r.serverProcess.Process != nil {
-		pid = r.serverProcess.Process.Pid
+	for _, server := range r.servers {
+		if server != nil && server.url != "" {
+			return server.url
+		}
 	}
 
-	return r.serverURL, pid
+	return ""
+}
+
+func serverPID(server *openCodeServer) int {
+	if server == nil || server.process == nil || server.process.Process == nil {
+		return 0
+	}
+	return server.process.Process.Pid
 }
 
 func (r *OpenCodeRunner) createSession(ctx context.Context, serverURL string) (string, error) {
@@ -576,4 +725,29 @@ func extractListeningURL(line string) string {
 	}
 
 	return strings.Trim(pieces[0], "\"'`")
+}
+
+func serverKey(workDir string) string {
+	return workDir
+}
+
+func (r *OpenCodeRunner) portForNewServerLocked() int {
+	if r.port <= 0 {
+		return 0
+	}
+
+	port := r.port
+	for {
+		inUse := false
+		for _, server := range r.servers {
+			if server != nil && server.port == port {
+				inUse = true
+				break
+			}
+		}
+		if !inUse {
+			return port
+		}
+		port++
+	}
 }
