@@ -335,6 +335,55 @@ func TestOpenCodeRunner_ConcurrentSessions(t *testing.T) {
 	}, time.Second, 20*time.Millisecond)
 }
 
+func TestOpenCodeRunner_SetWorkDirIfUnset(t *testing.T) {
+	tests := []struct {
+		name      string
+		existing  string
+		workspace string
+		want      string
+	}{
+		{
+			name:      "sets workspace when empty",
+			existing:  "",
+			workspace: "/tmp/workspace-a",
+			want:      "/tmp/workspace-a",
+		},
+		{
+			name:      "preserves explicit workdir",
+			existing:  "/tmp/existing",
+			workspace: "/tmp/workspace-b",
+			want:      "/tmp/existing",
+		},
+		{
+			name:      "ignores empty workspace",
+			existing:  "/tmp/existing",
+			workspace: "",
+			want:      "/tmp/existing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := NewOpenCodeRunner("opencode serve", 0, "", "", time.Second)
+			runner.workDir = tt.existing
+
+			runner.setWorkDirIfUnset(tt.workspace)
+
+			assert.Equal(t, tt.want, runner.workDir)
+		})
+	}
+}
+
+func TestOpenCodeRunner_SetExtraEnvCopiesInput(t *testing.T) {
+	runner := NewOpenCodeRunner("opencode serve", 0, "", "", time.Second)
+	env := []string{"OPENCODE_CONFIG=/tmp/opencode.json"}
+
+	runner.SetExtraEnv(env)
+	env[0] = "OPENCODE_CONFIG=/tmp/mutated.json"
+
+	assert.Equal(t, []string{"OPENCODE_CONFIG=/tmp/opencode.json"}, runner.extraEnv)
+}
+
 func newTestOpenCodeRunner(serverURL string) *OpenCodeRunner {
 	r := NewOpenCodeRunner("opencode serve", 0, "", "", 2*time.Second)
 	r.serverURL = serverURL

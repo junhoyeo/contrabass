@@ -153,11 +153,30 @@ func NewOpenCodeRunner(binaryPath string, port int, password, username string, t
 }
 
 func (r *OpenCodeRunner) SetExtraEnv(env []string) {
-	r.extraEnv = env
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.extraEnv = append([]string(nil), env...)
 }
 
 func (r *OpenCodeRunner) SetWorkDir(dir string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.workDir = dir
+}
+
+func (r *OpenCodeRunner) setWorkDirIfUnset(dir string) {
+	if dir == "" {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.workDir == "" {
+		r.workDir = dir
+	}
 }
 
 func (r *OpenCodeRunner) ensureServer(ctx context.Context) error {
@@ -179,7 +198,7 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context) error {
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	if len(r.extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), r.extraEnv...)
+		cmd.Env = append(os.Environ(), append([]string(nil), r.extraEnv...)...)
 	}
 	if r.workDir != "" {
 		cmd.Dir = r.workDir
@@ -290,9 +309,7 @@ func (r *OpenCodeRunner) Close() error {
 }
 
 func (r *OpenCodeRunner) Start(ctx context.Context, _ types.Issue, workspace string, prompt string) (*AgentProcess, error) {
-	if workspace != "" && r.workDir == "" {
-		r.SetWorkDir(workspace)
-	}
+	r.setWorkDirIfUnset(workspace)
 	if err := r.ensureServer(ctx); err != nil {
 		return nil, err
 	}
