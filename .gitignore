@@ -35,3 +35,7 @@ Thumbs.db
 # Orchestration state (not project code)
 .sisyphus/
 .omc/
+
+# Contrabass Output
+contrabass
+contrabass.log
