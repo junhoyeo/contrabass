@@ -357,6 +357,8 @@ func (r *trackingRunner) StopCount() int {
 	return r.stops
 }
 
+func (r *trackingRunner) Close() error { return nil }
+
 func startOrchestrator(ctx context.Context, orch *Orchestrator) <-chan error {
 	done := make(chan error, 1)
 	go func() {

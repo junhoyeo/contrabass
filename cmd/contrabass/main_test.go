@@ -244,6 +244,7 @@ func (s *stubAgentRunner) Start(_ context.Context, _ types.Issue, _, _ string) (
 	return nil, nil
 }
 func (s *stubAgentRunner) Stop(_ *agent.AgentProcess) error { return nil }
+func (s *stubAgentRunner) Close() error                     { return nil }
 
 type stubConfigProvider struct{ cfg *config.WorkflowConfig }
 

@@ -100,6 +100,8 @@ func (r *countingRunner) Stop(proc *agent.AgentProcess) error {
 	return r.base.Stop(proc)
 }
 
+func (r *countingRunner) Close() error { return nil }
+
 func (r *countingRunner) StartCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
