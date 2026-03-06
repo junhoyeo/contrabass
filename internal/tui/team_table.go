@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 
 	"charm.land/lipgloss/v2"
 	ltable "charm.land/lipgloss/v2/table"
@@ -56,14 +55,11 @@ func (t TeamTable) SetWidth(w int) TeamTable {
 	return t
 }
 
-func (t TeamTable) View() string {
-	if len(t.teams) == 0 {
-		return ""
-	}
-
+func (t TeamTable) buildRows() ([][]string, map[int]int) {
 	rows := make([][]string, 0)
+	teamRowIndex := make(map[int]int, len(t.teams))
 
-	for _, team := range t.teams {
+	for teamIdx, team := range t.teams {
 		// Team summary row
 		glyph := teamStatusGlyph(team.Phase, t.spinner)
 		tasksStr := fmt.Sprintf("%d/%d", team.CompletedTasks, team.Tasks)
@@ -72,6 +68,7 @@ func (t TeamTable) View() string {
 		}
 		workersStr := fmt.Sprintf("%d/%d", team.ActiveWorkers, team.Workers)
 
+		teamRowIndex[len(rows)] = teamIdx
 		rows = append(rows, []string{
 			glyph,
 			team.TeamName,
@@ -114,6 +111,16 @@ func (t TeamTable) View() string {
 		}
 	}
 
+	return rows, teamRowIndex
+}
+
+func (t TeamTable) View() string {
+	if len(t.teams) == 0 {
+		return ""
+	}
+
+	rows, teamRowIndex := t.buildRows()
+
 	if len(rows) == 0 {
 		return lipgloss.NewStyle().Faint(true).Render("  No teams running")
 	}
@@ -136,9 +143,6 @@ func (t TeamTable) View() string {
 				return lipgloss.NewStyle().Bold(true).Faint(true).Padding(0, 1)
 			}
 
-			// Determine if this is a team row or worker row
-			isWorkerRow := strings.Contains(rows[row][1], "├─") || strings.Contains(rows[row][1], "└─")
-
 			bg := "234"
 			if row%2 == 1 {
 				bg = "235"
@@ -146,9 +150,9 @@ func (t TeamTable) View() string {
 
 			style := lipgloss.NewStyle().Padding(0, 1).Background(lipgloss.Color(bg))
 
-			if !isWorkerRow && row < len(t.teams) {
+			if teamIdx, isTeamRow := teamRowIndex[row]; isTeamRow {
 				// Team row styling
-				team := t.teams[row]
+				team := t.teams[teamIdx]
 				phaseColor := teamPhaseColor(team.Phase)
 				style = style.Foreground(lipgloss.Color(phaseColor))
 				if isActiveTeamPhase(team.Phase) {
