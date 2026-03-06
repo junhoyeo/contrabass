@@ -259,6 +259,10 @@ func (r *CodexRunner) Stop(proc *AgentProcess) error {
 	}
 }
 
+// Close is a no-op for CodexRunner; each Codex process is per-session and
+// cleaned up by Stop.
+func (r *CodexRunner) Close() error { return nil }
+
 func (r *CodexRunner) streamEventsAndWait(process *codexProcess, reader *bufio.Reader, events chan types.AgentEvent) {
 	defer close(events)
 	scanner := bufio.NewScanner(reader)

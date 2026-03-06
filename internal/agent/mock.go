@@ -119,3 +119,5 @@ func (m *MockRunner) Stop(proc *AgentProcess) error {
 
 	return nil
 }
+
+func (m *MockRunner) Close() error { return nil }

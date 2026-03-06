@@ -5,18 +5,21 @@ import (
 )
 
 const (
-	defaultMaxConcurrency    = 10
-	defaultPollIntervalMs    = 30_000
-	defaultMaxRetryBackoffMs = 300_000
-	defaultAgentTimeoutMs    = 600_000
-	defaultStallTimeoutMs    = 120_000
-	defaultTrackerType       = "linear"
-	defaultBackoffStrategy   = "exponential"
-	defaultWorkspaceBaseDir  = "."
-	defaultBranchPrefix      = "symphony/"
-	defaultCodexBinaryPath   = "codex app-server"
-	defaultApprovalPolicy    = "auto-edit"
-	defaultSandbox           = "docker"
+	defaultMaxConcurrency     = 10
+	defaultPollIntervalMs     = 30_000
+	defaultMaxRetryBackoffMs  = 300_000
+	defaultAgentTimeoutMs     = 600_000
+	defaultStallTimeoutMs     = 120_000
+	defaultTrackerType        = "linear"
+	defaultBackoffStrategy    = "exponential"
+	defaultWorkspaceBaseDir   = "."
+	defaultBranchPrefix       = "symphony/"
+	defaultCodexBinaryPath    = "codex app-server"
+	defaultApprovalPolicy     = "auto-edit"
+	defaultSandbox            = "docker"
+	defaultAgentType          = "codex"
+	defaultOpenCodeBinaryPath = "opencode serve"
+	defaultGitHubEndpoint     = "https://api.github.com"
 )
 
 var (
@@ -37,14 +40,22 @@ type WorkflowConfig struct {
 	Workspace            WorkspaceConfig `yaml:"workspace"`
 	Hooks                HooksConfig     `yaml:"hooks"`
 	Codex                CodexConfig     `yaml:"codex"`
+	Agent                AgentConfig     `yaml:"agent"`
+	OpenCode             OpenCodeConfig  `yaml:"opencode"`
 	PromptTemplate       string          `yaml:"-"`
 }
 
 type TrackerConfig struct {
-	Type       string `yaml:"type"`
-	ProjectURL string `yaml:"project_url"`
-	TeamID     string `yaml:"team_id"`
-	AssigneeID string `yaml:"assignee_id"`
+	Type       string   `yaml:"type"`
+	ProjectURL string   `yaml:"project_url"`
+	TeamID     string   `yaml:"team_id"`
+	AssigneeID string   `yaml:"assignee_id"`
+	Owner      string   `yaml:"owner"`
+	Repo       string   `yaml:"repo"`
+	Labels     []string `yaml:"labels"`
+	Assignee   string   `yaml:"assignee"`
+	Token      string   `yaml:"token"`
+	Endpoint   string   `yaml:"endpoint"`
 }
 
 type PollingConfig struct {
@@ -68,6 +79,17 @@ type CodexConfig struct {
 	Model          string `yaml:"model"`
 	ApprovalPolicy string `yaml:"approval_policy"`
 	Sandbox        string `yaml:"sandbox"`
+}
+
+type AgentConfig struct {
+	Type string `yaml:"type"`
+}
+
+type OpenCodeConfig struct {
+	BinaryPath string `yaml:"binary_path"`
+	Port       int    `yaml:"port"`
+	Password   string `yaml:"password"`
+	Username   string `yaml:"username"`
 }
 
 func (c *WorkflowConfig) MaxConcurrency() int {
@@ -199,6 +221,83 @@ func (c *WorkflowConfig) CodexSandbox() string {
 		return defaultSandbox
 	}
 	return c.Codex.Sandbox
+}
+
+func (c *WorkflowConfig) AgentType() string {
+	if c == nil || c.Agent.Type == "" {
+		return defaultAgentType
+	}
+	return c.Agent.Type
+}
+
+func (c *WorkflowConfig) OpenCodeBinaryPath() string {
+	if c == nil || c.OpenCode.BinaryPath == "" {
+		return defaultOpenCodeBinaryPath
+	}
+	return c.OpenCode.BinaryPath
+}
+
+func (c *WorkflowConfig) OpenCodePort() int {
+	if c == nil || c.OpenCode.Port <= 0 {
+		return 0
+	}
+	return c.OpenCode.Port
+}
+
+func (c *WorkflowConfig) OpenCodePassword() string {
+	if c == nil {
+		return ""
+	}
+	return c.OpenCode.Password
+}
+
+func (c *WorkflowConfig) OpenCodeUsername() string {
+	if c == nil {
+		return ""
+	}
+	return c.OpenCode.Username
+}
+
+func (c *WorkflowConfig) GitHubOwner() string {
+	if c == nil {
+		return ""
+	}
+	return c.Tracker.Owner
+}
+
+func (c *WorkflowConfig) GitHubRepo() string {
+	if c == nil {
+		return ""
+	}
+	return c.Tracker.Repo
+}
+
+func (c *WorkflowConfig) GitHubToken() string {
+	if c == nil {
+		return ""
+	}
+	return c.Tracker.Token
+}
+
+func (c *WorkflowConfig) GitHubAssignee() string {
+	if c == nil {
+		return ""
+	}
+	return c.Tracker.Assignee
+}
+
+func (c *WorkflowConfig) GitHubLabels() []string {
+	if c == nil || len(c.Tracker.Labels) == 0 {
+		return []string{}
+	}
+	return c.Tracker.Labels
+}
+
+func (c *WorkflowConfig) GitHubEndpoint() string {
+	if c == nil || c.Tracker.Endpoint == "" {
+		return defaultGitHubEndpoint
+	}
+	return c.Tracker.Endpoint
 }
 
 func (c *WorkflowConfig) MaxRetryBackoffMs() int {

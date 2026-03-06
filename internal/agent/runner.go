@@ -13,6 +13,11 @@ type AgentRunner interface {
 
 	// Stop terminates a running agent process.
 	Stop(proc *AgentProcess) error
+
+	// Close releases any resources held by the runner (e.g. a managed
+	// server subprocess). Callers should invoke Close during application
+	// shutdown to prevent orphaned child processes.
+	Close() error
 }
 
 // AgentProcess represents a running agent subprocess.

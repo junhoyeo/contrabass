@@ -38,6 +38,8 @@ func (r *stopCountingRunner) StopCount() int {
 	return r.stopCalls
 }
 
+func (r *stopCountingRunner) Close() error { return nil }
+
 type observingWorkspace struct {
 	base *workspace.MockManager
 
