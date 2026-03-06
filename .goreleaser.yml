@@ -1,0 +1,77 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/contrabass
+    binary: contrabass
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - formats: ['tar.gz']
+    files:
+      - README.md
+      - LICENSE
+
+brews:
+  - repository:
+      owner: junhoyeo
+      name: homebrew-contrabass
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/junhoyeo/contrabass
+    description: A project-level orchestrator for AI coding agents
+    license: MIT
+    install: |
+      bin.install "contrabass"
+
+release:
+  header: |
+    <div align="center">
+
+    [![Contrabass](https://github.com/junhoyeo/contrabass/raw/main/.github/assets/contrabass.png)](https://github.com/junhoyeo/contrabass)
+
+    # `contrabass@{{ .Tag }}` is here!
+
+    </div>
+
+changelog:
+  sort: asc
+  groups:
+    - title: "🚀 Features"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: "⚡ Performance"
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: "♻️ Refactoring"
+      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: "📝 Documentation"
+      regexp: '^.*?docs(\([[:word:]]+\))??!?:.+$'
+      order: 4
+    - title: "🧪 Tests"
+      regexp: '^.*?test(\([[:word:]]+\))??!?:.+$'
+      order: 5
+    - title: "🔧 Other"
+      order: 999
+  filters:
+    exclude:
+      - "^Merge"
+      - "^chore\\(project\\): auto-fix"

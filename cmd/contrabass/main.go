@@ -28,6 +28,13 @@ import (
 	"github.com/junhoyeo/contrabass/internal/workspace"
 )
 
+// Build-time variables injected via ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 var (
 	runTUIOrchestrator = func(ctx context.Context, orch *orchestrator.Orchestrator) error {
 		return orch.Run(ctx)
@@ -60,8 +67,9 @@ func newRootCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "contrabass",
-		Short: "Orchestrate coding agents with a Charm TUI dashboard",
+		Use:     "contrabass",
+		Short:   "Orchestrate coding agents with a Charm TUI dashboard",
+		Version: fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date),
 		Long: `Contrabass is a Go reimplementation of OpenAI's Symphony.
 It orchestrates coding agents against an issue tracker and visualises
 progress in a terminal UI built with the Charm stack.`,

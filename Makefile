@@ -1,7 +1,7 @@
 # Contrabass — Build Tooling
 # Build order: dashboard SPA must build before Go binary (embed.FS requires dist/)
 
-.PHONY: build-dashboard build-landing build dev-dashboard dev-landing dev test test-dashboard test-landing test-quick test-all ci clean lint
+.PHONY: build-dashboard build-landing build dev-dashboard dev-landing dev test test-dashboard test-landing test-quick test-all ci clean lint release-dry
 
 # Build the React dashboard SPA to packages/dashboard/dist/
 build-dashboard:
@@ -13,7 +13,7 @@ build-landing:
 
 # Build the Go binary with embedded dashboard
 build: build-dashboard
-	go build -o contrabass ./cmd/contrabass
+	go build -ldflags "-X main.version=dev -X main.commit=$$(git rev-parse --short HEAD 2>/dev/null || echo none) -X main.date=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o contrabass ./cmd/contrabass
 
 # Start Vite dev server for dashboard development (with hot reload)
 dev-dashboard:
@@ -61,3 +61,7 @@ clean:
 # Run Go linter
 lint:
 	go vet ./...
+
+# Dry-run GoReleaser locally (skips publish)
+release-dry: build-dashboard
+	goreleaser release --snapshot --clean

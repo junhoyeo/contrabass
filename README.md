@@ -41,7 +41,20 @@ Today Contrabass ships with:
 
 From a fresh clone, run `bun install` once before using the JS/landing build and test commands.
 
-## Quick start
+## Installation
+
+### Homebrew (macOS/Linux)
+
+```bash
+brew install junhoyeo/contrabass/contrabass
+```
+
+### Download from GitHub Releases
+
+Pre-built binaries for macOS and Linux (amd64/arm64) are available on the
+[Releases](https://github.com/junhoyeo/contrabass/releases) page.
+
+### Build from source
 
 ```bash
 git clone https://github.com/junhoyeo/contrabass.git
@@ -51,6 +64,12 @@ make build
 ```
 
 `make build` first builds `packages/dashboard/dist/` and then embeds it into the Go binary.
+
+> **Note:** `go install github.com/junhoyeo/contrabass/cmd/contrabass@latest` works for the
+> CLI and TUI, but the embedded web dashboard (`--port`) will be empty because `go install`
+> does not run the JS build step.
+
+## Quick start
 
 ### Run with the demo workflow
 
@@ -219,6 +238,7 @@ make test-all         # Go + dashboard tests + landing checks
 make ci               # lint + test-quick + binary/dashboard build + landing build
 make lint             # go vet ./...
 make clean            # remove built artifacts
+make release-dry      # dry-run GoReleaser locally (skips publish)
 ```
 
 For day-to-day local validation, use `make test-quick`.
@@ -264,6 +284,24 @@ Plus:
 - `github.com/fsnotify/fsnotify` for config watching
 - `github.com/osteele/liquid` for prompt templating
 - `github.com/stretchr/testify` for Go test assertions
+
+## Releasing
+
+CI and release workflows run automatically via GitHub Actions:
+
+- **CI** (`.github/workflows/ci.yml`) — runs on every push and PR: lint, test, build
+- **Release** (`.github/workflows/release.yml`) — triggered by pushing a version tag
+
+To ship a new release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+This builds cross-platform binaries (macOS/Linux, amd64/arm64) via [GoReleaser](https://goreleaser.com),
+publishes a GitHub Release with grouped changelogs, and updates the
+[Homebrew tap](https://github.com/junhoyeo/homebrew-contrabass).
 
 ## Notes for contributors
 
