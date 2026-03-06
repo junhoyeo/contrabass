@@ -3,6 +3,7 @@
 
 # Built binary
 symphony-charm
+contrabass
 
 # Go build artifacts
 *.exe
@@ -31,3 +32,8 @@ Thumbs.db
 # Orchestration state (not project code)
 .sisyphus/
 .omc/
+
+# Runtime artifacts
+contrabass.log
+contrabass_test.log
+workspaces/
