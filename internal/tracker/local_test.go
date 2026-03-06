@@ -111,3 +111,41 @@ func TestLocalTrackerLifecycle(t *testing.T) {
 	require.Len(t, allIssues, 1)
 	assert.Equal(t, LocalBoardStateDone, allIssues[0].State)
 }
+
+func TestLocalTrackerUpdateIssue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	localTracker := NewLocalTracker(LocalConfig{
+		BoardDir:    filepath.Join(t.TempDir(), "board"),
+		IssuePrefix: "OPS",
+		Actor:       "bot",
+	})
+
+	_, err := localTracker.InitBoard(ctx)
+	require.NoError(t, err)
+
+	issue, err := localTracker.CreateIssue(ctx, "Ship board sync", "Wire team events back to the board", []string{"team"})
+	require.NoError(t, err)
+
+	updated, err := localTracker.UpdateIssue(ctx, issue.ID, func(issue *LocalBoardIssue) error {
+		if issue.TrackerMeta == nil {
+			issue.TrackerMeta = map[string]interface{}{}
+		}
+		issue.ClaimedBy = "team:issue-ops-1"
+		issue.TrackerMeta["team_name"] = "issue-ops-1"
+		issue.TrackerMeta["team_phase"] = "team-exec"
+		return nil
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "team:issue-ops-1", updated.ClaimedBy)
+	assert.Equal(t, "issue-ops-1", updated.TrackerMeta["team_name"])
+	assert.Equal(t, "team-exec", updated.TrackerMeta["team_phase"])
+
+	reloaded, err := localTracker.GetIssue(ctx, issue.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "team:issue-ops-1", reloaded.ClaimedBy)
+	assert.Equal(t, "issue-ops-1", reloaded.TrackerMeta["team_name"])
+	assert.Equal(t, "team-exec", reloaded.TrackerMeta["team_phase"])
+}

@@ -366,6 +366,43 @@ func (t *LocalTracker) GetIssue(ctx context.Context, issueID string) (LocalBoard
 	return t.loadIssueLocked(issueID)
 }
 
+// UpdateIssue applies a mutation to a board issue atomically and persists the result.
+func (t *LocalTracker) UpdateIssue(
+	ctx context.Context,
+	issueID string,
+	mutate func(*LocalBoardIssue) error,
+) (LocalBoardIssue, error) {
+	if err := checkLocalTrackerContext(ctx); err != nil {
+		return LocalBoardIssue{}, err
+	}
+	if mutate == nil {
+		return LocalBoardIssue{}, errors.New("mutate callback is required")
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if _, err := t.ensureBoardLocked(); err != nil {
+		return LocalBoardIssue{}, err
+	}
+
+	issue, err := t.loadIssueLocked(issueID)
+	if err != nil {
+		return LocalBoardIssue{}, err
+	}
+
+	if err := mutate(&issue); err != nil {
+		return LocalBoardIssue{}, err
+	}
+	issue.UpdatedAt = time.Now().UTC()
+
+	if err := writeJSONAtomic(t.issuePath(issueID), issue); err != nil {
+		return LocalBoardIssue{}, err
+	}
+
+	return issue, nil
+}
+
 func (t *LocalTracker) MoveIssue(ctx context.Context, issueID string, state LocalBoardState) (LocalBoardIssue, error) {
 	if err := checkLocalTrackerContext(ctx); err != nil {
 		return LocalBoardIssue{}, err

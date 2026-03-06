@@ -208,6 +208,15 @@ func runBoardShow(cmd *cobra.Command, args []string) error {
 	_, _ = fmt.Fprintf(out, "Title: %s\n", issue.Title)
 	_, _ = fmt.Fprintf(out, "Labels: %s\n", strings.Join(issue.Labels, ","))
 	_, _ = fmt.Fprintf(out, "ClaimedBy: %s\n", issue.ClaimedBy)
+	if teamName, ok := issue.TrackerMeta["team_name"].(string); ok && teamName != "" {
+		_, _ = fmt.Fprintf(out, "Team: %s\n", teamName)
+	}
+	if teamStatus, ok := issue.TrackerMeta["team_status"].(string); ok && teamStatus != "" {
+		_, _ = fmt.Fprintf(out, "TeamStatus: %s\n", teamStatus)
+	}
+	if teamPhase, ok := issue.TrackerMeta["team_phase"].(string); ok && teamPhase != "" {
+		_, _ = fmt.Fprintf(out, "TeamPhase: %s\n", teamPhase)
+	}
 	_, _ = fmt.Fprintf(out, "CreatedAt: %s\n", issue.CreatedAt.Format("2006-01-02T15:04:05Z07:00"))
 	_, _ = fmt.Fprintf(out, "UpdatedAt: %s\n", issue.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"))
 	_, _ = fmt.Fprintln(out, "")
