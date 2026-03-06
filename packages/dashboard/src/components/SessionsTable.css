@@ -1,0 +1,55 @@
+.sessions-table__wrapper {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.sessions-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.sessions-table th,
+.sessions-table td {
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.sessions-table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.sessions-table tbody tr {
+  background: var(--bg-secondary);
+}
+
+.sessions-table tbody tr:hover {
+  background: var(--bg-tertiary);
+}
+
+.sessions-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.sessions-table__mono {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.sessions-table__last-event {
+  color: var(--text-secondary);
+}
+
+.sessions-table__empty {
+  color: var(--text-secondary);
+  padding: 0.9rem 0.1rem;
+  font-size: 0.9rem;
+}

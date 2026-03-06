@@ -1,0 +1,32 @@
+---
+/* biome-ignore-all lint/correctness/noUnusedImports: Astro template uses frontmatter symbols */
+/* biome-ignore-all lint/correctness/noUnusedVariables: Astro template uses frontmatter symbols */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import hljs from 'highlight.js';
+import { Marked } from 'marked';
+import { markedHighlight } from 'marked-highlight';
+import Layout from '../layouts/Layout.astro';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const readmePath = join(__dirname, '../../../../README.md');
+const readmeContent = readFileSync(readmePath, 'utf-8');
+
+const parser = new Marked(
+  markedHighlight({
+    langPrefix: 'hljs language-',
+    highlight(code, lang) {
+      const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
+      return hljs.highlight(code, { language }).value;
+    },
+  })
+);
+
+const htmlContent = parser.parse(readmeContent);
+---
+
+<Layout title="Contrabass">
+  <article set:html={htmlContent} />
+</Layout>

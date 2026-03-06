@@ -95,7 +95,7 @@ func TestRunTUIPropagatesOrchestratorError(t *testing.T) {
 	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 50 * time.Millisecond
 
-	err := runTUI(context.Background(), orch)
+	err := runTUI(context.Background(), orch, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, orchErr)
 	assert.ErrorContains(t, err, "tui error")
@@ -114,7 +114,7 @@ func TestRunTUIRecoversOrchestratorPanic(t *testing.T) {
 	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 50 * time.Millisecond
 
-	err := runTUI(context.Background(), orch)
+	err := runTUI(context.Background(), orch, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "orchestrator panic: boom")
 }
@@ -138,7 +138,7 @@ func TestRunTUITimeoutReturnsMeaningfulError(t *testing.T) {
 	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 10 * time.Millisecond
 
-	err := runTUI(context.Background(), orch)
+	err := runTUI(context.Background(), orch, nil)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "timed out waiting for orchestrator shutdown")
 	assert.ErrorIs(t, err, tuiErr)
@@ -342,7 +342,7 @@ func TestProjectSlug(t *testing.T) {
 // --- Tests for run ---
 
 func TestRun_ConfigParseError(t *testing.T) {
-	err := run(filepath.Join(t.TempDir(), "no-such-file.md"), false, "", "info", false)
+	err := run(filepath.Join(t.TempDir(), "no-such-file.md"), false, "", "info", false, 0)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "parsing workflow config")
 }
@@ -390,7 +390,7 @@ func TestRunHeadless(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runHeadless(ctx, orch, logger)
+		done <- runHeadless(ctx, orch, logger, nil)
 	}()
 
 	select {
@@ -418,7 +418,7 @@ func TestRunTUI_OrchestratorErrorNoTUIError(t *testing.T) {
 	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 50 * time.Millisecond
 
-	err := runTUI(context.Background(), orch)
+	err := runTUI(context.Background(), orch, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, orchErr)
 	assert.NotContains(t, err.Error(), "tui error")
@@ -438,7 +438,7 @@ func TestRunTUI_SuccessPath(t *testing.T) {
 	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 50 * time.Millisecond
 
-	err := runTUI(context.Background(), orch)
+	err := runTUI(context.Background(), orch, nil)
 	require.NoError(t, err)
 }
 
@@ -460,7 +460,7 @@ func TestRunTUI_TimeoutNoTUIError(t *testing.T) {
 	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 10 * time.Millisecond
 
-	err := runTUI(context.Background(), orch)
+	err := runTUI(context.Background(), orch, nil)
 	require.Error(t, err)
 	assert.Equal(t, "timed out waiting for orchestrator shutdown", err.Error())
 }
@@ -480,7 +480,7 @@ func TestRunTUI_TUIErrorOrchestratorSuccess(t *testing.T) {
 	startTUIEventBridge = func(_ context.Context, _ *tea.Program, _ <-chan orchestrator.OrchestratorEvent) {}
 	runTUIShutdownTimeout = 50 * time.Millisecond
 
-	err := runTUI(context.Background(), orch)
+	err := runTUI(context.Background(), orch, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, tuiErr)
 }

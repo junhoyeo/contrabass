@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -14,12 +16,15 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 
+	contrabass "github.com/junhoyeo/contrabass"
 	"github.com/junhoyeo/contrabass/internal/agent"
 	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/hub"
 	"github.com/junhoyeo/contrabass/internal/logging"
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
 	"github.com/junhoyeo/contrabass/internal/tracker"
 	"github.com/junhoyeo/contrabass/internal/tui"
+	"github.com/junhoyeo/contrabass/internal/web"
 	"github.com/junhoyeo/contrabass/internal/workspace"
 )
 
@@ -51,6 +56,7 @@ func newRootCmd() *cobra.Command {
 		logFile  string
 		logLevel string
 		dryRun   bool
+		port     int
 	)
 
 	cmd := &cobra.Command{
@@ -61,7 +67,7 @@ It orchestrates coding agents against an issue tracker and visualises
 progress in a terminal UI built with the Charm stack.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(cfgPath, noTUI, logFile, logLevel, dryRun)
+			return run(cfgPath, noTUI, logFile, logLevel, dryRun, port)
 		},
 	}
 
@@ -70,6 +76,7 @@ progress in a terminal UI built with the Charm stack.`,
 	cmd.Flags().StringVar(&logFile, "log-file", "contrabass.log", "log output path")
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "log level (debug/info/warn/error)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "exit after first poll cycle")
+	cmd.Flags().IntVar(&port, "port", 0, "web dashboard port (0 = disabled)")
 
 	_ = cmd.MarkFlagRequired("config")
 
@@ -91,7 +98,7 @@ func parseLogLevel(s string) log.Level {
 }
 
 // run is the main entry point wired into the root command's RunE.
-func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) error {
+func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port int) error {
 	// 1. Parse and validate workflow config
 	cfg, err := config.ParseWorkflow(cfgPath)
 	if err != nil {
@@ -163,14 +170,39 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) erro
 	defer signal.Stop(signalChan)
 	startSignalShutdownHook(ctx, signalChan, cancel, orch, logger)
 
-	// 10. Select run mode
 	if dryRun {
 		return runDryRun(ctx, orch)
 	}
-	if noTUI {
-		return runHeadless(ctx, orch, logger)
+
+	var h *hub.Hub
+	if port > 0 {
+		h = hub.NewHub(orch.Events())
+		go h.Run(ctx)
+
+		dashboardFS, err := fs.Sub(contrabass.DashboardDistFS, "packages/dashboard/dist")
+		if err != nil {
+			return fmt.Errorf("sub dashboard dist fs: %w", err)
+		}
+
+		srv := web.NewServer(fmt.Sprintf("localhost:%d", port), orch, h, dashboardFS)
+		listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
+		if err != nil {
+			return fmt.Errorf("listen web dashboard: %w", err)
+		}
+		go func() {
+			if err := srv.Serve(ctx, listener); err != nil {
+				logger.Error("web server error", "err", err)
+			}
+		}()
+
+		fmt.Fprintf(os.Stderr, "Web dashboard available at http://localhost:%d\n", port)
 	}
-	return runTUI(ctx, orch)
+
+	// 10. Select run mode
+	if noTUI {
+		return runHeadless(ctx, orch, logger, h)
+	}
+	return runTUI(ctx, orch, h)
 }
 
 // runDryRun starts the orchestrator and exits after the first emitted event.
@@ -194,9 +226,16 @@ func runDryRun(ctx context.Context, orch *orchestrator.Orchestrator) error {
 }
 
 // runHeadless runs the orchestrator without TUI, logging events to the logger.
-func runHeadless(ctx context.Context, orch *orchestrator.Orchestrator, logger *log.Logger) error {
+func runHeadless(ctx context.Context, orch *orchestrator.Orchestrator, logger *log.Logger, h *hub.Hub) error {
+	events := orch.Events()
+	if h != nil {
+		subID, subscribedEvents := h.Subscribe()
+		defer h.Unsubscribe(subID)
+		events = subscribedEvents
+	}
+
 	go func() {
-		for event := range orch.Events() {
+		for event := range events {
 			logger.Info("event",
 				"type", event.Type.String(),
 				"issue_id", event.IssueID,
@@ -227,14 +266,21 @@ func startSignalShutdownHook(
 }
 
 // runTUI starts the orchestrator and renders the Charm TUI.
-func runTUI(ctx context.Context, orch *orchestrator.Orchestrator) error {
+func runTUI(ctx context.Context, orch *orchestrator.Orchestrator, h *hub.Hub) error {
 	tuiCtx, tuiCancel := context.WithCancel(ctx)
 	defer tuiCancel()
 
 	model := tui.NewModel()
 	p := tea.NewProgram(withViewportProgramOptions(model))
 
-	startTUIEventBridge(tuiCtx, p, orch.Events())
+	events := orch.Events()
+	if h != nil {
+		subID, subscribedEvents := h.Subscribe()
+		defer h.Unsubscribe(subID)
+		events = subscribedEvents
+	}
+
+	startTUIEventBridge(tuiCtx, p, events)
 
 	orchDone := make(chan error, 1)
 	orchestratorRunner := runTUIOrchestrator

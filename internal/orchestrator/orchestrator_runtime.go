@@ -77,6 +77,7 @@ func (o *Orchestrator) completeRun(ctx context.Context, issueID string, doneErr 
 	}
 	delete(o.running, issueID)
 	o.stats.Running = len(o.running)
+	eventTimestamp := time.Now()
 	o.mu.Unlock()
 
 	defer entry.cancel()
@@ -86,8 +87,9 @@ func (o *Orchestrator) completeRun(ctx context.Context, issueID string, doneErr 
 	finalAttempt.Phase, finalAttempt.Error = resolveFinalPhase(finalAttempt.Phase, finalAttempt.Error, doneErr)
 
 	o.emitEvent(OrchestratorEvent{
-		Type:    EventAgentFinished,
-		IssueID: issueID,
+		Type:      EventAgentFinished,
+		IssueID:   issueID,
+		Timestamp: eventTimestamp,
 		Data: AgentFinished{
 			Attempt:   finalAttempt.Attempt,
 			Phase:     finalAttempt.Phase,
@@ -208,11 +210,13 @@ func (o *Orchestrator) enqueueBackoffFromRunResult(ctx context.Context, issue ty
 	o.mu.Lock()
 	o.backoff = upsertBackoff(o.backoff, entry)
 	o.putIssueCacheLocked(issue.ID, issue)
+	eventTimestamp := time.Now()
 	o.mu.Unlock()
 
 	o.emitEvent(OrchestratorEvent{
-		Type:    EventBackoffEnqueued,
-		IssueID: issue.ID,
+		Type:      EventBackoffEnqueued,
+		IssueID:   issue.ID,
+		Timestamp: eventTimestamp,
 		Data: BackoffEnqueued{
 			Attempt: nextAttempt,
 			RetryAt: retryAt,
@@ -263,11 +267,13 @@ func (o *Orchestrator) enqueueContinuation(issueID string, attempt int, message 
 
 	o.mu.Lock()
 	o.backoff = upsertBackoff(o.backoff, entry)
+	eventTimestamp := time.Now()
 	o.mu.Unlock()
 
 	o.emitEvent(OrchestratorEvent{
-		Type:    EventBackoffEnqueued,
-		IssueID: issueID,
+		Type:      EventBackoffEnqueued,
+		IssueID:   issueID,
+		Timestamp: eventTimestamp,
 		Data: BackoffEnqueued{
 			Attempt: attempt,
 			RetryAt: retryAt,

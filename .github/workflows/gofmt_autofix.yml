@@ -1,0 +1,71 @@
+name: Go Format Auto-fix
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+
+jobs:
+  fmt:
+    name: Go fmt
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || '' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Auto-fix gofmt issues
+        id: autofix
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          GO_FILES=$(git ls-files | grep '\.go$')
+          if [ -z "$GO_FILES" ]; then
+            exit 0
+          fi
+
+          echo "$GO_FILES" | xargs gofmt -w
+
+          if ! git diff --quiet; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit auto-fixes
+        if: steps.autofix.outputs.has_changes == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add -A
+          git diff --staged --quiet || git commit -m "chore(project): auto-fix go fmt [skip ci]"
+          git push origin "HEAD:${{ github.head_ref }}"
+
+      - name: Check formatting (strict)
+        run: |
+          GO_FILES=$(git ls-files | grep '\.go$')
+          if [ -z "$GO_FILES" ]; then
+            exit 0
+          fi
+
+          UNFORMATTED=$(echo "$GO_FILES" | xargs gofmt -l)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Unformatted files detected:"
+            printf "%s\n" "$UNFORMATTED"
+            exit 1
+          fi

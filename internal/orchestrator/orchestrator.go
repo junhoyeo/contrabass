@@ -345,6 +345,7 @@ func (o *Orchestrator) dispatchIssue(
 	o.running[issue.ID] = entry
 	o.putIssueCacheLocked(issue.ID, issue)
 	o.stats.Running = len(o.running)
+	eventTimestamp := time.Now()
 	o.mu.Unlock()
 
 	logging.LogAgentEvent(
@@ -357,8 +358,9 @@ func (o *Orchestrator) dispatchIssue(
 	)
 
 	o.emitEvent(OrchestratorEvent{
-		Type:    EventAgentStarted,
-		IssueID: issue.ID,
+		Type:      EventAgentStarted,
+		IssueID:   issue.ID,
+		Timestamp: eventTimestamp,
 		Data: AgentStarted{
 			IssueIdentifier: issue.Identifier,
 			IssueURL:        issue.URL,
