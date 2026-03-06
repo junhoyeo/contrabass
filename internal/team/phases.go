@@ -46,59 +46,55 @@ func (m *PhaseMachine) CurrentPhase(teamName string) (types.TeamPhase, error) {
 // 3. Fix loop hasn't exceeded max (when transitioning to PhaseFix)
 // 4. Records the transition in history
 func (m *PhaseMachine) Transition(teamName string, to types.TeamPhase, reason string) error {
-	state, err := m.store.LoadPhaseState(teamName)
-	if err != nil {
-		return fmt.Errorf("load phase state: %w", err)
-	}
+	return m.store.UpdatePhaseState(teamName, func(state *types.TeamPhaseState) error {
+		from := state.Phase
 
-	from := state.Phase
-
-	if from.IsTerminal() {
-		return ErrPhaseTerminal
-	}
-
-	valid := false
-	for _, allowed := range from.ValidTransitions() {
-		if allowed == to {
-			valid = true
-			break
+		if from.IsTerminal() {
+			return ErrPhaseTerminal
 		}
-	}
-	if !valid {
-		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, from, to)
-	}
 
-	if to == types.PhaseFix {
-		if state.FixLoopCount >= m.maxFixLoops {
-			to = types.PhaseFailed
-			reason = fmt.Sprintf("%v (%d): %s", ErrFixLoopExceeded, m.maxFixLoops, reason)
-		} else {
-			state.FixLoopCount++
+		valid := false
+		for _, allowed := range from.ValidTransitions() {
+			if allowed == to {
+				valid = true
+				break
+			}
 		}
-	}
+		if !valid {
+			return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, from, to)
+		}
 
-	state.Transitions = append(state.Transitions, types.PhaseTransition{
-		From:      from,
-		To:        to,
-		Reason:    reason,
-		Timestamp: time.Now(),
+		next := to
+		nextReason := reason
+		if next == types.PhaseFix {
+			if state.FixLoopCount >= m.maxFixLoops {
+				next = types.PhaseFailed
+				nextReason = fmt.Sprintf("%v (%d): %s", ErrFixLoopExceeded, m.maxFixLoops, reason)
+			} else {
+				state.FixLoopCount++
+			}
+		}
+
+		state.Transitions = append(state.Transitions, types.PhaseTransition{
+			From:      from,
+			To:        next,
+			Reason:    nextReason,
+			Timestamp: time.Now(),
+		})
+		state.Phase = next
+		return nil
 	})
-	state.Phase = to
-
-	return m.store.SavePhaseState(teamName, state)
 }
 
 // SetArtifact stores a named artifact (e.g., plan document path) in the phase state.
 func (m *PhaseMachine) SetArtifact(teamName, key, value string) error {
-	state, err := m.store.LoadPhaseState(teamName)
-	if err != nil {
-		return fmt.Errorf("load phase state: %w", err)
-	}
-	if state.Artifacts == nil {
-		state.Artifacts = map[string]string{}
-	}
-	state.Artifacts[key] = value
-	return m.store.SavePhaseState(teamName, state)
+	return m.store.UpdatePhaseState(teamName, func(state *types.TeamPhaseState) error {
+		if state.Artifacts == nil {
+			state.Artifacts = map[string]string{}
+		}
+		state.Artifacts[key] = value
+		return nil
+	})
 }
 
 // GetArtifact retrieves a named artifact from the phase state.

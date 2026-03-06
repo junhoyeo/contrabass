@@ -172,6 +172,34 @@ func (s *Store) LoadPhaseState(teamName string) (*types.TeamPhaseState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.loadPhaseStateLocked(teamName)
+}
+
+// SavePhaseState writes the phase state to disk.
+func (s *Store) SavePhaseState(teamName string, state *types.TeamPhaseState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.savePhaseStateLocked(teamName, state)
+}
+
+// UpdatePhaseState reads, modifies, and writes back phase state atomically
+// under a single store lock.
+func (s *Store) UpdatePhaseState(teamName string, fn func(*types.TeamPhaseState) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.loadPhaseStateLocked(teamName)
+	if err != nil {
+		return err
+	}
+	if err := fn(state); err != nil {
+		return err
+	}
+	return s.savePhaseStateLocked(teamName, state)
+}
+
+func (s *Store) loadPhaseStateLocked(teamName string) (*types.TeamPhaseState, error) {
 	path := s.paths.PhaseStatePath(teamName)
 	var state types.TeamPhaseState
 	if err := s.ReadJSON(path, &state); err != nil {
@@ -180,11 +208,7 @@ func (s *Store) LoadPhaseState(teamName string) (*types.TeamPhaseState, error) {
 	return &state, nil
 }
 
-// SavePhaseState writes the phase state to disk.
-func (s *Store) SavePhaseState(teamName string, state *types.TeamPhaseState) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *Store) savePhaseStateLocked(teamName string, state *types.TeamPhaseState) error {
 	path := s.paths.PhaseStatePath(teamName)
 	if err := s.WriteJSON(path, state); err != nil {
 		return fmt.Errorf("save phase state: %w", err)

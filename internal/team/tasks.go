@@ -279,6 +279,35 @@ func (r *TaskRegistry) ReleaseTask(teamName, taskID, token string) error {
 	return nil
 }
 
+func (r *TaskRegistry) ResetFailedTask(teamName, taskID string) (bool, error) {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+
+	path := r.paths.TaskPath(teamName, taskID)
+	var task types.TeamTask
+	if err := r.store.ReadJSON(path, &task); err != nil {
+		if os.IsNotExist(err) {
+			return false, ErrTaskNotFound
+		}
+		return false, fmt.Errorf("read task: %w", err)
+	}
+
+	if task.Status != types.TaskFailed {
+		return false, nil
+	}
+
+	task.Status = types.TaskPending
+	task.Claim = nil
+	task.Version++
+	task.UpdatedAt = time.Now()
+
+	if err := r.store.WriteJSON(path, &task); err != nil {
+		return false, fmt.Errorf("write task: %w", err)
+	}
+
+	return true, nil
+}
+
 func (r *TaskRegistry) ClaimNextTask(teamName, workerID string) (*types.TeamTask, string, error) {
 	tasks, err := r.ListTasks(teamName)
 	if err != nil {

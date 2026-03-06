@@ -270,14 +270,11 @@ func (c *Coordinator) runFixPhase(ctx context.Context) error {
 	hasPending := false
 	for _, t := range tasks {
 		if t.Status == types.TaskFailed {
-			t.Status = types.TaskPending
-			t.Claim = nil
-			t.Version++
-			t.UpdatedAt = time.Now()
-			if err := c.store.WriteJSON(c.paths.TaskPath(c.teamName, t.ID), &t); err != nil {
+			reset, err := c.tasks.ResetFailedTask(c.teamName, t.ID)
+			if err != nil {
 				return fmt.Errorf("reset task %s: %w", t.ID, err)
 			}
-			hasPending = true
+			hasPending = hasPending || reset
 		}
 	}
 
