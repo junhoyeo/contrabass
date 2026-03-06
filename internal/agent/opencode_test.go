@@ -362,6 +362,48 @@ func TestOpenCodeRunner_SetExtraEnvCopiesInput(t *testing.T) {
 	assert.Equal(t, []string{"OPENCODE_CONFIG=/tmp/opencode.json"}, runner.extraEnv)
 }
 
+func TestOpenCodeRunner_PortForNewServerLocked(t *testing.T) {
+	tests := []struct {
+		name    string
+		base    int
+		servers map[string]*openCodeServer
+		want    int
+	}{
+		{
+			name: "disabled when base port unset",
+			base: 0,
+			want: 0,
+		},
+		{
+			name: "uses configured base port first",
+			base: 8787,
+			want: 8787,
+		},
+		{
+			name: "increments past ports already assigned to other workspaces",
+			base: 8787,
+			servers: map[string]*openCodeServer{
+				"workspace-a": {port: 8787},
+				"workspace-b": {port: 8788},
+			},
+			want: 8789,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := NewOpenCodeRunner("opencode serve", tt.base, "", "", time.Second)
+			runner.servers = tt.servers
+
+			runner.mu.Lock()
+			port := runner.portForNewServerLocked()
+			runner.mu.Unlock()
+
+			assert.Equal(t, tt.want, port)
+		})
+	}
+}
+
 func TestOpenCodeRunner_WorkspaceScopedServers(t *testing.T) {
 	startA := make(chan struct{})
 	startB := make(chan struct{})
@@ -442,6 +484,7 @@ func primeTestOpenCodeServer(r *OpenCodeRunner, workspace, serverURL string, pid
 	r.servers[serverKey(workspace)] = &openCodeServer{
 		url:     serverURL,
 		process: &exec.Cmd{Process: &os.Process{Pid: pid}},
+		port:    0,
 	}
 }
 

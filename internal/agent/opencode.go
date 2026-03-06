@@ -34,6 +34,7 @@ type sseReader struct {
 type openCodeServer struct {
 	process *exec.Cmd
 	url     string
+	port    int
 }
 
 type OpenCodeRunner struct {
@@ -165,6 +166,13 @@ func (r *OpenCodeRunner) SetExtraEnv(env []string) {
 	r.extraEnv = append([]string(nil), env...)
 }
 
+func (r *OpenCodeRunner) ExtraEnv() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.extraEnv...)
+}
+
 func (r *OpenCodeRunner) SetWorkDir(dir string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -198,8 +206,9 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context, workDir string) (stri
 		return "", 0, errors.New("opencode binary path is empty")
 	}
 
-	if r.port > 0 {
-		argv = append(argv, "--port", strconv.Itoa(r.port))
+	port := r.portForNewServerLocked()
+	if port > 0 {
+		argv = append(argv, "--port", strconv.Itoa(port))
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -262,6 +271,7 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context, workDir string) (stri
 		r.servers[key] = &openCodeServer{
 			process: cmd,
 			url:     serverURL,
+			port:    port,
 		}
 		return serverURL, cmd.Process.Pid, nil
 	}
@@ -649,4 +659,25 @@ func extractListeningURL(line string) string {
 
 func serverKey(workDir string) string {
 	return workDir
+}
+
+func (r *OpenCodeRunner) portForNewServerLocked() int {
+	if r.port <= 0 {
+		return 0
+	}
+
+	port := r.port
+	for {
+		inUse := false
+		for _, server := range r.servers {
+			if server != nil && server.port == port {
+				inUse = true
+				break
+			}
+		}
+		if !inUse {
+			return port
+		}
+		port++
+	}
 }

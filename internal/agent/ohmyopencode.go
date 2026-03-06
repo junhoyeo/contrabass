@@ -132,7 +132,7 @@ func (r *OhMyOpenCodeRunner) ConfigDir() string {
 }
 
 func (r *OhMyOpenCodeRunner) ExtraEnv() []string {
-	return r.inner.extraEnv
+	return r.inner.ExtraEnv()
 }
 
 func (r *OhMyOpenCodeRunner) writeConfigs() error {
