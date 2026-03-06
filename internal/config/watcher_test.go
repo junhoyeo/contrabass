@@ -265,7 +265,6 @@ func TestWatchContextCancellation(t *testing.T) {
 	}
 }
 
-
 func TestWatcher_GetConfigReturnsCopy(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")

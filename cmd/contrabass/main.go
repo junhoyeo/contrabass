@@ -126,11 +126,24 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool) erro
 	var trackerClient tracker.Tracker
 	switch cfg.TrackerType() {
 	case "linear":
-		trackerClient = tracker.NewLinearClient(tracker.LinearConfig{
+		assigneeID := trackerAssigneeID(cfg)
+		linearClient := tracker.NewLinearClient(tracker.LinearConfig{
 			APIKey:      os.Getenv("LINEAR_API_KEY"),
 			ProjectSlug: projectSlug(cfg),
-			AssigneeID:  cfg.TrackerAssigneeID(),
+			AssigneeID:  assigneeID,
 		})
+		if assigneeID == "" {
+			logger.Info("no assignee configured, resolving from API token...")
+			viewerID, viewerErr := linearClient.FetchViewerID(ctx)
+			if viewerErr != nil {
+				logger.Warn("could not auto-resolve assignee from API token", "err", viewerErr)
+				logger.Warn("set tracker.assignee_id or LINEAR_ASSIGNEE to claim issues")
+			} else {
+				linearClient.SetAssigneeID(viewerID)
+				logger.Info("auto-resolved assignee from API token", "id", viewerID)
+			}
+		}
+		trackerClient = linearClient
 	case "github":
 		token := os.Getenv("GITHUB_TOKEN")
 		if token == "" {
@@ -348,4 +361,12 @@ func projectSlug(cfg *config.WorkflowConfig) string {
 		return parts[len(parts)-1]
 	}
 	return ""
+}
+
+// trackerAssigneeID extracts assignee from config with env fallback.
+func trackerAssigneeID(cfg *config.WorkflowConfig) string {
+	if cfgAssignee := cfg.TrackerAssigneeID(); cfgAssignee != "" {
+		return cfgAssignee
+	}
+	return os.Getenv("LINEAR_ASSIGNEE")
 }

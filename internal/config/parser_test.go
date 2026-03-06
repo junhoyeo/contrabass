@@ -303,7 +303,6 @@ Minimal prompt.
 	assert.Equal(t, defaultSandbox, cfg.CodexSandbox())
 }
 
-
 func TestSplitFrontMatter_CRLFLineEnding(t *testing.T) {
 	t.Parallel()
 

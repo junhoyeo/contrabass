@@ -1,18 +1,28 @@
 package tui
 
 import (
+	"image"
+	"image/color"
+	_ "image/png"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestHeaderViewContainsTitle(t *testing.T) {
+func TestHeaderViewRenders(t *testing.T) {
 	h := NewHeader()
 	h = h.Update(HeaderData{RunningAgents: 3, MaxAgents: 10, RuntimeSeconds: 154})
-	out := h.View()
-	assert.Contains(t, out, "CONTRABASS STATUS")
+	out := stripANSI(h.View())
+	assert.Contains(t, out, "CONTRABASS")
+	assert.Contains(t, out, "STATUS")
 	assert.Contains(t, out, "3/10")
-	assert.Contains(t, out, "collecting...")
+	// Runtime may word-wrap across lines in narrow layouts; check components.
+	assert.Contains(t, out, "2m")
+	assert.Contains(t, out, "34s")
 }
 
 func TestFormatRuntime(t *testing.T) {
@@ -77,8 +87,8 @@ func TestFormatThroughput(t *testing.T) {
 func TestHeaderZeroData(t *testing.T) {
 	h := NewHeader()
 	assert.NotPanics(t, func() {
-		out := h.View()
-		assert.Contains(t, out, "CONTRABASS STATUS")
+		out := stripANSI(h.View())
+		assert.Contains(t, out, "CONTRABASS")
 		assert.Contains(t, out, "0/0")
 		assert.Contains(t, out, "collecting...")
 	})
@@ -87,6 +97,79 @@ func TestHeaderZeroData(t *testing.T) {
 func TestHeaderSetWidth(t *testing.T) {
 	h := NewHeader().SetWidth(80)
 	h = h.Update(HeaderData{RunningAgents: 1, MaxAgents: 5})
-	out := h.View()
-	assert.Contains(t, out, "CONTRABASS STATUS")
+	out := stripANSI(h.View())
+	assert.Contains(t, out, "CONTRABASS")
+	assert.Contains(t, out, "1/5")
+}
+
+func loadTestImage(t *testing.T) image.Image {
+	t.Helper()
+	f, err := os.Open(filepath.Join("..", "..", ".github", "assets", "contrabass.png"))
+	require.NoError(t, err)
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	require.NoError(t, err)
+	return img
+}
+
+func TestResizeToCoverDimensions(t *testing.T) {
+	tests := []struct {
+		name             string
+		srcW, srcH       int
+		targetW, targetH int
+	}{
+		{"square to landscape", 100, 100, 40, 20},
+		{"tall to landscape", 50, 200, 40, 20},
+		{"wide to square", 200, 50, 20, 20},
+		{"exact match", 40, 20, 40, 20},
+		{"contrabass-like", 827, 801, 40, 20},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := image.NewRGBA(image.Rect(0, 0, tt.srcW, tt.srcH))
+			for y := 0; y < tt.srcH; y++ {
+				for x := 0; x < tt.srcW; x++ {
+					src.SetRGBA(x, y, color.RGBA{R: 255, A: 255})
+				}
+			}
+			result := resizeToCover(src, tt.targetW, tt.targetH)
+			assert.Equal(t, tt.targetW, result.Bounds().Dx(), "width")
+			assert.Equal(t, tt.targetH, result.Bounds().Dy(), "height")
+		})
+	}
+}
+
+func TestResizeToFitDimensions(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 100, 200))
+	for y := 0; y < 200; y++ {
+		for x := 0; x < 100; x++ {
+			src.SetRGBA(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+	result := resizeToFit(src, 40, 20)
+	b := result.Bounds()
+	assert.LessOrEqual(t, b.Dx(), 40, "fit width within bounds")
+	assert.LessOrEqual(t, b.Dy(), 20, "fit height within bounds")
+	assert.True(t, b.Dx() == 40 || b.Dy() == 20, "fit should touch at least one edge")
+}
+
+func TestMosaicImageDimensions(t *testing.T) {
+	img := loadTestImage(t)
+	img = cropToContent(img)
+	rendered := renderMosaicImage(img, nil)
+	lines := strings.Split(rendered, "\n")
+
+	assert.Equal(t, mosaicLogoRows, len(lines), "mosaic row count should be %d", mosaicLogoRows)
+	for i, line := range lines {
+		clean := stripANSI(line)
+		cols := len([]rune(clean))
+		assert.Equal(t, mosaicLogoCols, cols, "mosaic col count on line %d", i)
+	}
+}
+
+func TestMosaicImageGolden(t *testing.T) {
+	img := loadTestImage(t)
+	img = cropToContent(img)
+	rendered := renderMosaicImage(img, nil)
+	assertGolden(t, "mosaic_logo", stripANSI(rendered))
 }

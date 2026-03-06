@@ -3,10 +3,10 @@ package workspace
 import (
 	"context"
 	"errors"
+	"github.com/junhoyeo/contrabass/internal/types"
 	"path/filepath"
 	"sort"
 	"sync"
-	"github.com/junhoyeo/contrabass/internal/types"
 )
 
 type MockManager struct {

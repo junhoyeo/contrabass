@@ -11,9 +11,9 @@ import (
 type MockTracker struct {
 	mu       sync.Mutex
 	Issues   []types.Issue
-	Comments map[string][]string          // issueID -> comments
-	Claimed  map[string]bool               // issueID -> claimed
-	States   map[string]types.IssueState   // issueID -> state
+	Comments map[string][]string         // issueID -> comments
+	Claimed  map[string]bool             // issueID -> claimed
+	States   map[string]types.IssueState // issueID -> state
 
 	// Error fields for injecting errors in tests.
 	FetchErr   error

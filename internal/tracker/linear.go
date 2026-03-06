@@ -149,6 +149,8 @@ const postCommentMutation = `mutation PostComment($issueId: String!, $body: Stri
 	}
 }`
 
+const viewerQuery = `query { viewer { id } }`
+
 // defaultStateNames maps internal IssueState to Linear workflow state names.
 var defaultStateNames = map[types.IssueState]string{
 	types.Unclaimed:   "Todo",
@@ -269,6 +271,28 @@ func (c *LinearClient) PostComment(ctx context.Context, issueID string, body str
 	}
 
 	return checkMutationSuccess(data, "commentCreate")
+}
+
+// FetchViewerID returns the authenticated user's Linear ID.
+func (c *LinearClient) FetchViewerID(ctx context.Context) (string, error) {
+	data, err := c.doGraphQL(ctx, viewerQuery, nil)
+	if err != nil {
+		return "", fmt.Errorf("fetching viewer: %w", err)
+	}
+	viewer, ok := data["viewer"].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("unexpected viewer response shape")
+	}
+	id, ok := viewer["id"].(string)
+	if !ok || id == "" {
+		return "", fmt.Errorf("viewer ID not found in response")
+	}
+	return id, nil
+}
+
+// SetAssigneeID updates the assignee used for claiming issues.
+func (c *LinearClient) SetAssigneeID(id string) {
+	c.assigneeID = id
 }
 
 // --- Internal helpers ---
