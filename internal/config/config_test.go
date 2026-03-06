@@ -542,3 +542,35 @@ func TestParseWorkflow_OhMyOpenCodeConfig(t *testing.T) {
 	assert.Equal(t, 8787, cfg.OpenCodePort())
 	assert.Contains(t, cfg.PromptTemplate, "{{ issue.title }}")
 }
+
+func TestWorkflowConfig_CloneDeepCopy(t *testing.T) {
+	t.Parallel()
+
+	original := &WorkflowConfig{
+		Tracker: TrackerConfig{
+			Labels: []string{"bug", "agent"},
+		},
+		OhMyOpenCode: OhMyOpenCodeConfig{
+			Plugins: []string{"plugin-a"},
+			Agents: map[string]OhMyOpenCodeAgent{
+				"sisyphus": {Model: "anthropic/claude-sonnet-4-6"},
+			},
+			Categories: map[string]OhMyOpenCodeCategory{
+				"quick": {Model: "anthropic/claude-haiku-4-5"},
+			},
+		},
+	}
+
+	cloned := original.Clone()
+	require.NotNil(t, cloned)
+
+	cloned.Tracker.Labels[0] = "mutated"
+	cloned.OhMyOpenCode.Plugins[0] = "plugin-b"
+	cloned.OhMyOpenCode.Agents["sisyphus"] = OhMyOpenCodeAgent{Model: "openai/gpt-5"}
+	cloned.OhMyOpenCode.Categories["quick"] = OhMyOpenCodeCategory{Model: "openai/gpt-5-mini"}
+
+	assert.Equal(t, []string{"bug", "agent"}, original.Tracker.Labels)
+	assert.Equal(t, []string{"plugin-a"}, original.OhMyOpenCode.Plugins)
+	assert.Equal(t, "anthropic/claude-sonnet-4-6", original.OhMyOpenCode.Agents["sisyphus"].Model)
+	assert.Equal(t, "anthropic/claude-haiku-4-5", original.OhMyOpenCode.Categories["quick"].Model)
+}

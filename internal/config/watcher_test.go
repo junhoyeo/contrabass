@@ -291,6 +291,44 @@ func TestWatcher_GetConfigReturnsCopy(t *testing.T) {
 	assert.NotEqual(t, cfg1, cfg2, "GetConfig should return different objects")
 }
 
+func TestWatcher_GetConfigReturnsDeepCopy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	writeWorkflowFile(t, path, `model: gpt-5
+project_url: https://example.com
+tracker:
+  labels:
+    - bug
+oh_my_opencode:
+  plugins:
+    - plugin-a
+  agents:
+    sisyphus:
+      model: anthropic/claude-sonnet-4-6
+  categories:
+    quick:
+      model: anthropic/claude-haiku-4-5
+`, "Original prompt.\n")
+
+	w, err := NewWatcher(path)
+	require.NoError(t, err)
+	defer w.Stop()
+
+	cfg1 := w.GetConfig()
+	require.NotNil(t, cfg1)
+	cfg1.Tracker.Labels[0] = "mutated"
+	cfg1.OhMyOpenCode.Plugins[0] = "plugin-b"
+	cfg1.OhMyOpenCode.Agents["sisyphus"] = OhMyOpenCodeAgent{Model: "openai/gpt-5"}
+	cfg1.OhMyOpenCode.Categories["quick"] = OhMyOpenCodeCategory{Model: "openai/gpt-5-mini"}
+
+	cfg2 := w.GetConfig()
+	require.NotNil(t, cfg2)
+	assert.Equal(t, []string{"bug"}, cfg2.Tracker.Labels)
+	assert.Equal(t, []string{"plugin-a"}, cfg2.OhMyOpenCode.Plugins)
+	assert.Equal(t, "anthropic/claude-sonnet-4-6", cfg2.OhMyOpenCode.Agents["sisyphus"].Model)
+	assert.Equal(t, "anthropic/claude-haiku-4-5", cfg2.OhMyOpenCode.Categories["quick"].Model)
+}
+
 func TestReloadOnRenameEvent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")

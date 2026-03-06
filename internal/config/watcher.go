@@ -46,17 +46,13 @@ func NewWatcher(filePath string) (*Watcher, error) {
 	}, nil
 }
 
-// GetConfig returns a defensive copy of the current WorkflowConfig in a
-// thread-safe manner. The returned config is independent and safe to mutate
-// without affecting the internal state.
+// GetConfig returns a deep copy of the current WorkflowConfig in a thread-safe
+// manner. The returned config is independent and safe to mutate without
+// affecting the internal state.
 func (w *Watcher) GetConfig() *WorkflowConfig {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	if w.config == nil {
-		return nil
-	}
-	cfg := *w.config // shallow copy (WorkflowConfig has no pointer/slice/map fields)
-	return &cfg
+	return w.config.Clone()
 }
 
 // Watch starts watching the file for changes. It blocks until the context is

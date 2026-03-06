@@ -2,6 +2,8 @@ package config
 
 import (
 	"errors"
+	"maps"
+	"slices"
 )
 
 const (
@@ -135,6 +137,21 @@ type OhMyOpenCodeProvider struct {
 	Name    string `yaml:"name"`
 	BaseURL string `yaml:"base_url"`
 	APIKey  string `yaml:"api_key"`
+}
+
+// Clone returns a deep copy of the workflow config so callers can safely
+// mutate the result without affecting the original.
+func (c *WorkflowConfig) Clone() *WorkflowConfig {
+	if c == nil {
+		return nil
+	}
+
+	cfg := *c
+	cfg.Tracker.Labels = slices.Clone(c.Tracker.Labels)
+	cfg.OhMyOpenCode.Plugins = slices.Clone(c.OhMyOpenCode.Plugins)
+	cfg.OhMyOpenCode.Agents = maps.Clone(c.OhMyOpenCode.Agents)
+	cfg.OhMyOpenCode.Categories = maps.Clone(c.OhMyOpenCode.Categories)
+	return &cfg
 }
 
 func (c *WorkflowConfig) MaxConcurrency() int {
