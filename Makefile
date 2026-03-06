@@ -1,7 +1,7 @@
 # Contrabass — Build Tooling
 # Build order: dashboard SPA must build before Go binary (embed.FS requires dist/)
 
-.PHONY: build-dashboard build-landing build dev-dashboard dev-landing dev test test-dashboard test-landing test-all clean lint
+.PHONY: build-dashboard build-landing build dev-dashboard dev-landing dev test test-dashboard test-landing test-quick test-all ci clean lint
 
 # Build the React dashboard SPA to packages/dashboard/dist/
 build-dashboard:
@@ -39,8 +39,18 @@ test-dashboard:
 test-landing:
 	cd packages/landing && bun run check
 
+# Run the recommended local validation path
+test-quick: test test-dashboard test-landing
+
 # Run all tests/checks
-test-all: test test-dashboard test-landing
+test-all: test-quick
+
+# Run the preferred CI/local full validation flow
+ci:
+	$(MAKE) lint
+	$(MAKE) test-quick
+	$(MAKE) build
+	$(MAKE) build-landing
 
 # Remove build artifacts
 clean:
