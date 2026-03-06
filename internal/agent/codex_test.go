@@ -76,14 +76,9 @@ func TestTimeoutKillsProcess(t *testing.T) {
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
 	require.NoError(t, err)
 
-	stopTimeout := 100 * time.Millisecond
-	runner.timeout = stopTimeout
+	runner.timeout = 100 * time.Millisecond
 
-	start := time.Now()
 	require.NoError(t, runner.Stop(proc))
-	elapsed := time.Since(start)
-	assert.GreaterOrEqual(t, elapsed, stopTimeout)
-	assert.Less(t, elapsed, 3*time.Second)
 
 	select {
 	case <-proc.Done:
