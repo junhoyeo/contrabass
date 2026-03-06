@@ -39,6 +39,16 @@ type OpenCodeRunner struct {
 	timeout    time.Duration
 	logger     *log.Logger
 
+	// extraEnv holds additional environment variables (KEY=VALUE) injected
+	// into the managed opencode subprocess. These are appended to the
+	// current process's environment so callers can override config paths,
+	// NODE_PATH, etc. without mutating the parent process.
+	extraEnv []string
+
+	// workDir, when non-empty, is passed as cmd.Dir to the managed
+	// opencode subprocess so it operates in the correct workspace.
+	workDir string
+
 	mu            sync.Mutex
 	serverProcess *exec.Cmd
 	serverURL     string
@@ -142,6 +152,14 @@ func NewOpenCodeRunner(binaryPath string, port int, password, username string, t
 	}
 }
 
+func (r *OpenCodeRunner) SetExtraEnv(env []string) {
+	r.extraEnv = env
+}
+
+func (r *OpenCodeRunner) SetWorkDir(dir string) {
+	r.workDir = dir
+}
+
 func (r *OpenCodeRunner) ensureServer(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -160,6 +178,12 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context) error {
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
+	if len(r.extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), r.extraEnv...)
+	}
+	if r.workDir != "" {
+		cmd.Dir = r.workDir
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("create opencode stdout pipe: %w", err)
@@ -265,7 +289,10 @@ func (r *OpenCodeRunner) Close() error {
 	return r.stopServer()
 }
 
-func (r *OpenCodeRunner) Start(ctx context.Context, _ types.Issue, _ string, prompt string) (*AgentProcess, error) {
+func (r *OpenCodeRunner) Start(ctx context.Context, _ types.Issue, workspace string, prompt string) (*AgentProcess, error) {
+	if workspace != "" && r.workDir == "" {
+		r.SetWorkDir(workspace)
+	}
 	if err := r.ensureServer(ctx); err != nil {
 		return nil, err
 	}
