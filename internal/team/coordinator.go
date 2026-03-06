@@ -111,8 +111,9 @@ func (c *Coordinator) Initialize(teamCfg types.TeamConfig) error {
 	}
 
 	c.emitEvent("team_created", map[string]interface{}{
-		"team_name":   c.teamName,
-		"max_workers": teamCfg.MaxWorkers,
+		"team_name":      c.teamName,
+		"max_workers":    teamCfg.MaxWorkers,
+		"board_issue_id": teamCfg.BoardIssueID,
 	})
 	return nil
 }

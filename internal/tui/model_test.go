@@ -160,6 +160,83 @@ func TestModelBackoffEnqueued(t *testing.T) {
 	assert.Len(t, model.backoff.rows, 1)
 }
 
+func TestModelTeamEventsPopulateBoardLinkedTeamState(t *testing.T) {
+	m := NewModel()
+	now := time.Now()
+
+	updated, _ := m.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "team_created",
+		TeamName:  "team-alpha",
+		Timestamp: now,
+		Data: map[string]interface{}{
+			"max_workers":    2,
+			"board_issue_id": "CB-7",
+		},
+	}})
+	model := updated.(Model)
+
+	row, ok := model.teams["team-alpha"]
+	require.True(t, ok)
+	assert.Equal(t, "CB-7", row.BoardIssueID)
+	assert.Equal(t, 2, row.Workers)
+
+	updated, _ = model.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "pipeline_started",
+		TeamName:  "team-alpha",
+		Timestamp: now.Add(time.Second),
+		Data: map[string]interface{}{
+			"task_count": 3,
+		},
+	}})
+	model = updated.(Model)
+	assert.Equal(t, 3, model.teams["team-alpha"].Tasks)
+
+	updated, _ = model.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "task_claimed",
+		TeamName:  "team-alpha",
+		Timestamp: now.Add(2 * time.Second),
+		Data: map[string]interface{}{
+			"worker_id": "worker-1",
+			"task_id":   "003-cb-7-exec",
+			"task":      "Implement CB-7",
+		},
+	}})
+	model = updated.(Model)
+	assert.Equal(t, 1, model.teams["team-alpha"].ActiveWorkers)
+	require.Len(t, model.teamWorkers["team-alpha"], 1)
+	assert.Equal(t, "working", model.teamWorkers["team-alpha"][0].Status)
+	assert.Equal(t, "003-cb-7-exec", model.teamWorkers["team-alpha"][0].CurrentTask)
+
+	updated, _ = model.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "task_completed",
+		TeamName:  "team-alpha",
+		Timestamp: now.Add(3 * time.Second),
+		Data: map[string]interface{}{
+			"worker_id": "worker-1",
+			"task_id":   "003-cb-7-exec",
+		},
+	}})
+	model = updated.(Model)
+	assert.Equal(t, 1, model.teams["team-alpha"].CompletedTasks)
+	assert.Equal(t, 0, model.teams["team-alpha"].ActiveWorkers)
+	assert.Equal(t, "idle", model.teamWorkers["team-alpha"][0].Status)
+	assert.Empty(t, model.teamWorkers["team-alpha"][0].CurrentTask)
+
+	updated, _ = model.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "pipeline_completed",
+		TeamName:  "team-alpha",
+		Timestamp: now.Add(4 * time.Second),
+		Data: map[string]interface{}{
+			"phase": "failed",
+		},
+	}})
+	model = updated.(Model)
+	assert.Equal(t, "failed", model.teams["team-alpha"].Phase)
+
+	view := stripANSI(model.teamTable.View())
+	assert.Contains(t, view, "team-alpha · CB-7")
+}
+
 func TestModelViewComposition(t *testing.T) {
 	m := NewModel()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})

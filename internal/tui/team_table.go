@@ -10,6 +10,7 @@ import (
 // TeamRow holds display data for one team in the team table.
 type TeamRow struct {
 	TeamName       string
+	BoardIssueID   string
 	Phase          string
 	Workers        int
 	ActiveWorkers  int
@@ -67,11 +68,15 @@ func (t TeamTable) buildRows() ([][]string, map[int]int) {
 			tasksStr = fmt.Sprintf("%d/%d (%d!)", team.CompletedTasks, team.Tasks, team.FailedTasks)
 		}
 		workersStr := fmt.Sprintf("%d/%d", team.ActiveWorkers, team.Workers)
+		teamLabel := team.TeamName
+		if team.BoardIssueID != "" {
+			teamLabel = fmt.Sprintf("%s · %s", team.TeamName, team.BoardIssueID)
+		}
 
 		teamRowIndex[len(rows)] = teamIdx
 		rows = append(rows, []string{
 			glyph,
-			team.TeamName,
+			teamLabel,
 			compactTeamPhase(team.Phase),
 			workersStr,
 			tasksStr,
