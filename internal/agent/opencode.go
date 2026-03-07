@@ -63,6 +63,11 @@ type OpenCodeRunner struct {
 	streamClient *http.Client
 }
 
+var (
+	errOpenCodeAlreadyStopped = errors.New("opencode session already stopped")
+	errOpenCodeStopFailed     = errors.New("opencode session stop failed")
+)
+
 var _ AgentRunner = (*OpenCodeRunner)(nil)
 
 func newSSEReader(r io.Reader) *sseReader {
@@ -299,7 +304,18 @@ func (r *OpenCodeRunner) startServer(
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for scanner.Scan() {
+		for {
+			select {
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			default:
+			}
+
+			if !scanner.Scan() {
+				break
+			}
+
 			line := scanner.Text()
 			if strings.Contains(line, "listening on http://") || strings.Contains(line, "listening on https://") {
 				if url := extractListeningURL(line); url != "" {
@@ -464,10 +480,20 @@ func (r *OpenCodeRunner) Stop(proc *AgentProcess) error {
 		serverURL = r.firstServerURL()
 	}
 	if serverURL == "" {
-		return nil
+		return fmt.Errorf("%w: missing server URL", errOpenCodeAlreadyStopped)
 	}
 
-	_ = r.abortSession(context.Background(), serverURL, proc.SessionID)
+	if strings.TrimSpace(proc.SessionID) == "" {
+		return fmt.Errorf("%w: missing session ID", errOpenCodeStopFailed)
+	}
+
+	if err := r.abortSession(context.Background(), serverURL, proc.SessionID); err != nil {
+		if errors.Is(err, errOpenCodeAlreadyStopped) {
+			return err
+		}
+		return fmt.Errorf("%w: %w", errOpenCodeStopFailed, err)
+	}
+
 	return nil
 }
 
@@ -509,7 +535,8 @@ func (r *OpenCodeRunner) createSession(ctx context.Context, serverURL string) (s
 	}
 
 	sessionID, _ := payload["id"].(string)
-	if strings.TrimSpace(sessionID) == "" {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
 		return "", errors.New("create session response missing id")
 	}
 
@@ -538,6 +565,10 @@ func (r *OpenCodeRunner) abortSession(ctx context.Context, serverURL, sessionID 
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusGone {
+		return fmt.Errorf("%w: status %d", errOpenCodeAlreadyStopped, resp.StatusCode)
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("abort opencode session failed: status %d", resp.StatusCode)
@@ -590,6 +621,20 @@ func (r *OpenCodeRunner) streamSessionEvents(
 		payload := map[string]interface{}{}
 		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
 			r.logger.Warn("failed to parse opencode event payload", "err", err)
+			protocolErr := types.AgentEvent{
+				Type: "protocol/error",
+				Data: map[string]interface{}{
+					"error": fmt.Sprintf("malformed opencode event payload: %s", err.Error()),
+					"raw":   event.Data,
+				},
+				Timestamp: time.Now(),
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case events <- protocolErr:
+			default:
+			}
 			continue
 		}
 

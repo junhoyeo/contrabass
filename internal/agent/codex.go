@@ -26,6 +26,11 @@ const (
 	maxJSONLineSize      = 10 * 1024 * 1024 // 10MB
 )
 
+var (
+	errCodexAlreadyStopped = errors.New("codex process already stopped")
+	errCodexStopFailed     = errors.New("codex process stop failed")
+)
+
 type CodexRunner struct {
 	binaryPath string
 	timeout    time.Duration
@@ -234,32 +239,46 @@ func (r *CodexRunner) Stop(proc *AgentProcess) error {
 	r.mu.Unlock()
 
 	if !ok {
-		return nil
+		return fmt.Errorf("%w: pid %d", errCodexAlreadyStopped, proc.PID)
 	}
 
 	if state.stdin != nil {
 		_ = state.stdin.Close()
 	}
 
-	if state.cmd.Process != nil {
-		_ = state.cmd.Process.Signal(os.Interrupt)
+	if state.cmd.Process == nil {
+		return fmt.Errorf("%w: pid %d", errCodexAlreadyStopped, proc.PID)
+	}
+
+	if err := state.cmd.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("%w: interrupt process: %w", errCodexStopFailed, err)
 	}
 
 	select {
-	case <-state.done:
+	case doneErr := <-state.done:
+		if doneErr != nil && !errors.Is(doneErr, os.ErrProcessDone) {
+			r.logger.Warn("codex process exited with error during stop", "pid", proc.PID, "err", doneErr)
+		}
 		return nil
 	case <-time.After(r.timeout):
 		if state.cmd.Process == nil {
-			return nil
+			return fmt.Errorf("%w: pid %d", errCodexAlreadyStopped, proc.PID)
 		}
 		if err := state.cmd.Process.Kill(); err != nil {
-			return fmt.Errorf("kill process: %w", err)
+			if errors.Is(err, os.ErrProcessDone) {
+				return fmt.Errorf("%w: pid %d", errCodexAlreadyStopped, proc.PID)
+			}
+			return fmt.Errorf("%w: kill process: %w", errCodexStopFailed, err)
 		}
 		select {
-		case <-state.done:
+		case doneErr := <-state.done:
+			if doneErr != nil && !errors.Is(doneErr, os.ErrProcessDone) {
+				r.logger.Warn("codex process exited with error after kill", "pid", proc.PID, "err", doneErr)
+			}
+			return nil
 		case <-time.After(r.timeout):
+			return fmt.Errorf("%w: timeout after kill", errCodexStopFailed)
 		}
-		return nil
 	}
 }
 
@@ -343,7 +362,9 @@ func (r *CodexRunner) cleanupOnStartFailure(process *codexProcess) {
 	_ = process.cmd.Wait()
 
 	r.mu.Lock()
-	delete(r.procs, process.cmd.Process.Pid)
+	if process.cmd.Process != nil {
+		delete(r.procs, process.cmd.Process.Pid)
+	}
 	r.mu.Unlock()
 }
 
@@ -400,6 +421,7 @@ func (r *CodexRunner) readLineWithTimeout(reader *bufio.Reader, timeout time.Dur
 
 	resultCh := make(chan lineReadResult, 1)
 	go func() {
+		// bufio.Reader reads cannot be interrupted; this unblocks when process stdout closes.
 		line, err := reader.ReadBytes('\n')
 		resultCh <- lineReadResult{line: line, err: err}
 	}()

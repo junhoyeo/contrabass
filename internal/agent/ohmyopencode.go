@@ -12,9 +12,7 @@ import (
 	"github.com/junhoyeo/contrabass/internal/types"
 )
 
-// DefaultCategories defines the standard oh-my-opencode category-to-model
-// mapping used when the user does not override categories in the workflow config.
-var DefaultCategories = map[string]string{
+var defaultCategories = map[string]string{
 	"visual-engineering": "anthropic/claude-sonnet-4-6",
 	"ultrabrain":         "anthropic/claude-sonnet-4-6",
 	"deep":               "anthropic/claude-sonnet-4-6",
@@ -26,6 +24,8 @@ var DefaultCategories = map[string]string{
 	"git":                "anthropic/claude-haiku-4-5",
 	"free":               "anthropic/claude-haiku-4-5",
 }
+
+var DefaultCategories = defaultCategories
 
 type OhMyOpenCodeRunner struct {
 	inner   *OpenCodeRunner
@@ -162,7 +162,7 @@ func (r *OhMyOpenCodeRunner) writeOhMyOpenCodeJSON() error {
 	cfgCategories := r.cfg.OhMyOpenCodeCategories()
 
 	if len(cfgCategories) == 0 {
-		for name, model := range DefaultCategories {
+		for name, model := range defaultCategories {
 			categories[name] = ohMyCategoryJSON{Model: model}
 		}
 	} else {
