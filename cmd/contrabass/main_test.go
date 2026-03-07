@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -353,12 +354,15 @@ func TestRun_ConfigParseError(t *testing.T) {
 func TestRun_DefaultInternalWorkflowUsesTeamExecution(t *testing.T) {
 	restoreRunTUITestHooks(t)
 
-	cfgPath := writeRootWorkflowConfig(t, `---
+	boardDir := filepath.Join(t.TempDir(), "board")
+	cfgPath := writeRootWorkflowConfig(t, fmt.Sprintf(`---
 model: openai/gpt-5-codex
 project_url: https://linear.app/example/project/internal
+tracker:
+  board_dir: %q
 ---
 Prompt.
-`)
+`, boardDir))
 
 	called := false
 	runRootTeamExecution = func(
@@ -385,14 +389,17 @@ Prompt.
 func TestRun_SingleExecutionModeKeepsOriginalOrchestratorPath(t *testing.T) {
 	restoreRunTUITestHooks(t)
 
-	cfgPath := writeRootWorkflowConfig(t, `---
+	boardDir := filepath.Join(t.TempDir(), "board")
+	cfgPath := writeRootWorkflowConfig(t, fmt.Sprintf(`---
 model: openai/gpt-5-codex
 project_url: https://linear.app/example/project/internal
+tracker:
+  board_dir: %q
 team:
   execution_mode: single
 ---
 Prompt.
-`)
+`, boardDir))
 
 	runRootTeamExecution = func(
 		context.Context,
