@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,7 +67,11 @@ type LinearClient struct {
 var _ Tracker = (*LinearClient)(nil)
 
 // NewLinearClient creates a new LinearClient with the given configuration.
-func NewLinearClient(cfg LinearConfig) *LinearClient {
+func NewLinearClient(cfg LinearConfig) (*LinearClient, error) {
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return nil, errors.New("linear api key required")
+	}
+
 	endpoint := cfg.Endpoint
 	if endpoint == "" {
 		endpoint = defaultLinearEndpoint
@@ -89,7 +94,7 @@ func NewLinearClient(cfg LinearConfig) *LinearClient {
 		assigneeID:  cfg.AssigneeID,
 		httpClient:  httpClient,
 		pageSize:    pageSize,
-	}
+	}, nil
 }
 
 // --- GraphQL query and mutation templates ---

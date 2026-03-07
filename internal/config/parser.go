@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/charmbracelet/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -170,5 +171,10 @@ func resolveEnvToken(value string) (string, bool) {
 		return "", false
 	}
 
-	return os.Getenv(name), true
+	resolved := os.Getenv(name)
+	if resolved == "" {
+		log.Debug("environment variable reference resolved empty", "name", name)
+	}
+
+	return resolved, true
 }

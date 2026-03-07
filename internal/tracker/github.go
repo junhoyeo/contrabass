@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -41,7 +43,17 @@ type GitHubClient struct {
 
 var _ Tracker = (*GitHubClient)(nil)
 
-func NewGitHubClient(cfg GitHubConfig) *GitHubClient {
+func NewGitHubClient(cfg GitHubConfig) (*GitHubClient, error) {
+	if strings.TrimSpace(cfg.APIToken) == "" {
+		return nil, errors.New("github api token required")
+	}
+	if strings.TrimSpace(cfg.Owner) == "" {
+		return nil, errors.New("github owner required")
+	}
+	if strings.TrimSpace(cfg.Repo) == "" {
+		return nil, errors.New("github repo required")
+	}
+
 	endpoint := cfg.Endpoint
 	if endpoint == "" {
 		endpoint = defaultGitHubEndpoint
@@ -66,7 +78,7 @@ func NewGitHubClient(cfg GitHubConfig) *GitHubClient {
 		endpoint:   strings.TrimSuffix(endpoint, "/"),
 		httpClient: httpClient,
 		pageSize:   pageSize,
-	}
+	}, nil
 }
 
 type githubIssue struct {
@@ -290,8 +302,20 @@ func (c *GitHubClient) normalizeIssue(item githubIssue) types.Issue {
 		labels = append(labels, strings.ToLower(label.Name))
 	}
 
-	createdAt, _ := time.Parse(time.RFC3339, item.CreatedAt)
-	updatedAt, _ := time.Parse(time.RFC3339, item.UpdatedAt)
+	var createdAt time.Time
+	if parsedCreatedAt, err := time.Parse(time.RFC3339, item.CreatedAt); err == nil {
+		createdAt = parsedCreatedAt
+	} else if item.CreatedAt != "" {
+		slog.Debug("failed to parse github issue created_at", "issue_number", item.Number, "value", item.CreatedAt, "err", err)
+	}
+
+	var updatedAt time.Time
+	if parsedUpdatedAt, err := time.Parse(time.RFC3339, item.UpdatedAt); err == nil {
+		updatedAt = parsedUpdatedAt
+	} else if item.UpdatedAt != "" {
+		slog.Debug("failed to parse github issue updated_at", "issue_number", item.Number, "value", item.UpdatedAt, "err", err)
+	}
+
 	numberString := strconv.Itoa(item.Number)
 
 	return types.Issue{

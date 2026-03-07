@@ -93,6 +93,8 @@ type WorkspaceConfig struct {
 }
 
 type HooksConfig struct {
+	// TODO: Hook fields are parsed from workflow YAML, but execution is not
+	// implemented yet.
 	BeforeRun    string `yaml:"before_run"`
 	AfterRun     string `yaml:"after_run"`
 	BeforeRemove string `yaml:"before_remove"`
@@ -239,25 +241,11 @@ func (c *WorkflowConfig) PollingIntervalMs() int {
 	return c.Polling.IntervalMs
 }
 
-func (c *WorkflowConfig) PollingBackoffStrategy() string {
-	if c == nil || c.Polling.BackoffStrategy == "" {
-		return defaultBackoffStrategy
-	}
-	return c.Polling.BackoffStrategy
-}
-
 func (c *WorkflowConfig) WorkspaceBaseDir() string {
 	if c == nil || c.Workspace.BaseDir == "" {
 		return defaultWorkspaceBaseDir
 	}
 	return c.Workspace.BaseDir
-}
-
-func (c *WorkflowConfig) WorkspaceBranchPrefix() string {
-	if c == nil || c.Workspace.BranchPrefix == "" {
-		return defaultBranchPrefix
-	}
-	return c.Workspace.BranchPrefix
 }
 
 func (c *WorkflowConfig) HookBeforeRun() string {

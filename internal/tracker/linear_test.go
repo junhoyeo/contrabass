@@ -33,12 +33,14 @@ func parseGQLRequest(t *testing.T, r *http.Request) gqlRequest {
 
 func testClient(t *testing.T, url string) *LinearClient {
 	t.Helper()
-	return NewLinearClient(LinearConfig{
+	client, err := NewLinearClient(LinearConfig{
 		APIKey:      "test-api-key",
 		ProjectSlug: "test-project",
 		Endpoint:    url,
 		AssigneeID:  "user-123",
 	})
+	require.NoError(t, err)
+	return client
 }
 
 func respondJSON(w http.ResponseWriter, statusCode int, body interface{}) {
@@ -507,14 +509,15 @@ func TestLinearConfig_AssigneeID(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewLinearClient(LinearConfig{
+	client, err := NewLinearClient(LinearConfig{
 		APIKey:      "key",
 		ProjectSlug: "proj",
 		Endpoint:    server.URL,
 		AssigneeID:  "custom-assignee-xyz",
 	})
+	require.NoError(t, err)
 
-	err := client.ClaimIssue(context.Background(), "issue-1")
+	err = client.ClaimIssue(context.Background(), "issue-1")
 	require.NoError(t, err)
 }
 
@@ -726,12 +729,13 @@ func TestUpdateIssueState_EmptyStateID(t *testing.T) {
 }
 
 func TestUpdateIssueState_UnmappedState(t *testing.T) {
-	client := NewLinearClient(LinearConfig{
+	client, err := NewLinearClient(LinearConfig{
 		APIKey:      "test-key",
 		ProjectSlug: "test-project",
 	})
+	require.NoError(t, err)
 
-	err := client.UpdateIssueState(context.Background(), "issue-42", types.IssueState(999))
+	err = client.UpdateIssueState(context.Background(), "issue-42", types.IssueState(999))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no Linear state mapping")

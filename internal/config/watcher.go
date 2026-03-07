@@ -158,6 +158,11 @@ func fileExists(path string) bool {
 func (w *Watcher) Stop() error {
 	var err error
 	w.stopOnce.Do(func() {
+		w.debounceMu.Lock()
+		if w.debounceTimer != nil {
+			w.debounceTimer.Stop()
+		}
+		w.debounceMu.Unlock()
 		err = w.fsw.Close()
 	})
 	return err

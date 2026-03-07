@@ -18,7 +18,7 @@ import (
 
 func testGitHubClient(t *testing.T, url string) *GitHubClient {
 	t.Helper()
-	return NewGitHubClient(GitHubConfig{
+	client, err := NewGitHubClient(GitHubConfig{
 		APIToken: "ghp_test_token",
 		Owner:    "octocat",
 		Repo:     "hello-world",
@@ -27,6 +27,8 @@ func testGitHubClient(t *testing.T, url string) *GitHubClient {
 		Endpoint: url,
 		PageSize: 50,
 	})
+	require.NoError(t, err)
+	return client
 }
 
 func respondGitHubJSON(w http.ResponseWriter, statusCode int, body interface{}) {
@@ -451,7 +453,7 @@ func TestGitHubClient_CustomEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewGitHubClient(GitHubConfig{
+	client, err := NewGitHubClient(GitHubConfig{
 		APIToken: "ghp_test_token",
 		Owner:    "octocat",
 		Repo:     "hello-world",
@@ -460,7 +462,8 @@ func TestGitHubClient_CustomEndpoint(t *testing.T) {
 		Endpoint: server.URL + "/api/v3",
 		PageSize: 50,
 	})
+	require.NoError(t, err)
 
-	_, err := client.FetchIssues(context.Background())
+	_, err = client.FetchIssues(context.Background())
 	require.NoError(t, err)
 }

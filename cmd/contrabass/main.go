@@ -157,11 +157,14 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 	switch cfg.TrackerType() {
 	case "linear":
 		assigneeID := trackerAssigneeID(cfg)
-		linearClient := tracker.NewLinearClient(tracker.LinearConfig{
+		linearClient, linearErr := tracker.NewLinearClient(tracker.LinearConfig{
 			APIKey:      os.Getenv("LINEAR_API_KEY"),
 			ProjectSlug: projectSlug(cfg),
 			AssigneeID:  assigneeID,
 		})
+		if linearErr != nil {
+			return fmt.Errorf("creating linear tracker client: %w", linearErr)
+		}
 		if assigneeID == "" {
 			logger.Info("no assignee configured, resolving from API token...")
 			viewerID, viewerErr := linearClient.FetchViewerID(ctx)
@@ -187,7 +190,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 		if repo == "" {
 			repo = cfg.GitHubRepo()
 		}
-		trackerClient = tracker.NewGitHubClient(tracker.GitHubConfig{
+		githubClient, githubErr := tracker.NewGitHubClient(tracker.GitHubConfig{
 			APIToken: token,
 			Owner:    owner,
 			Repo:     repo,
@@ -195,6 +198,10 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 			Assignee: cfg.GitHubAssignee(),
 			Endpoint: cfg.GitHubEndpoint(),
 		})
+		if githubErr != nil {
+			return fmt.Errorf("creating github tracker client: %w", githubErr)
+		}
+		trackerClient = githubClient
 	case "internal", "local":
 		trackerClient = tracker.NewLocalTracker(tracker.LocalConfig{
 			BoardDir:    cfg.LocalBoardDir(),

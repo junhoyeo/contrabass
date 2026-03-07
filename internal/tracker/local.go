@@ -776,7 +776,7 @@ func normalizeLocalTeamName(raw string) string {
 
 func checkLocalTrackerContext(ctx context.Context) error {
 	if ctx == nil {
-		return nil
+		return errors.New("nil context")
 	}
 	return ctx.Err()
 }

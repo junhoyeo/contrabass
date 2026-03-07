@@ -63,7 +63,7 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 
 	if _, err := m.runGit(ctx, "worktree", "add", workspacePath, "-b", issue.ID); err != nil {
 		if _, fallbackErr := m.runGit(ctx, "worktree", "add", workspacePath, issue.ID); fallbackErr != nil {
-			return "", fmt.Errorf("create git worktree for issue %s: %w", issue.ID, err)
+			return "", fmt.Errorf("create git worktree for issue %s: primary add with -b failed: %v; fallback add failed: %w", issue.ID, err, fallbackErr)
 		}
 	}
 
@@ -87,6 +87,7 @@ func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
 		m.mu.Lock()
 		delete(m.active, issueID)
 		m.mu.Unlock()
+		m.issueLocks.Delete(issueID)
 		return nil
 	}
 
@@ -100,6 +101,7 @@ func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
 	m.mu.Lock()
 	delete(m.active, issueID)
 	m.mu.Unlock()
+	m.issueLocks.Delete(issueID)
 
 	return nil
 }
