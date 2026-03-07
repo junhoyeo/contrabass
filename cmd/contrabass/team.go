@@ -318,23 +318,32 @@ func runTeamWithHooks(opts teamRunOptions, hooks teamRunHooks) error {
 		}
 		handlers = append(handlers, boardSyncer.HandleEvent)
 	}
+	var eventsDone <-chan struct{}
 	if len(handlers) == 0 {
 		go logTeamEvents(ctx, logger, coordinator.Events)
 	} else {
-		go consumeTeamEvents(ctx, logger, coordinator.Events, handlers...)
+		eventsDone = consumeTeamEvents(ctx, logger, coordinator.Events, handlers...)
 	}
 
-	// 11. Run team
-	if err := coordinator.Run(ctx, tasks); err != nil {
-		if boardSyncer != nil {
-			boardSyncer.Finalize(ctx, err)
-		}
-		return fmt.Errorf("running team: %w", err)
+	// 11. Run team — coordinator.Run closes Events on return, which
+	// causes consumeTeamEvents to drain remaining events and signal done.
+	runErr := coordinator.Run(ctx, tasks)
+
+	// Wait for event consumer to finish processing all buffered events
+	// (including pipeline_completed) before calling Finalize. This
+	// eliminates the race where both HandleEvent and Finalize update
+	// board issue state simultaneously.
+	if eventsDone != nil {
+		<-eventsDone
 	}
+
 	if boardSyncer != nil {
-		boardSyncer.Finalize(ctx, nil)
+		boardSyncer.Finalize(context.Background(), runErr)
 	}
 
+	if runErr != nil {
+		return fmt.Errorf("running team: %w", runErr)
+	}
 	return nil
 }
 

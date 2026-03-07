@@ -221,7 +221,13 @@ func (c *Coordinator) runExecPhase(ctx context.Context) error {
 		})
 	}
 
-	if err := g.Wait(); err != nil && gCtx.Err() == nil {
+	if err := g.Wait(); err != nil {
+		// If the parent context was cancelled (e.g., signal), propagate immediately.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// A worker returned a real error. Check if all tasks reached terminal
+		// state despite the error — if not, surface it.
 		allDone, doneErr := c.phases.AllTasksTerminal(c.teamName)
 		if doneErr != nil {
 			return doneErr

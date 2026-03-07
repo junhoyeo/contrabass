@@ -27,16 +27,11 @@ func consumeTeamEvents(
 	logger *slog.Logger,
 	events <-chan types.TeamEvent,
 	handlers ...teamEventHandler,
-) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case event, ok := <-events:
-			if !ok {
-				return
-			}
-
+) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for event := range events {
 			logger.Info("team event",
 				"type", event.Type,
 				"team", event.TeamName,
@@ -48,7 +43,8 @@ func consumeTeamEvents(
 				}
 			}
 		}
-	}
+	}()
+	return done
 }
 
 func defaultTeamNameForIssue(issueID string) string {
