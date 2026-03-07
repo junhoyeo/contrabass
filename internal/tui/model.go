@@ -220,6 +220,12 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 			if update.ProjectURL != "" {
 				m.stats.ProjectURL = update.ProjectURL
 			}
+			if update.TrackerType != "" {
+				m.stats.TrackerType = update.TrackerType
+			}
+			if update.TrackerScope != "" {
+				m.stats.TrackerScope = update.TrackerScope
+			}
 			m = m.refreshDerivedFields(event.Timestamp)
 		default:
 			log.Warn("event payload type mismatch",
@@ -425,10 +431,12 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 
 	switch event.Type {
 	case "team_created":
+		maxWorkers, _ := intFromEventData(event.Data, "max_workers")
 		m.teams[event.TeamName] = TeamRow{
 			TeamName:       event.TeamName,
+			BoardIssueID:   stringFromEventData(event.Data, "board_issue_id"),
 			Phase:          "team-plan",
-			Workers:        0,
+			Workers:        maxWorkers,
 			ActiveWorkers:  0,
 			Tasks:          0,
 			CompletedTasks: 0,
@@ -438,6 +446,14 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 		}
 		m.teamWorkers[event.TeamName] = []TeamWorkerRow{}
 		m.syncTables()
+	case "pipeline_started":
+		if row, exists := m.teams[event.TeamName]; exists {
+			if taskCount, ok := intFromEventData(event.Data, "task_count"); ok {
+				row.Tasks = taskCount
+			}
+			m.teams[event.TeamName] = row
+			m.syncTables()
+		}
 	case "phase_started":
 		if row, exists := m.teams[event.TeamName]; exists {
 			if phase, ok := event.Data["phase"].(string); ok {
@@ -470,6 +486,7 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 					})
 				}
 				m.teamWorkers[event.TeamName] = workers
+				m.updateTeamActiveWorkers(event.TeamName)
 				m.syncTables()
 			}
 		}
@@ -477,21 +494,100 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 		if row, exists := m.teams[event.TeamName]; exists {
 			row.CompletedTasks++
 			m.teams[event.TeamName] = row
+			m.markWorkerIdle(event.TeamName, stringFromEventData(event.Data, "worker_id"), stringFromEventData(event.Data, "task_id"))
+			m.updateTeamActiveWorkers(event.TeamName)
 			m.syncTables()
 		}
 	case "task_failed":
 		if row, exists := m.teams[event.TeamName]; exists {
 			row.FailedTasks++
 			m.teams[event.TeamName] = row
+			m.markWorkerIdle(event.TeamName, stringFromEventData(event.Data, "worker_id"), stringFromEventData(event.Data, "task_id"))
+			m.updateTeamActiveWorkers(event.TeamName)
 			m.syncTables()
 		}
 	case "pipeline_completed":
 		if row, exists := m.teams[event.TeamName]; exists {
-			row.Phase = "complete"
+			row.Phase = firstNonEmpty(stringFromEventData(event.Data, "phase"), "complete")
 			m.teams[event.TeamName] = row
 			m.syncTables()
 		}
 	}
 
 	return m
+}
+
+func (m *Model) markWorkerIdle(teamName, workerID, taskID string) {
+	if workerID == "" {
+		return
+	}
+
+	workers := m.teamWorkers[teamName]
+	for i, worker := range workers {
+		if worker.WorkerID != workerID {
+			continue
+		}
+		worker.Status = "idle"
+		if taskID == "" || worker.CurrentTask == taskID {
+			worker.CurrentTask = ""
+		}
+		workers[i] = worker
+		break
+	}
+	m.teamWorkers[teamName] = workers
+}
+
+func (m *Model) updateTeamActiveWorkers(teamName string) {
+	row, exists := m.teams[teamName]
+	if !exists {
+		return
+	}
+
+	active := 0
+	for _, worker := range m.teamWorkers[teamName] {
+		if worker.Status == "working" {
+			active++
+		}
+	}
+	row.ActiveWorkers = active
+	m.teams[teamName] = row
+}
+
+func stringFromEventData(values map[string]interface{}, key string) string {
+	if values == nil {
+		return ""
+	}
+	raw, ok := values[key]
+	if !ok {
+		return ""
+	}
+	if text, ok := raw.(string); ok {
+		return text
+	}
+	return fmt.Sprint(raw)
+}
+
+func intFromEventData(values map[string]interface{}, key string) (int, bool) {
+	if values == nil {
+		return 0, false
+	}
+	raw, ok := values[key]
+	if !ok {
+		return 0, false
+	}
+
+	switch value := raw.(type) {
+	case int:
+		return value, true
+	case int32:
+		return int(value), true
+	case int64:
+		return int(value), true
+	case float32:
+		return int(value), true
+	case float64:
+		return int(value), true
+	default:
+		return 0, false
+	}
 }

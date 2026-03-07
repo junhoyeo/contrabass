@@ -216,6 +216,8 @@ tracker:
   project_url: https://linear.app/example/project/nested
   team_id: team-42
   assignee_id: user-77
+  board_dir: .contrabass/custom-board
+  issue_prefix: OPS
 polling:
   interval_ms: 12000
   backoff_strategy: linear
@@ -246,6 +248,8 @@ Prompt body.
 	assert.Equal(t, "https://linear.app/example/project/nested", cfg.TrackerProjectURL())
 	assert.Equal(t, "team-42", cfg.TrackerTeamID())
 	assert.Equal(t, "user-77", cfg.TrackerAssigneeID())
+	assert.Equal(t, ".contrabass/custom-board", cfg.LocalBoardDir())
+	assert.Equal(t, "OPS", cfg.LocalIssuePrefix())
 	assert.Equal(t, 12_000, cfg.PollingIntervalMs())
 	assert.Equal(t, "linear", cfg.PollingBackoffStrategy())
 	assert.Equal(t, "/tmp/worktrees", cfg.WorkspaceBaseDir())

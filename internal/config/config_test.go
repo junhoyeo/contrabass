@@ -156,6 +156,8 @@ func TestWorkflowConfig_NewSectionDefaults(t *testing.T) {
 	assert.Equal(t, "", nilCfg.TrackerProjectURL())
 	assert.Equal(t, "", nilCfg.TrackerTeamID())
 	assert.Equal(t, "", nilCfg.TrackerAssigneeID())
+	assert.Equal(t, defaultLocalBoardDir, nilCfg.LocalBoardDir())
+	assert.Equal(t, defaultLocalIssuePrefix, nilCfg.LocalIssuePrefix())
 	assert.Equal(t, defaultPollIntervalMs, nilCfg.PollingIntervalMs())
 	assert.Equal(t, defaultBackoffStrategy, nilCfg.PollingBackoffStrategy())
 	assert.Equal(t, defaultWorkspaceBaseDir, nilCfg.WorkspaceBaseDir())
@@ -170,6 +172,8 @@ func TestWorkflowConfig_NewSectionDefaults(t *testing.T) {
 
 	cfg := &WorkflowConfig{}
 	assert.Equal(t, defaultTrackerType, cfg.TrackerType())
+	assert.Equal(t, defaultLocalBoardDir, cfg.LocalBoardDir())
+	assert.Equal(t, defaultLocalIssuePrefix, cfg.LocalIssuePrefix())
 	assert.Equal(t, defaultPollIntervalMs, cfg.PollingIntervalMs())
 	assert.Equal(t, defaultBackoffStrategy, cfg.PollingBackoffStrategy())
 	assert.Equal(t, defaultWorkspaceBaseDir, cfg.WorkspaceBaseDir())
@@ -346,6 +350,50 @@ func TestWorkflowConfig_GitHubDefaults(t *testing.T) {
 	}
 }
 
+func TestWorkflowConfig_LocalTrackerDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		cfg             *WorkflowConfig
+		wantBoardDir    string
+		wantIssuePrefix string
+	}{
+		{
+			name:            "nil config returns defaults",
+			cfg:             nil,
+			wantBoardDir:    defaultLocalBoardDir,
+			wantIssuePrefix: defaultLocalIssuePrefix,
+		},
+		{
+			name:            "empty tracker config returns defaults",
+			cfg:             &WorkflowConfig{},
+			wantBoardDir:    defaultLocalBoardDir,
+			wantIssuePrefix: defaultLocalIssuePrefix,
+		},
+		{
+			name: "populated tracker config returns configured values",
+			cfg: &WorkflowConfig{
+				Tracker: TrackerConfig{
+					BoardDir:    ".contrabass/custom-board",
+					IssuePrefix: "OPS",
+				},
+			},
+			wantBoardDir:    ".contrabass/custom-board",
+			wantIssuePrefix: "OPS",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.wantBoardDir, tt.cfg.LocalBoardDir())
+			assert.Equal(t, tt.wantIssuePrefix, tt.cfg.LocalIssuePrefix())
+		})
+	}
+}
+
 func TestParseWorkflow_GitHubConfig(t *testing.T) {
 	t.Parallel()
 
@@ -394,9 +442,9 @@ func TestParseWorkflow_BackwardCompat(t *testing.T) {
 		wantCodexBinaryPath string
 	}{
 		{
-			name:                "workflow.md uses linear tracker and codex agent",
+			name:                "workflow.md uses default internal tracker and codex agent",
 			path:                "../../testdata/workflow.md",
-			wantTrackerType:     "linear",
+			wantTrackerType:     "internal",
 			wantAgentType:       "codex",
 			wantMaxConcurrency:  8,
 			wantCodexBinaryPath: defaultCodexBinaryPath,

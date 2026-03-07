@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/junhoyeo/contrabass/internal/agent"
 	"github.com/junhoyeo/contrabass/internal/config"
 	"github.com/junhoyeo/contrabass/internal/team"
+	"github.com/junhoyeo/contrabass/internal/tracker"
 	"github.com/junhoyeo/contrabass/internal/types"
 	"github.com/junhoyeo/contrabass/internal/workspace"
 )
@@ -43,16 +45,23 @@ var teamCancelCmd = &cobra.Command{
 	RunE:  cancelTeam,
 }
 
+type teamRunOptions struct {
+	ConfigPath string
+	TeamName   string
+	TasksPath  string
+	IssueID    string
+	MaxWorkers int
+}
+
 func init() {
 	// teamRunCmd flags
 	teamRunCmd.Flags().StringP("config", "c", "", "path to WORKFLOW.md file (required)")
-	teamRunCmd.Flags().StringP("name", "n", "", "team name (required)")
-	teamRunCmd.Flags().StringP("tasks", "t", "", "path to tasks JSON file (required)")
+	teamRunCmd.Flags().StringP("name", "n", "", "team name (required unless --issue is set)")
+	teamRunCmd.Flags().StringP("tasks", "t", "", "path to tasks JSON file (required unless --issue is set)")
+	teamRunCmd.Flags().String("issue", "", "internal board issue ID to hydrate into a team run")
 	teamRunCmd.Flags().IntP("max-workers", "w", 0, "override max workers from config")
 
 	_ = teamRunCmd.MarkFlagRequired("config")
-	_ = teamRunCmd.MarkFlagRequired("name")
-	_ = teamRunCmd.MarkFlagRequired("tasks")
 
 	// teamStatusCmd flags
 	teamStatusCmd.Flags().StringP("config", "c", "", "path to WORKFLOW.md file (required)")
@@ -140,13 +149,37 @@ func runTeam(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting tasks flag: %w", err)
 	}
 
+	issueID, err := cmd.Flags().GetString("issue")
+	if err != nil {
+		return fmt.Errorf("getting issue flag: %w", err)
+	}
+
 	maxWorkers, err := cmd.Flags().GetInt("max-workers")
 	if err != nil {
 		return fmt.Errorf("getting max-workers flag: %w", err)
 	}
 
+	return runTeamWithOptions(teamRunOptions{
+		ConfigPath: cfgPath,
+		TeamName:   teamName,
+		TasksPath:  tasksPath,
+		IssueID:    issueID,
+		MaxWorkers: maxWorkers,
+	})
+}
+
+func runTeamWithOptions(opts teamRunOptions) error {
+	switch {
+	case opts.TasksPath != "" && opts.IssueID != "":
+		return errors.New("provide either --tasks or --issue, not both")
+	case opts.TasksPath == "" && opts.IssueID == "":
+		return errors.New("either --tasks or --issue is required")
+	case opts.TeamName == "" && opts.IssueID == "":
+		return errors.New("team name is required when running from --tasks")
+	}
+
 	// 1. Parse config
-	cfg, err := config.ParseWorkflow(cfgPath)
+	cfg, err := config.ParseWorkflow(opts.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("parsing workflow config: %w", err)
 	}
@@ -165,15 +198,50 @@ func runTeam(cmd *cobra.Command, args []string) error {
 	}
 	defer runner.Close()
 
-	// 4. Read tasks JSON file
-	tasksData, err := os.ReadFile(tasksPath)
-	if err != nil {
-		return fmt.Errorf("reading tasks file: %w", err)
-	}
-
 	var tasks []types.TeamTask
-	if err := json.Unmarshal(tasksData, &tasks); err != nil {
-		return fmt.Errorf("unmarshalling tasks: %w", err)
+	var boardSyncer *boardIssueSyncer
+	teamName := opts.TeamName
+	if opts.IssueID != "" {
+		if cfg.TrackerType() != "internal" && cfg.TrackerType() != "local" {
+			return fmt.Errorf("team run --issue requires tracker.type internal/local, got %q", cfg.TrackerType())
+		}
+
+		localTracker := tracker.NewLocalTracker(tracker.LocalConfig{
+			BoardDir:    cfg.LocalBoardDir(),
+			IssuePrefix: cfg.LocalIssuePrefix(),
+		})
+
+		issue, err := localTracker.GetIssue(context.Background(), opts.IssueID)
+		if err != nil {
+			return fmt.Errorf("loading internal board issue %q: %w", opts.IssueID, err)
+		}
+
+		if teamName == "" {
+			teamName = resolveTeamNameForIssue(issue, "")
+		}
+		localTracker = tracker.NewLocalTracker(tracker.LocalConfig{
+			BoardDir:    cfg.LocalBoardDir(),
+			IssuePrefix: cfg.LocalIssuePrefix(),
+			Actor:       "team:" + teamName,
+		})
+		childIssues, err := localTracker.ListChildIssues(context.Background(), issue.ID)
+		if err != nil {
+			return fmt.Errorf("loading child issues for %q: %w", opts.IssueID, err)
+		}
+
+		teamPlan := buildBoardTeamPlan(issue, childIssues)
+		tasks = teamPlan.Tasks
+		boardSyncer = newBoardIssueSyncer(localTracker, opts.IssueID, teamName, teamPlan.TaskIssueIDs)
+	} else {
+		// 4. Read tasks JSON file
+		tasksData, err := os.ReadFile(opts.TasksPath)
+		if err != nil {
+			return fmt.Errorf("reading tasks file: %w", err)
+		}
+
+		if err := json.Unmarshal(tasksData, &tasks); err != nil {
+			return fmt.Errorf("unmarshalling tasks: %w", err)
+		}
 	}
 
 	// 5. Create logger
@@ -191,14 +259,15 @@ func runTeam(cmd *cobra.Command, args []string) error {
 		ClaimLeaseSeconds: cfg.TeamClaimLeaseSeconds(),
 		StateDir:          cfg.TeamStateDir(),
 		AgentType:         cfg.AgentType(),
+		BoardIssueID:      opts.IssueID,
 	}
 
 	// Override max workers if provided — update both teamCfg and the parsed
 	// config so that Coordinator.runExecPhase (which reads c.cfg.TeamMaxWorkers())
 	// sees the CLI override.
-	if maxWorkers > 0 {
-		teamCfg.MaxWorkers = maxWorkers
-		cfg.Team.MaxWorkers = maxWorkers
+	if opts.MaxWorkers > 0 {
+		teamCfg.MaxWorkers = opts.MaxWorkers
+		cfg.Team.MaxWorkers = opts.MaxWorkers
 	}
 
 	// 8. Initialize team
@@ -224,12 +293,25 @@ func runTeam(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// 10. Start event printer goroutine
-	go logTeamEvents(ctx, logger, coordinator.Events)
+	// 10. Start event consumer goroutine
+	if boardSyncer != nil {
+		if err := boardSyncer.Start(ctx); err != nil {
+			return fmt.Errorf("starting board sync: %w", err)
+		}
+		go consumeTeamEvents(ctx, logger, coordinator.Events, boardSyncer.HandleEvent)
+	} else {
+		go logTeamEvents(ctx, logger, coordinator.Events)
+	}
 
 	// 11. Run team
 	if err := coordinator.Run(ctx, tasks); err != nil {
+		if boardSyncer != nil {
+			boardSyncer.Finalize(ctx, err)
+		}
 		return fmt.Errorf("running team: %w", err)
+	}
+	if boardSyncer != nil {
+		boardSyncer.Finalize(ctx, nil)
 	}
 
 	return nil
@@ -279,6 +361,7 @@ func showTeamStatus(cmd *cobra.Command, args []string) error {
 	// Build status response
 	status := team.TeamStatus{
 		TeamName:     teamName,
+		BoardIssueID: manifest.Config.BoardIssueID,
 		Phase:        phaseState.Phase,
 		Workers:      manifest.Workers,
 		Tasks:        taskList,

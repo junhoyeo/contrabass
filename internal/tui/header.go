@@ -49,6 +49,8 @@ type HeaderData struct {
 	TokensTotal    int64
 	ModelName      string
 	ProjectURL     string
+	TrackerType    string
+	TrackerScope   string
 	RefreshIn      int
 }
 
@@ -84,11 +86,23 @@ func (h Header) View() string {
 		labelStyle.Render("Runtime: ") + valueStyle.Render(formatRuntime(h.data.RuntimeSeconds)),
 	}, "    ")
 	line3 := labelStyle.Render("Tokens: ") + formatTokenLine(labelStyle, valueStyle, h.data)
-	scope, fullURL := projectDetails(h.data.ProjectURL)
-	line4 := labelStyle.Render("Model: ") + valueStyle.Render(h.data.ModelName) +
-		"    " +
-		labelStyle.Render("Scope: ") + urlStyle.Render(scope)
-	line5 := labelStyle.Render("URL: ") + urlStyle.Render(fullURL)
+	line4Parts := []string{
+		labelStyle.Render("Model: ") + valueStyle.Render(h.data.ModelName),
+	}
+	if trackerType := strings.TrimSpace(h.data.TrackerType); trackerType != "" {
+		line4Parts = append(line4Parts, labelStyle.Render("Tracker: ")+valueStyle.Render(trackerType))
+	}
+
+	var line5 string
+	if isInternalTrackerType(h.data.TrackerType) {
+		line5 = labelStyle.Render("Board: ") + valueStyle.Render(truncateForHeader(displayBoardScope(h.data.TrackerScope), 80))
+	} else {
+		scope, fullURL := projectDetails(firstNonEmpty(h.data.TrackerScope, h.data.ProjectURL))
+		line4Parts = append(line4Parts, labelStyle.Render("Scope: ")+urlStyle.Render(scope))
+		line5 = labelStyle.Render("URL: ") + urlStyle.Render(fullURL)
+	}
+
+	line4 := strings.Join(line4Parts, "    ")
 	line6 := labelStyle.Render(fmt.Sprintf("Refresh in %ds", h.data.RefreshIn))
 	statsContent := strings.Join([]string{line1, line2, line3, line4, line5, line6}, "\n")
 
@@ -659,6 +673,32 @@ func projectDetails(raw string) (scope string, full string) {
 	}
 	full = u.Host + "/" + path
 	return scope, truncateForHeader(full, 80)
+}
+
+func isInternalTrackerType(raw string) bool {
+	switch strings.TrimSpace(raw) {
+	case "internal", "local":
+		return true
+	default:
+		return false
+	}
+}
+
+func displayBoardScope(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "-"
+	}
+	return raw
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func truncateForHeader(s string, max int) string {

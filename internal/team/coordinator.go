@@ -47,6 +47,7 @@ type workerHandle struct {
 // TeamStatus holds a snapshot of the team's current state.
 type TeamStatus struct {
 	TeamName     string              `json:"team_name"`
+	BoardIssueID string              `json:"board_issue_id,omitempty"`
 	Phase        types.TeamPhase     `json:"phase"`
 	Workers      []types.WorkerState `json:"workers"`
 	Tasks        []types.TeamTask    `json:"tasks"`
@@ -111,8 +112,9 @@ func (c *Coordinator) Initialize(teamCfg types.TeamConfig) error {
 	}
 
 	c.emitEvent("team_created", map[string]interface{}{
-		"team_name":   c.teamName,
-		"max_workers": teamCfg.MaxWorkers,
+		"team_name":      c.teamName,
+		"max_workers":    teamCfg.MaxWorkers,
+		"board_issue_id": teamCfg.BoardIssueID,
 	})
 	return nil
 }
@@ -493,11 +495,20 @@ func (c *Coordinator) Status() (*TeamStatus, error) {
 
 	return &TeamStatus{
 		TeamName:     c.teamName,
+		BoardIssueID: c.storeBoardIssueID(),
 		Phase:        phase,
 		Workers:      workerStates,
 		Tasks:        tasks,
 		FixLoopCount: fixCount,
 	}, nil
+}
+
+func (c *Coordinator) storeBoardIssueID() string {
+	manifest, err := c.store.LoadManifest(c.teamName)
+	if err != nil || manifest == nil {
+		return ""
+	}
+	return manifest.Config.BoardIssueID
 }
 
 // emitEvent sends a team event to the Events channel (non-blocking).

@@ -134,6 +134,7 @@ type TeamConfig struct {
 	ClaimLeaseSeconds int    `json:"claim_lease_seconds"`
 	StateDir          string `json:"state_dir"`
 	AgentType         string `json:"agent_type"`
+	BoardIssueID      string `json:"board_issue_id,omitempty"`
 }
 
 type FileOwnership struct {

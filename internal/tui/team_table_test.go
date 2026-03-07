@@ -9,7 +9,7 @@ import (
 func TestTeamTableBuildRowsTracksFlattenedTeamRows(t *testing.T) {
 	tbl := NewTeamTable().Update(
 		[]TeamRow{
-			{TeamName: "alpha", Phase: "team-exec", Workers: 2, ActiveWorkers: 2, Tasks: 4, CompletedTasks: 1, Age: "1m"},
+			{TeamName: "alpha", BoardIssueID: "CB-1", Phase: "team-exec", Workers: 2, ActiveWorkers: 2, Tasks: 4, CompletedTasks: 1, Age: "1m"},
 			{TeamName: "beta", Phase: "team-verify", Workers: 1, ActiveWorkers: 1, Tasks: 2, CompletedTasks: 2, Age: "2m"},
 		},
 		map[string][]TeamWorkerRow{
@@ -31,7 +31,7 @@ func TestTeamTableBuildRowsTracksFlattenedTeamRows(t *testing.T) {
 		0: 0,
 		3: 1,
 	}, teamRowIndex)
-	assert.Equal(t, "alpha", rows[0][1])
+	assert.Equal(t, "alpha · CB-1", rows[0][1])
 	assert.Equal(t, "beta", rows[3][1])
 	assert.Contains(t, rows[1][1], "├─")
 	assert.Contains(t, rows[2][1], "└─")

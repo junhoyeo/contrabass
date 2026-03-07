@@ -102,6 +102,37 @@ func TestHeaderSetWidth(t *testing.T) {
 	assert.Contains(t, out, "1/5")
 }
 
+func TestHeaderViewShowsInternalTrackerBoard(t *testing.T) {
+	h := NewHeader().SetWidth(100)
+	h = h.Update(HeaderData{
+		ModelName:    "gpt-5",
+		TrackerType:  "internal",
+		TrackerScope: ".contrabass/board",
+	})
+
+	out := stripANSI(h.View())
+	assert.Contains(t, out, "Tracker:")
+	assert.Contains(t, out, "internal")
+	assert.Contains(t, out, "Board:")
+	assert.Contains(t, out, ".contrabass/board")
+}
+
+func TestHeaderViewShowsRemoteTrackerScope(t *testing.T) {
+	h := NewHeader().SetWidth(100)
+	h = h.Update(HeaderData{
+		ModelName:    "gpt-5",
+		TrackerType:  "github",
+		TrackerScope: "https://github.com/junhoyeo/contrabass/issues",
+	})
+
+	out := stripANSI(h.View())
+	assert.Contains(t, out, "Tracker:")
+	assert.Contains(t, out, "github")
+	assert.Contains(t, out, "Scope:")
+	assert.Contains(t, out, "junhoyeo/contrabass")
+	assert.Contains(t, out, "URL:")
+}
+
 func loadTestImage(t *testing.T) image.Image {
 	t.Helper()
 	f, err := os.Open(filepath.Join("..", "..", ".github", "assets", "contrabass.png"))

@@ -50,6 +50,8 @@ type StatusUpdate struct {
 	BackoffQueue int
 	ModelName    string
 	ProjectURL   string
+	TrackerType  string
+	TrackerScope string
 }
 
 func (StatusUpdate) eventPayload() {}

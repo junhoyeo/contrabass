@@ -160,6 +160,83 @@ func TestModelBackoffEnqueued(t *testing.T) {
 	assert.Len(t, model.backoff.rows, 1)
 }
 
+func TestModelTeamEventsPopulateBoardLinkedTeamState(t *testing.T) {
+	m := NewModel()
+	now := time.Now()
+
+	updated, _ := m.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "team_created",
+		TeamName:  "team-alpha",
+		Timestamp: now,
+		Data: map[string]interface{}{
+			"max_workers":    2,
+			"board_issue_id": "CB-7",
+		},
+	}})
+	model := updated.(Model)
+
+	row, ok := model.teams["team-alpha"]
+	require.True(t, ok)
+	assert.Equal(t, "CB-7", row.BoardIssueID)
+	assert.Equal(t, 2, row.Workers)
+
+	updated, _ = model.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "pipeline_started",
+		TeamName:  "team-alpha",
+		Timestamp: now.Add(time.Second),
+		Data: map[string]interface{}{
+			"task_count": 3,
+		},
+	}})
+	model = updated.(Model)
+	assert.Equal(t, 3, model.teams["team-alpha"].Tasks)
+
+	updated, _ = model.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "task_claimed",
+		TeamName:  "team-alpha",
+		Timestamp: now.Add(2 * time.Second),
+		Data: map[string]interface{}{
+			"worker_id": "worker-1",
+			"task_id":   "003-cb-7-exec",
+			"task":      "Implement CB-7",
+		},
+	}})
+	model = updated.(Model)
+	assert.Equal(t, 1, model.teams["team-alpha"].ActiveWorkers)
+	require.Len(t, model.teamWorkers["team-alpha"], 1)
+	assert.Equal(t, "working", model.teamWorkers["team-alpha"][0].Status)
+	assert.Equal(t, "003-cb-7-exec", model.teamWorkers["team-alpha"][0].CurrentTask)
+
+	updated, _ = model.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "task_completed",
+		TeamName:  "team-alpha",
+		Timestamp: now.Add(3 * time.Second),
+		Data: map[string]interface{}{
+			"worker_id": "worker-1",
+			"task_id":   "003-cb-7-exec",
+		},
+	}})
+	model = updated.(Model)
+	assert.Equal(t, 1, model.teams["team-alpha"].CompletedTasks)
+	assert.Equal(t, 0, model.teams["team-alpha"].ActiveWorkers)
+	assert.Equal(t, "idle", model.teamWorkers["team-alpha"][0].Status)
+	assert.Empty(t, model.teamWorkers["team-alpha"][0].CurrentTask)
+
+	updated, _ = model.Update(TeamEventMsg{Event: types.TeamEvent{
+		Type:      "pipeline_completed",
+		TeamName:  "team-alpha",
+		Timestamp: now.Add(4 * time.Second),
+		Data: map[string]interface{}{
+			"phase": "failed",
+		},
+	}})
+	model = updated.(Model)
+	assert.Equal(t, "failed", model.teams["team-alpha"].Phase)
+
+	view := stripANSI(model.teamTable.View())
+	assert.Contains(t, view, "team-alpha · CB-7")
+}
+
 func TestModelViewComposition(t *testing.T) {
 	m := NewModel()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
@@ -263,33 +340,50 @@ func TestTableView_NarrowWidthNoOverflow(t *testing.T) {
 	}
 }
 
-// TestModel_StatusUpdatePopulatesHeaderModelProject verifies that ModelName
-// and ProjectURL from StatusUpdate events are mapped to HeaderData.
-func TestModel_StatusUpdatePopulatesHeaderModelProject(t *testing.T) {
+// TestModel_StatusUpdatePopulatesHeaderMetadata verifies that tracker metadata
+// from StatusUpdate events is mapped to HeaderData.
+func TestModel_StatusUpdatePopulatesHeaderMetadata(t *testing.T) {
 	tests := []struct {
-		name       string
-		modelName  string
-		projectURL string
+		name         string
+		modelName    string
+		projectURL   string
+		trackerType  string
+		trackerScope string
 	}{
 		{
-			name:       "both fields populated",
-			modelName:  "gpt-4o",
-			projectURL: "https://github.com/example/project",
+			name:         "all fields populated",
+			modelName:    "gpt-4o",
+			projectURL:   "https://github.com/example/project",
+			trackerType:  "github",
+			trackerScope: "https://github.com/example/project",
 		},
 		{
-			name:       "only model name",
-			modelName:  "claude-3",
-			projectURL: "",
+			name:         "only model name",
+			modelName:    "claude-3",
+			projectURL:   "",
+			trackerType:  "",
+			trackerScope: "",
 		},
 		{
-			name:       "only project URL",
-			modelName:  "",
-			projectURL: "https://github.com/example/other",
+			name:         "only project URL",
+			modelName:    "",
+			projectURL:   "https://github.com/example/other",
+			trackerType:  "",
+			trackerScope: "",
 		},
 		{
-			name:       "empty fields preserve existing values",
-			modelName:  "",
-			projectURL: "",
+			name:         "internal tracker scope",
+			modelName:    "",
+			projectURL:   "",
+			trackerType:  "internal",
+			trackerScope: ".contrabass/board",
+		},
+		{
+			name:         "empty fields preserve existing values",
+			modelName:    "",
+			projectURL:   "",
+			trackerType:  "",
+			trackerScope: "",
 		},
 	}
 
@@ -299,14 +393,18 @@ func TestModel_StatusUpdatePopulatesHeaderModelProject(t *testing.T) {
 			// Pre-set values to verify empty strings don't overwrite.
 			m.stats.ModelName = "existing-model"
 			m.stats.ProjectURL = "https://existing.url"
+			m.stats.TrackerType = "existing-tracker"
+			m.stats.TrackerScope = "existing-scope"
 
 			event := orchestrator.OrchestratorEvent{
 				Type:      orchestrator.EventStatusUpdate,
 				Timestamp: time.Now(),
 				Data: orchestrator.StatusUpdate{
-					Stats:      orchestrator.Stats{Running: 1, MaxAgents: 4},
-					ModelName:  tt.modelName,
-					ProjectURL: tt.projectURL,
+					Stats:        orchestrator.Stats{Running: 1, MaxAgents: 4},
+					ModelName:    tt.modelName,
+					ProjectURL:   tt.projectURL,
+					TrackerType:  tt.trackerType,
+					TrackerScope: tt.trackerScope,
 				},
 			}
 
@@ -327,9 +425,25 @@ func TestModel_StatusUpdatePopulatesHeaderModelProject(t *testing.T) {
 					"empty ProjectURL should not overwrite existing value")
 			}
 
+			if tt.trackerType != "" {
+				assert.Equal(t, tt.trackerType, model.stats.TrackerType)
+			} else {
+				assert.Equal(t, "existing-tracker", model.stats.TrackerType,
+					"empty TrackerType should not overwrite existing value")
+			}
+
+			if tt.trackerScope != "" {
+				assert.Equal(t, tt.trackerScope, model.stats.TrackerScope)
+			} else {
+				assert.Equal(t, "existing-scope", model.stats.TrackerScope,
+					"empty TrackerScope should not overwrite existing value")
+			}
+
 			// Verify header data is synced.
 			assert.Equal(t, model.stats.ModelName, model.header.data.ModelName)
 			assert.Equal(t, model.stats.ProjectURL, model.header.data.ProjectURL)
+			assert.Equal(t, model.stats.TrackerType, model.header.data.TrackerType)
+			assert.Equal(t, model.stats.TrackerScope, model.header.data.TrackerScope)
 
 			// Verify other stats still mapped correctly.
 			assert.Equal(t, 1, model.stats.RunningAgents)
