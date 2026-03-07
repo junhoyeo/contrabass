@@ -32,6 +32,7 @@ type BoardProvider interface {
 type Server struct {
 	httpServer       *http.Server
 	hub              *hub.Hub[WebEvent]
+	webEvents        chan<- WebEvent
 	dashboardFS      fs.FS
 	listenAddr       string
 	snapshotProvider SnapshotProvider
@@ -69,6 +70,21 @@ func normalizeListenAddr(addr string) string {
 
 func (s *Server) SetBoardProvider(provider BoardProvider) {
 	s.boardProvider = provider
+}
+
+func (s *Server) SetEventSink(sink chan<- WebEvent) {
+	s.webEvents = sink
+}
+
+func (s *Server) publishEvent(event WebEvent) {
+	if s.webEvents == nil {
+		return
+	}
+
+	select {
+	case s.webEvents <- event:
+	default:
+	}
 }
 
 func (s *Server) Start(ctx context.Context) error {

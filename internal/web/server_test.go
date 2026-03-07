@@ -158,6 +158,83 @@ func TestNormalizeListenAddr(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:9090", normalizeListenAddr("127.0.0.1:9090"))
 }
 
+func TestPublishEvent(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupSink   func(*Server) chan WebEvent
+		invokeAsync bool
+		assertion   func(*testing.T, chan WebEvent, WebEvent)
+	}{
+		{
+			name: "sends event when sink is configured",
+			setupSink: func(s *Server) chan WebEvent {
+				sink := make(chan WebEvent, 1)
+				s.SetEventSink(sink)
+				return sink
+			},
+			assertion: func(t *testing.T, sink chan WebEvent, expected WebEvent) {
+				t.Helper()
+				select {
+				case got := <-sink:
+					assert.Equal(t, expected, got)
+				default:
+					t.Fatal("expected event to be sent")
+				}
+			},
+		},
+		{
+			name: "does not block when sink is full",
+			setupSink: func(s *Server) chan WebEvent {
+				sink := make(chan WebEvent, 1)
+				sink <- WebEvent{Type: "already-buffered"}
+				s.SetEventSink(sink)
+				return sink
+			},
+			invokeAsync: true,
+			assertion: func(t *testing.T, sink chan WebEvent, _ WebEvent) {
+				t.Helper()
+				assert.Equal(t, 1, len(sink))
+				assert.Equal(t, "already-buffered", (<-sink).Type)
+			},
+		},
+		{
+			name: "no-op when sink is nil",
+			setupSink: func(_ *Server) chan WebEvent {
+				return nil
+			},
+			assertion: func(t *testing.T, _ chan WebEvent, _ WebEvent) {
+				t.Helper()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{}
+			sink := tt.setupSink(s)
+			event := WebEvent{Type: "board_issue_updated", Timestamp: time.Now().UTC()}
+
+			if tt.invokeAsync {
+				done := make(chan struct{})
+				go func() {
+					s.publishEvent(event)
+					close(done)
+				}()
+				select {
+				case <-done:
+				case <-time.After(100 * time.Millisecond):
+					t.Fatal("publishEvent blocked on full sink")
+				}
+			} else {
+				s.publishEvent(event)
+			}
+
+			tt.assertion(t, sink, event)
+		})
+	}
+}
+
 func TestStartReturnsErrorWhenPortAlreadyInUse(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

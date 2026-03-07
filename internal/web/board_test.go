@@ -91,6 +91,29 @@ func TestHandleCreateBoardIssue(t *testing.T) {
 	assert.NotEmpty(t, bp.issues[issue.Identifier])
 }
 
+func TestHandleCreateBoardIssuePublishesEvent(t *testing.T) {
+	bp := &fakeBoardProvider{issues: map[string]tracker.LocalBoardIssue{}}
+	events := make(chan WebEvent, 1)
+
+	s := &Server{snapshotProvider: fakeSnapshotProvider{}, boardProvider: bp}
+	s.SetEventSink(events)
+	rec := boardRequestWithServer(t, s, http.MethodPost, "/api/v1/board/issues", `{"title":"Created issue","description":"Details"}`)
+
+	assert.Equal(t, http.StatusCreated, rec.Code)
+
+	select {
+	case evt := <-events:
+		assert.Equal(t, WebEventBoard, evt.Kind)
+		assert.Equal(t, "board_issue_created", evt.Type)
+		payload, ok := evt.Payload.(BoardEvent)
+		require.True(t, ok)
+		assert.Equal(t, "created", payload.Action)
+		assert.Equal(t, "Created issue", payload.Issue.Title)
+	default:
+		t.Fatal("expected create event to be published")
+	}
+}
+
 func TestHandleCreateBoardIssueBadRequest(t *testing.T) {
 	bp := &fakeBoardProvider{issues: map[string]tracker.LocalBoardIssue{}}
 
@@ -128,6 +151,71 @@ func TestHandleUpdateBoardIssue(t *testing.T) {
 	assert.Equal(t, "New description", issue.Description)
 	assert.Equal(t, tracker.LocalBoardStateInProgress, issue.State)
 	assert.Equal(t, "agent-1", issue.Assignee)
+}
+
+func TestHandleUpdateBoardIssuePublishesUpdatedEvent(t *testing.T) {
+	bp := &fakeBoardProvider{
+		issues: map[string]tracker.LocalBoardIssue{
+			"CB-1": {
+				ID:          "CB-1",
+				Identifier:  "CB-1",
+				Title:       "Old title",
+				Description: "Old description",
+				State:       tracker.LocalBoardStateTodo,
+			},
+		},
+	}
+	events := make(chan WebEvent, 1)
+
+	s := &Server{snapshotProvider: fakeSnapshotProvider{}, boardProvider: bp}
+	s.SetEventSink(events)
+	rec := boardRequestWithServer(t, s, http.MethodPatch, "/api/v1/board/issues/CB-1", `{"title":"New title"}`)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	select {
+	case evt := <-events:
+		assert.Equal(t, WebEventBoard, evt.Kind)
+		assert.Equal(t, "board_issue_updated", evt.Type)
+		payload, ok := evt.Payload.(BoardEvent)
+		require.True(t, ok)
+		assert.Equal(t, "updated", payload.Action)
+		assert.Equal(t, "New title", payload.Issue.Title)
+	default:
+		t.Fatal("expected update event to be published")
+	}
+}
+
+func TestHandleUpdateBoardIssuePublishesMovedEvent(t *testing.T) {
+	bp := &fakeBoardProvider{
+		issues: map[string]tracker.LocalBoardIssue{
+			"CB-1": {
+				ID:         "CB-1",
+				Identifier: "CB-1",
+				Title:      "Issue",
+				State:      tracker.LocalBoardStateTodo,
+			},
+		},
+	}
+	events := make(chan WebEvent, 1)
+
+	s := &Server{snapshotProvider: fakeSnapshotProvider{}, boardProvider: bp}
+	s.SetEventSink(events)
+	rec := boardRequestWithServer(t, s, http.MethodPatch, "/api/v1/board/issues/CB-1", `{"state":"in_progress"}`)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	select {
+	case evt := <-events:
+		assert.Equal(t, WebEventBoard, evt.Kind)
+		assert.Equal(t, "board_issue_moved", evt.Type)
+		payload, ok := evt.Payload.(BoardEvent)
+		require.True(t, ok)
+		assert.Equal(t, "moved", payload.Action)
+		assert.Equal(t, tracker.LocalBoardStateInProgress, payload.Issue.State)
+	default:
+		t.Fatal("expected move event to be published")
+	}
 }
 
 func TestHandleUpdateBoardIssueBadRequest(t *testing.T) {
@@ -267,6 +355,16 @@ func boardRequest(
 	t.Helper()
 
 	s := &Server{snapshotProvider: fakeSnapshotProvider{}, boardProvider: bp}
+	return boardRequestWithServer(t, s, method, path, body)
+}
+
+func boardRequestWithServer(
+	t *testing.T,
+	s *Server,
+	method, path, body string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")

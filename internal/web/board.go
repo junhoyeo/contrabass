@@ -77,6 +77,7 @@ func (s *Server) handleCreateBoardIssue(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.publishEvent(NewBoardWebEvent("created", issue))
 
 	writeJSON(w, http.StatusCreated, issue)
 }
@@ -100,7 +101,7 @@ func (s *Server) handleUpdateBoardIssue(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if req.Title != nil || req.Description != nil || req.Assignee != nil {
-		_, err := s.boardProvider.UpdateIssue(r.Context(), identifier, func(issue *tracker.LocalBoardIssue) error {
+		updatedIssue, err := s.boardProvider.UpdateIssue(r.Context(), identifier, func(issue *tracker.LocalBoardIssue) error {
 			if req.Title != nil {
 				issue.Title = *req.Title
 			}
@@ -120,6 +121,7 @@ func (s *Server) handleUpdateBoardIssue(w http.ResponseWriter, r *http.Request) 
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		s.publishEvent(NewBoardWebEvent("updated", updatedIssue))
 	}
 
 	if req.State != nil {
@@ -129,7 +131,7 @@ func (s *Server) handleUpdateBoardIssue(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		_, err = s.boardProvider.MoveIssue(r.Context(), identifier, state)
+		movedIssue, err := s.boardProvider.MoveIssue(r.Context(), identifier, state)
 		if err != nil {
 			if isBoardIssueNotFound(err) {
 				writeJSONError(w, http.StatusNotFound, "issue not found")
@@ -138,6 +140,7 @@ func (s *Server) handleUpdateBoardIssue(w http.ResponseWriter, r *http.Request) 
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		s.publishEvent(NewBoardWebEvent("moved", movedIssue))
 	}
 
 	issue, err := s.boardProvider.GetIssue(r.Context(), identifier)
