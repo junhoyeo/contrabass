@@ -169,6 +169,8 @@ func TestWorkflowConfig_NewSectionDefaults(t *testing.T) {
 	assert.Equal(t, "", nilCfg.CodexModel())
 	assert.Equal(t, defaultApprovalPolicy, nilCfg.CodexApprovalPolicy())
 	assert.Equal(t, defaultSandbox, nilCfg.CodexSandbox())
+	assert.Equal(t, defaultTeamStateDir, nilCfg.TeamStateDir())
+	assert.Equal(t, defaultTeamExecutionMode, nilCfg.TeamExecutionMode())
 
 	cfg := &WorkflowConfig{}
 	assert.Equal(t, defaultTrackerType, cfg.TrackerType())
@@ -181,6 +183,8 @@ func TestWorkflowConfig_NewSectionDefaults(t *testing.T) {
 	assert.Equal(t, defaultCodexBinaryPath, cfg.CodexBinaryPath())
 	assert.Equal(t, defaultApprovalPolicy, cfg.CodexApprovalPolicy())
 	assert.Equal(t, defaultSandbox, cfg.CodexSandbox())
+	assert.Equal(t, defaultTeamStateDir, cfg.TeamStateDir())
+	assert.Equal(t, defaultTeamExecutionMode, cfg.TeamExecutionMode())
 
 	legacyCfg := &WorkflowConfig{
 		ModelRaw:      "openai/gpt-5-codex",
@@ -188,6 +192,73 @@ func TestWorkflowConfig_NewSectionDefaults(t *testing.T) {
 	}
 	assert.Equal(t, "openai/gpt-5-codex", legacyCfg.CodexModel())
 	assert.Equal(t, "https://linear.app/example/project/legacy", legacyCfg.TrackerProjectURL())
+}
+
+func TestWorkflowConfig_TeamExecutionMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *WorkflowConfig
+		want string
+	}{
+		{
+			name: "nil config defaults to team mode",
+			cfg:  nil,
+			want: TeamExecutionModeTeam,
+		},
+		{
+			name: "internal tracker defaults to team mode",
+			cfg: &WorkflowConfig{
+				Tracker: TrackerConfig{Type: "internal"},
+			},
+			want: TeamExecutionModeTeam,
+		},
+		{
+			name: "github tracker defaults to single mode",
+			cfg: &WorkflowConfig{
+				Tracker: TrackerConfig{Type: "github"},
+			},
+			want: TeamExecutionModeSingle,
+		},
+		{
+			name: "explicit single alias agent maps to single mode",
+			cfg: &WorkflowConfig{
+				Team: TeamSectionConfig{ExecutionMode: "agent"},
+			},
+			want: TeamExecutionModeSingle,
+		},
+		{
+			name: "explicit orchestrator alias maps to single mode",
+			cfg: &WorkflowConfig{
+				Team: TeamSectionConfig{ExecutionMode: "orchestrator"},
+			},
+			want: TeamExecutionModeSingle,
+		},
+		{
+			name: "explicit team mode is preserved",
+			cfg: &WorkflowConfig{
+				Tracker: TrackerConfig{Type: "github"},
+				Team:    TeamSectionConfig{ExecutionMode: "team"},
+			},
+			want: TeamExecutionModeTeam,
+		},
+		{
+			name: "explicit unknown mode is surfaced as-is",
+			cfg: &WorkflowConfig{
+				Team: TeamSectionConfig{ExecutionMode: "custom"},
+			},
+			want: "custom",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.cfg.TeamExecutionMode())
+		})
+	}
 }
 
 func TestWorkflowConfig_AgentTypeDefaults(t *testing.T) {

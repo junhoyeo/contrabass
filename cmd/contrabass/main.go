@@ -46,6 +46,7 @@ var (
 	startTUIEventBridge = func(ctx context.Context, p *tea.Program, events <-chan orchestrator.OrchestratorEvent) {
 		tui.StartEventBridge(ctx, p, events)
 	}
+	runRootTeamExecution  = runTeamExecutionApp
 	runTUIShutdownTimeout = 6 * time.Second
 )
 
@@ -138,6 +139,18 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 			logger.Error("config watcher failed", "err", watchErr)
 		}
 	}()
+
+	switch cfg.TeamExecutionMode() {
+	case config.TeamExecutionModeTeam:
+		return runRootTeamExecution(ctx, cfgPath, watcher, logger, noTUI, dryRun)
+	case config.TeamExecutionModeSingle:
+		// Continue into the original single-agent orchestrator path.
+	default:
+		return fmt.Errorf(
+			"unknown team.execution_mode: %q (supported: auto, team, single)",
+			cfg.Team.ExecutionMode,
+		)
+	}
 
 	// 6. Create tracker
 	var trackerClient tracker.Tracker

@@ -179,6 +179,8 @@ func TestModelTeamEventsPopulateBoardLinkedTeamState(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "CB-7", row.BoardIssueID)
 	assert.Equal(t, 2, row.Workers)
+	assert.Equal(t, 2, model.stats.MaxAgents)
+	assert.Equal(t, 0, model.stats.RunningAgents)
 
 	updated, _ = model.Update(TeamEventMsg{Event: types.TeamEvent{
 		Type:      "pipeline_started",
@@ -203,6 +205,7 @@ func TestModelTeamEventsPopulateBoardLinkedTeamState(t *testing.T) {
 	}})
 	model = updated.(Model)
 	assert.Equal(t, 1, model.teams["team-alpha"].ActiveWorkers)
+	assert.Equal(t, 1, model.stats.RunningAgents)
 	require.Len(t, model.teamWorkers["team-alpha"], 1)
 	assert.Equal(t, "working", model.teamWorkers["team-alpha"][0].Status)
 	assert.Equal(t, "003-cb-7-exec", model.teamWorkers["team-alpha"][0].CurrentTask)
@@ -219,6 +222,7 @@ func TestModelTeamEventsPopulateBoardLinkedTeamState(t *testing.T) {
 	model = updated.(Model)
 	assert.Equal(t, 1, model.teams["team-alpha"].CompletedTasks)
 	assert.Equal(t, 0, model.teams["team-alpha"].ActiveWorkers)
+	assert.Equal(t, 0, model.stats.RunningAgents)
 	assert.Equal(t, "idle", model.teamWorkers["team-alpha"][0].Status)
 	assert.Empty(t, model.teamWorkers["team-alpha"][0].CurrentTask)
 

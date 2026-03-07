@@ -10,6 +10,8 @@ tracker:
   type: internal
   board_dir: .contrabass/board
   issue_prefix: CB
+team:
+  execution_mode: team
 ```
 
 ## Storage layout
@@ -109,6 +111,24 @@ Dispatch rules:
 This lets the harness create and assign tickets on the internal board, then let
 Contrabass automatically pick the next ready ticket and execute it with the
 team runtime.
+
+## Root command integration
+
+When the workflow resolves to the internal tracker, the default
+`contrabass --config WORKFLOW.md` path now uses the board/team runtime instead
+of the legacy single-agent orchestrator path. That means the default root app:
+
+- polls the internal board for runnable tickets
+- dispatches them into `contrabass team` execution automatically
+- updates `.contrabass/board` state as team runs progress
+- surfaces board-linked team state in the main TUI
+
+To force the original single-agent root behavior for an internal workflow, set:
+
+```yaml
+team:
+  execution_mode: single
+```
 
 Use `--until-empty` to keep draining the runnable queue until the board has no
 ready tickets left. This is useful when the AI planner has already created and

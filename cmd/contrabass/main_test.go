@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -209,6 +210,7 @@ func restoreRunTUITestHooks(t *testing.T) {
 	originalRunGracefulShutdown := runGracefulShutdown
 	originalRunTUIProgram := runTUIProgram
 	originalStartTUIEventBridge := startTUIEventBridge
+	originalRunRootTeamExecution := runRootTeamExecution
 	originalRunTUIShutdownTimeout := runTUIShutdownTimeout
 
 	t.Cleanup(func() {
@@ -216,6 +218,7 @@ func restoreRunTUITestHooks(t *testing.T) {
 		runGracefulShutdown = originalRunGracefulShutdown
 		runTUIProgram = originalRunTUIProgram
 		startTUIEventBridge = originalStartTUIEventBridge
+		runRootTeamExecution = originalRunRootTeamExecution
 		runTUIShutdownTimeout = originalRunTUIShutdownTimeout
 	})
 }
@@ -348,6 +351,91 @@ func TestRun_ConfigParseError(t *testing.T) {
 	assert.ErrorContains(t, err, "parsing workflow config")
 }
 
+func TestRun_DefaultInternalWorkflowUsesTeamExecution(t *testing.T) {
+	restoreRunTUITestHooks(t)
+
+	boardDir := filepath.Join(t.TempDir(), "board")
+	cfgPath := writeRootWorkflowConfig(t, fmt.Sprintf(`---
+model: openai/gpt-5-codex
+project_url: https://linear.app/example/project/internal
+tracker:
+  board_dir: %q
+---
+Prompt.
+`, boardDir))
+
+	called := false
+	runRootTeamExecution = func(
+		ctx context.Context,
+		gotCfgPath string,
+		watcher *config.Watcher,
+		logger *log.Logger,
+		noTUI bool,
+		dryRun bool,
+	) error {
+		called = true
+		require.NotNil(t, watcher)
+		assert.Equal(t, cfgPath, gotCfgPath)
+		assert.True(t, noTUI)
+		assert.False(t, dryRun)
+		return nil
+	}
+
+	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", false)
+	require.NoError(t, err)
+	assert.True(t, called)
+}
+
+func TestRun_SingleExecutionModeKeepsOriginalOrchestratorPath(t *testing.T) {
+	restoreRunTUITestHooks(t)
+
+	boardDir := filepath.Join(t.TempDir(), "board")
+	cfgPath := writeRootWorkflowConfig(t, fmt.Sprintf(`---
+model: openai/gpt-5-codex
+project_url: https://linear.app/example/project/internal
+tracker:
+  board_dir: %q
+team:
+  execution_mode: single
+---
+Prompt.
+`, boardDir))
+
+	runRootTeamExecution = func(
+		context.Context,
+		string,
+		*config.Watcher,
+		*log.Logger,
+		bool,
+		bool,
+	) error {
+		t.Fatal("team execution path should not be called when execution_mode=single")
+		return nil
+	}
+
+	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", true)
+	require.NoError(t, err)
+}
+
+func TestRun_ExplicitTeamModeRejectsNonInternalTrackers(t *testing.T) {
+	restoreRunTUITestHooks(t)
+
+	cfgPath := writeRootWorkflowConfig(t, `---
+model: openai/gpt-5-codex
+project_url: https://github.com/example/repo
+tracker:
+  type: github
+team:
+  execution_mode: team
+---
+Prompt.
+`)
+
+	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", true)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `team execution requires tracker.type internal/local, got "github"`)
+}
+
 func TestRun_WatcherError(t *testing.T) {
 	// The watcher error path in run() requires config.ParseWorkflow to succeed
 	// on the first call but config.NewWatcher to fail on its internal re-parse.
@@ -357,6 +445,14 @@ func TestRun_WatcherError(t *testing.T) {
 	// exhaustion). Neither can be reliably triggered without production code
 	// changes to accept a mockable watcher constructor.
 	t.Skip("watcher error path requires fsnotify.NewWatcher failure; not reachable without production code changes")
+}
+
+func writeRootWorkflowConfig(t *testing.T, content string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	return path
 }
 
 // --- Tests for runDryRun ---

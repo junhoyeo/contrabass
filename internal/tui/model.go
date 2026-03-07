@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -10,8 +12,6 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"context"
-	"fmt"
 	"github.com/charmbracelet/log"
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
 	"github.com/junhoyeo/contrabass/internal/types"
@@ -175,6 +175,29 @@ func StartEventBridge(ctx context.Context, p *tea.Program, events <-chan orchest
 					return
 				}
 				p.Send(OrchestratorEventMsg{Event: event})
+			}
+		}
+	}()
+}
+
+func StartTeamEventBridge(ctx context.Context, p *tea.Program, events <-chan types.TeamEvent) {
+	if p == nil || events == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				p.Send(TeamEventMsg{Event: event})
 			}
 		}
 	}()
@@ -514,7 +537,39 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 		}
 	}
 
+	m.syncTeamStats()
+	m.header = m.header.Update(m.stats)
 	return m
+}
+
+func (m *Model) syncTeamStats() {
+	if len(m.teams) == 0 {
+		return
+	}
+
+	totalWorkers := 0
+	activeWorkers := 0
+	for _, row := range m.teams {
+		if isTerminalTeamPhase(row.Phase) {
+			continue
+		}
+		totalWorkers += row.Workers
+		activeWorkers += row.ActiveWorkers
+	}
+
+	if totalWorkers > 0 {
+		m.stats.MaxAgents = totalWorkers
+	}
+	m.stats.RunningAgents = activeWorkers
+}
+
+func isTerminalTeamPhase(phase string) bool {
+	switch phase {
+	case string(types.PhaseComplete), string(types.PhaseFailed), string(types.PhaseCancelled):
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Model) markWorkerIdle(teamName, workerID, taskID string) {

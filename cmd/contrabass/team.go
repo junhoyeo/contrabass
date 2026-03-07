@@ -53,6 +53,12 @@ type teamRunOptions struct {
 	MaxWorkers int
 }
 
+type teamRunHooks struct {
+	ParentContext        context.Context
+	EventHandlers        []teamEventHandler
+	DisableSignalHandler bool
+}
+
 func init() {
 	// teamRunCmd flags
 	teamRunCmd.Flags().StringP("config", "c", "", "path to WORKFLOW.md file (required)")
@@ -169,6 +175,10 @@ func runTeam(cmd *cobra.Command, args []string) error {
 }
 
 func runTeamWithOptions(opts teamRunOptions) error {
+	return runTeamWithHooks(opts, teamRunHooks{})
+}
+
+func runTeamWithHooks(opts teamRunOptions, hooks teamRunHooks) error {
 	switch {
 	case opts.TasksPath != "" && opts.IssueID != "":
 		return errors.New("provide either --tasks or --issue, not both")
@@ -276,31 +286,42 @@ func runTeamWithOptions(opts teamRunOptions) error {
 	}
 
 	// 9. Set up signal handling
-	ctx, cancel := context.WithCancel(context.Background())
+	parentCtx := hooks.ParentContext
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
 	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signalChan)
+	if !hooks.DisableSignalHandler {
+		signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(signalChan)
 
-	go func() {
-		select {
-		case <-ctx.Done():
-			return
-		case <-signalChan:
-			logger.Info("received signal, cancelling team")
-			cancel()
-		}
-	}()
+		go func() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-signalChan:
+				logger.Info("received signal, cancelling team")
+				cancel()
+			}
+		}()
+	}
 
 	// 10. Start event consumer goroutine
+	handlers := append([]teamEventHandler{}, hooks.EventHandlers...)
 	if boardSyncer != nil {
 		if err := boardSyncer.Start(ctx); err != nil {
 			return fmt.Errorf("starting board sync: %w", err)
 		}
-		go consumeTeamEvents(ctx, logger, coordinator.Events, boardSyncer.HandleEvent)
-	} else {
+		handlers = append(handlers, boardSyncer.HandleEvent)
+	}
+	if len(handlers) == 0 {
 		go logTeamEvents(ctx, logger, coordinator.Events)
+	} else {
+		go consumeTeamEvents(ctx, logger, coordinator.Events, handlers...)
 	}
 
 	// 11. Run team
