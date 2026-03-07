@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 )
 
 const (
@@ -32,6 +33,13 @@ const (
 	defaultTeamMaxFixLoops       = 3
 	defaultTeamClaimLeaseSeconds = 300
 	defaultTeamStateDir          = ".contrabass/state/team"
+	defaultTeamExecutionMode     = TeamExecutionModeTeam
+)
+
+const (
+	TeamExecutionModeTeam   = "team"
+	TeamExecutionModeSingle = "single"
+	TeamExecutionModeAuto   = "auto"
 )
 
 var (
@@ -114,6 +122,7 @@ type TeamSectionConfig struct {
 	MaxFixLoops       int    `yaml:"max_fix_loops"`
 	ClaimLeaseSeconds int    `yaml:"claim_lease_seconds"`
 	StateDir          string `yaml:"state_dir"`
+	ExecutionMode     string `yaml:"execution_mode"`
 }
 
 // OhMyOpenCodeConfig holds settings for the oh-my-opencode agent runner which
@@ -413,6 +422,28 @@ func (c *WorkflowConfig) TeamStateDir() string {
 		return defaultTeamStateDir
 	}
 	return c.Team.StateDir
+}
+
+func (c *WorkflowConfig) TeamExecutionMode() string {
+	if c == nil {
+		return defaultTeamExecutionMode
+	}
+
+	switch strings.TrimSpace(strings.ToLower(c.Team.ExecutionMode)) {
+	case "", TeamExecutionModeAuto:
+		switch c.TrackerType() {
+		case "internal", "local":
+			return TeamExecutionModeTeam
+		default:
+			return TeamExecutionModeSingle
+		}
+	case "agent", "orchestrator", TeamExecutionModeSingle:
+		return TeamExecutionModeSingle
+	case TeamExecutionModeTeam:
+		return TeamExecutionModeTeam
+	default:
+		return strings.TrimSpace(strings.ToLower(c.Team.ExecutionMode))
+	}
 }
 
 func (c *WorkflowConfig) GitHubOwner() string {
