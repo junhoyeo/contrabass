@@ -276,7 +276,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 		return runDryRun(ctx, orch)
 	}
 
-	var h *hub.Hub
+	var h *hub.Hub[orchestrator.OrchestratorEvent]
 	if port > 0 {
 		h = hub.NewHub(orch.Events())
 		go h.Run(ctx)
@@ -328,7 +328,12 @@ func runDryRun(ctx context.Context, orch *orchestrator.Orchestrator) error {
 }
 
 // runHeadless runs the orchestrator without TUI, logging events to the logger.
-func runHeadless(ctx context.Context, orch *orchestrator.Orchestrator, logger *log.Logger, h *hub.Hub) error {
+func runHeadless(
+	ctx context.Context,
+	orch *orchestrator.Orchestrator,
+	logger *log.Logger,
+	h *hub.Hub[orchestrator.OrchestratorEvent],
+) error {
 	events := orch.Events()
 	if h != nil {
 		subID, subscribedEvents := h.Subscribe()
@@ -368,7 +373,11 @@ func startSignalShutdownHook(
 }
 
 // runTUI starts the orchestrator and renders the Charm TUI.
-func runTUI(ctx context.Context, orch *orchestrator.Orchestrator, h *hub.Hub) error {
+func runTUI(
+	ctx context.Context,
+	orch *orchestrator.Orchestrator,
+	h *hub.Hub[orchestrator.OrchestratorEvent],
+) error {
 	tuiCtx, tuiCancel := context.WithCancel(ctx)
 	defer tuiCancel()
 

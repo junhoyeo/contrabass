@@ -8,9 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
-	"reflect"
 	"time"
-	"unsafe"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/log"
@@ -69,12 +67,6 @@ func runTeamExecutionApp(
 	})
 }
 
-type noopSnapshotProvider struct{}
-
-func (noopSnapshotProvider) Snapshot() orchestrator.StateSnapshot {
-	return orchestrator.StateSnapshot{}
-}
-
 func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int) error {
 	events := make(chan orchestrator.OrchestratorEvent, 1)
 	h := hub.NewHub(events)
@@ -85,10 +77,8 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 		return fmt.Errorf("sub dashboard dist fs: %w", err)
 	}
 
-	srv := web.NewServer(fmt.Sprintf("localhost:%d", port), nil, h, dashboardFS)
-	if err := setServerSnapshotProvider(srv, noopSnapshotProvider{}); err != nil {
-		return fmt.Errorf("set snapshot provider: %w", err)
-	}
+	provider := web.NewTeamSnapshotProvider()
+	srv := web.NewServer(fmt.Sprintf("localhost:%d", port), provider, h, dashboardFS)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
@@ -104,22 +94,6 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 	fmt.Fprintf(os.Stderr, "Web dashboard available at http://localhost:%d\n", port)
 	return nil
 }
-
-func setServerSnapshotProvider(srv *web.Server, provider web.SnapshotProvider) error {
-	if srv == nil {
-		return errors.New("server is nil")
-	}
-
-	field := reflect.ValueOf(srv).Elem().FieldByName("snapshotProvider")
-	if !field.IsValid() {
-		return errors.New("snapshot provider field not found")
-	}
-
-	writable := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
-	writable.Set(reflect.ValueOf(provider))
-	return nil
-}
-
 func runTeamExecutionLoop(
 	ctx context.Context,
 	cfgPath string,

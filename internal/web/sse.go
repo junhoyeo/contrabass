@@ -49,16 +49,16 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
-		case event, ok := <-events:
+		case evt, ok := <-events:
 			if !ok {
 				return
 			}
 
-			if shouldSkipStaleEvent(snapshotGeneratedAt, event.Timestamp) {
+			if shouldSkipStaleEvent(snapshotGeneratedAt, evt.Timestamp) {
 				continue
 			}
 
-			if err := writeSSEEvent(w, event.Type.String(), event, id); err != nil {
+			if err := writeSSEEvent(w, evt.Type.String(), evt, id); err != nil {
 				return
 			}
 			flusher.Flush()

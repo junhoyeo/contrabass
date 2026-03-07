@@ -22,22 +22,25 @@ type SnapshotProvider interface {
 
 type Server struct {
 	httpServer       *http.Server
-	orch             *orchestrator.Orchestrator
-	hub              *hub.Hub
+	hub              *hub.Hub[orchestrator.OrchestratorEvent]
 	dashboardFS      fs.FS
 	listenAddr       string
 	snapshotProvider SnapshotProvider
 }
 
-func NewServer(addr string, orch *orchestrator.Orchestrator, hub *hub.Hub, dashboardFS fs.FS) *Server {
+func NewServer(
+	addr string,
+	provider SnapshotProvider,
+	hub *hub.Hub[orchestrator.OrchestratorEvent],
+	dashboardFS fs.FS,
+) *Server {
 	listenAddr := normalizeListenAddr(addr)
 
 	return &Server{
-		orch:             orch,
 		hub:              hub,
 		dashboardFS:      dashboardFS,
 		listenAddr:       listenAddr,
-		snapshotProvider: orch,
+		snapshotProvider: provider,
 	}
 }
 

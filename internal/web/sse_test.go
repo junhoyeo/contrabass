@@ -208,7 +208,10 @@ func TestShouldSkipStaleEvent(t *testing.T) {
 	}
 }
 
-func newSSETestServer(t *testing.T, provider fakeSnapshotProvider) (*Server, chan orchestrator.OrchestratorEvent, *hub.Hub, func()) {
+func newSSETestServer(
+	t *testing.T,
+	provider fakeSnapshotProvider,
+) (*Server, chan orchestrator.OrchestratorEvent, *hub.Hub[orchestrator.OrchestratorEvent], func()) {
 	t.Helper()
 
 	source := make(chan orchestrator.OrchestratorEvent, 1)
