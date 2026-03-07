@@ -30,6 +30,11 @@ const mosaicLogoRows = 20
 var (
 	headerLogoOnce sync.Once
 	headerLogoArt  string // mosaic fallback art (text-safe, passes through cell renderer)
+
+	// overrideLogoArt, when non-empty, replaces the logo art unconditionally.
+	// Used by snapshot tests to produce deterministic output regardless of
+	// whether the PNG asset exists at the relative working-directory path.
+	overrideLogoArt string
 )
 
 // nativeImageEscape holds the pre-rendered Kitty/iTerm escape sequence for the logo.
@@ -184,6 +189,9 @@ func detectImageMode() termImageMode {
 // that reserve vertical space for the image rendered via tea.Raw().
 // For mosaic mode, it returns the half-block character art directly.
 func renderHeaderLogo() string {
+	if overrideLogoArt != "" {
+		return overrideLogoArt
+	}
 	headerLogoOnce.Do(func() {
 		mode := detectImageMode()
 		switch mode {

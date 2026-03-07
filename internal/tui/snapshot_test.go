@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +46,14 @@ func assertGolden(t *testing.T, name, got string) {
 }
 
 func newSnapshotModel() Model {
+	// Pin logo to a blank placeholder so snapshots don't depend on the PNG asset path.
+	placeholder := strings.Repeat(" ", logoBoxCols)
+	lines := make([]string, logoBoxRows)
+	for i := range lines {
+		lines[i] = placeholder
+	}
+	overrideLogoArt = strings.Join(lines, "\n")
+
 	m := NewModel()
 	m.width = 100
 	m.height = 40
