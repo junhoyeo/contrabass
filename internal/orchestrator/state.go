@@ -103,8 +103,15 @@ func CalculateBackoff(issueID string, attempt int, maxMs int) (delayMs int) {
 
 	offset := deterministicJitterOffset(issueID, attempt, maxMs, jitterRange)
 	delayMs = baseDelay + offset
-	if delayMs < 0 {
-		return 0
+	minBackoffMs := continuationBackoffMs
+	if minBackoffMs <= 0 {
+		minBackoffMs = 1_000
+	}
+	if minBackoffMs > maxMs {
+		minBackoffMs = maxMs
+	}
+	if delayMs < minBackoffMs {
+		delayMs = minBackoffMs
 	}
 	if delayMs > maxMs {
 		return maxMs

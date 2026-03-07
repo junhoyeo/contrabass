@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/junhoyeo/contrabass/internal/config"
@@ -81,10 +82,20 @@ func (o *Orchestrator) completeRun(ctx context.Context, issueID string, doneErr 
 	o.mu.Unlock()
 
 	defer entry.cancel()
-	_ = o.workspace.Cleanup(ctx, issueID)
+	if err := o.workspace.Cleanup(ctx, issueID); err != nil {
+		logging.LogIssueEvent(o.logger, issueID, "workspace_cleanup_failed", "stage", "complete_run", "err", err)
+	}
 
 	finalAttempt := entry.attempt
-	finalAttempt.Phase, finalAttempt.Error = resolveFinalPhase(finalAttempt.Phase, finalAttempt.Error, doneErr)
+	successSignal := completionSignalFromEvent(finalAttempt.LastEvent)
+	phaseMessage := finalAttempt.Error
+	if phaseMessage == "" {
+		phaseMessage = successSignal
+	}
+	finalAttempt.Phase, finalAttempt.Error = resolveFinalPhase(finalAttempt.Phase, phaseMessage, doneErr)
+	if successSignal != "" && finalAttempt.Error == successSignal {
+		finalAttempt.Error = ""
+	}
 
 	o.emitEvent(OrchestratorEvent{
 		Type:      EventAgentFinished,
@@ -171,12 +182,38 @@ func resolveFinalPhase(phase types.RunPhase, message string, doneErr error) (typ
 		}
 	}
 	if finalPhase == types.Finishing {
-		if err := TransitionRunPhase(finalPhase, types.Succeeded); err == nil {
-			finalPhase = types.Succeeded
+		if hasExplicitSuccessSignal(finalMessage) {
+			if err := TransitionRunPhase(finalPhase, types.Succeeded); err == nil {
+				finalPhase = types.Succeeded
+			}
+		} else if finalMessage == "" {
+			finalMessage = "missing explicit success signal"
 		}
 	}
 
 	return finalPhase, finalMessage
+}
+
+func completionSignalFromEvent(eventType string) string {
+	normalized := strings.TrimSpace(strings.ToLower(eventType))
+	if hasExplicitSuccessSignal(normalized) {
+		return normalized
+	}
+	return ""
+}
+
+func hasExplicitSuccessSignal(message string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(message))
+	if normalized == "" {
+		return false
+	}
+
+	switch normalized {
+	case "turn/completed", "item/completed", "task/completed":
+		return true
+	}
+
+	return strings.Contains(normalized, "completed") && strings.Contains(normalized, "success")
 }
 
 func (o *Orchestrator) enqueueBackoffFromRunResult(ctx context.Context, issue types.Issue, attempt types.RunAttempt) {
@@ -240,8 +277,12 @@ func (o *Orchestrator) enqueueBackoffFromRunning(ctx context.Context, issue type
 }
 
 func (o *Orchestrator) releaseClaimAndQueueContinuation(ctx context.Context, issueID string, attempt int, cause error) {
-	_ = o.tracker.UpdateIssueState(ctx, issueID, types.Released)
-	_ = o.tracker.ReleaseIssue(ctx, issueID)
+	if err := o.tracker.UpdateIssueState(ctx, issueID, types.Released); err != nil {
+		logging.LogIssueEvent(o.logger, issueID, "update_released_failed", "err", err)
+	}
+	if err := o.tracker.ReleaseIssue(ctx, issueID); err != nil {
+		logging.LogIssueEvent(o.logger, issueID, "release_failed", "err", err)
+	}
 	releaseTimestamp := time.Now()
 	o.enqueueContinuation(issueID, attempt, cause.Error())
 	o.emitIssueReleased(issueID, attempt, releaseTimestamp)
@@ -435,6 +476,11 @@ func (o *Orchestrator) emitStatusUpdate() {
 	cfg := o.currentConfig()
 	modelName, _ := cfg.Model()
 	projectURL := cfg.TrackerProjectURL()
+	trackerType := cfg.TrackerType()
+	trackerScope := cfg.TrackerProjectURL()
+	if trackerType == "internal" || trackerType == "local" {
+		trackerScope = cfg.LocalBoardDir()
+	}
 	o.emitEvent(OrchestratorEvent{
 		Type: EventStatusUpdate,
 		Data: StatusUpdate{
@@ -442,6 +488,8 @@ func (o *Orchestrator) emitStatusUpdate() {
 			BackoffQueue: backoffQueue,
 			ModelName:    modelName,
 			ProjectURL:   projectURL,
+			TrackerType:  trackerType,
+			TrackerScope: trackerScope,
 		},
 	})
 }
@@ -451,9 +499,17 @@ func (o *Orchestrator) emitEvent(event OrchestratorEvent) {
 		event.Timestamp = time.Now()
 	}
 
+	o.mu.Lock()
+	if o.eventsClosed.Load() {
+		o.mu.Unlock()
+		return
+	}
+
 	select {
 	case o.events <- event:
+		o.mu.Unlock()
 	default:
+		o.mu.Unlock()
 		logging.LogOrchestratorEvent(
 			o.logger,
 			"event_dropped",
@@ -507,10 +563,18 @@ func (o *Orchestrator) gracefulShutdown(ctx context.Context) error {
 			if run.cancel != nil {
 				run.cancel()
 			}
-			_ = o.agent.Stop(run.process)
-			_ = o.workspace.Cleanup(ctx, run.issue.ID)
-			_ = o.tracker.UpdateIssueState(ctx, run.issue.ID, types.Released)
-			_ = o.tracker.ReleaseIssue(ctx, run.issue.ID)
+			if err := o.agent.Stop(run.process); err != nil {
+				logging.LogIssueEvent(o.logger, run.issue.ID, "shutdown_stop_failed", "err", err)
+			}
+			if err := o.workspace.Cleanup(ctx, run.issue.ID); err != nil {
+				logging.LogIssueEvent(o.logger, run.issue.ID, "shutdown_cleanup_failed", "err", err)
+			}
+			if err := o.tracker.UpdateIssueState(ctx, run.issue.ID, types.Released); err != nil {
+				logging.LogIssueEvent(o.logger, run.issue.ID, "shutdown_update_released_failed", "err", err)
+			}
+			if err := o.tracker.ReleaseIssue(ctx, run.issue.ID); err != nil {
+				logging.LogIssueEvent(o.logger, run.issue.ID, "shutdown_release_failed", "err", err)
+			}
 		}
 
 		if err := o.workspace.CleanupAll(ctx); err != nil {

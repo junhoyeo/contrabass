@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -59,6 +60,7 @@ type Orchestrator struct {
 	running      map[string]*runEntry
 	backoff      []types.BackoffEntry
 	events       chan OrchestratorEvent
+	eventsClosed atomic.Bool
 	stats        Stats
 
 	issueCache      map[string]types.Issue
@@ -121,7 +123,14 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
-	defer close(o.events)
+	defer func() {
+		o.mu.Lock()
+		if !o.eventsClosed.Load() {
+			o.eventsClosed.Store(true)
+			close(o.events)
+		}
+		o.mu.Unlock()
+	}()
 
 	runSignals := make(chan runSignal, defaultEventBufferSize)
 	supervisor, supervisorCtx := errgroup.WithContext(ctx)
@@ -132,9 +141,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = o.gracefulShutdown(shutdownCtx)
+			if err := o.gracefulShutdown(shutdownCtx); err != nil {
+				o.logger.Warn("orchestrator", "event", "graceful_shutdown_failed", "err", err)
+			}
 			cancel()
-			_ = supervisor.Wait()
+			if err := supervisor.Wait(); err != nil {
+				o.logger.Warn("orchestrator", "event", "supervisor_wait_failed", "err", err)
+			}
 			return nil
 		case signal := <-runSignals:
 			o.handleRunSignal(supervisorCtx, signal)
@@ -294,11 +307,15 @@ func (o *Orchestrator) dispatchIssue(
 
 	if phaseErr := TransitionRunPhase(runAttempt.Phase, types.BuildingPrompt); phaseErr == nil {
 		runAttempt.Phase = types.BuildingPrompt
+	} else {
+		logging.LogIssueEvent(o.logger, issue.ID, "phase_transition_failed", "from", runAttempt.Phase.String(), "to", types.BuildingPrompt.String(), "err", phaseErr)
 	}
 
 	prompt, err := config.RenderPrompt(cfg.PromptTemplate, issue)
 	if err != nil {
-		_ = o.workspace.Cleanup(ctx, issue.ID)
+		if cleanupErr := o.workspace.Cleanup(ctx, issue.ID); cleanupErr != nil {
+			logging.LogIssueEvent(o.logger, issue.ID, "workspace_cleanup_failed", "stage", "prompt_render", "err", cleanupErr)
+		}
 		logging.LogIssueEvent(o.logger, issue.ID, "prompt_build_failed", "err", err)
 		o.releaseClaimAndQueueContinuation(ctx, issue.ID, runAttempt.Attempt, err)
 		return
@@ -318,7 +335,9 @@ func (o *Orchestrator) dispatchIssue(
 	process, err := o.agent.Start(runCtx, issue, workspacePath, prompt)
 	if err != nil {
 		cancel()
-		_ = o.workspace.Cleanup(ctx, issue.ID)
+		if cleanupErr := o.workspace.Cleanup(ctx, issue.ID); cleanupErr != nil {
+			logging.LogIssueEvent(o.logger, issue.ID, "workspace_cleanup_failed", "stage", "agent_start", "err", cleanupErr)
+		}
 		logging.LogAgentEvent(o.logger, issue.ID, "start_failed", "err", err)
 		o.enqueueBackoffFromRunning(ctx, issue, runAttempt, err)
 		return
@@ -391,7 +410,9 @@ func (o *Orchestrator) claimIssue(ctx context.Context, issue types.Issue) error 
 	}
 
 	if err := o.tracker.UpdateIssueState(ctx, issue.ID, types.Claimed); err != nil {
-		_ = o.tracker.ReleaseIssue(ctx, issue.ID)
+		if releaseErr := o.tracker.ReleaseIssue(ctx, issue.ID); releaseErr != nil {
+			logging.LogIssueEvent(o.logger, issue.ID, "claim_rollback_release_failed", "err", releaseErr)
+		}
 		return err
 	}
 
