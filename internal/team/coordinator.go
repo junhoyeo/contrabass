@@ -140,7 +140,9 @@ func (c *Coordinator) Run(ctx context.Context, tasks []types.TeamTask) error {
 		select {
 		case <-ctx.Done():
 			c.logger.Info("team coordination cancelled", "team", c.teamName)
-			_ = c.phases.Cancel(c.teamName, "context cancelled")
+			if err := c.phases.Cancel(c.teamName, "context cancelled"); err != nil {
+				c.logger.Warn("failed to cancel phase machine", "team", c.teamName, "error", err)
+			}
 			c.stopAllWorkers()
 			return ctx.Err()
 		default:
@@ -162,7 +164,9 @@ func (c *Coordinator) Run(ctx context.Context, tasks []types.TeamTask) error {
 				return ctx.Err()
 			}
 			c.logger.Error("phase execution failed", "team", c.teamName, "phase", phase, "error", err)
-			_ = c.phases.Transition(c.teamName, types.PhaseFailed, err.Error())
+			if transitionErr := c.phases.Transition(c.teamName, types.PhaseFailed, err.Error()); transitionErr != nil {
+				c.logger.Warn("failed to transition to failed phase", "team", c.teamName, "error", transitionErr)
+			}
 			c.stopAllWorkers()
 			return err
 		}
@@ -199,7 +203,9 @@ func (c *Coordinator) runWorkerPhase(ctx context.Context, next types.TeamPhase, 
 	}
 
 	if err := c.executeTask(ctx, task, token, "coordinator"); err != nil {
-		_ = c.tasks.FailTask(c.teamName, task.ID, token, err.Error())
+		if failErr := c.tasks.FailTask(c.teamName, task.ID, token, err.Error()); failErr != nil {
+			c.logger.Warn("failed to mark task as failed", "team", c.teamName, "task", task.ID, "error", failErr)
+		}
 		return err
 	}
 
@@ -254,7 +260,9 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context) error {
 	}
 
 	if err := c.executeTask(ctx, task, token, "verifier"); err != nil {
-		_ = c.tasks.FailTask(c.teamName, task.ID, token, err.Error())
+		if failErr := c.tasks.FailTask(c.teamName, task.ID, token, err.Error()); failErr != nil {
+			c.logger.Warn("failed to mark verify task as failed", "team", c.teamName, "task", task.ID, "error", failErr)
+		}
 		return c.phases.Transition(c.teamName, types.PhaseFix, "verification failed")
 	}
 
@@ -274,7 +282,10 @@ func (c *Coordinator) runVerifyPhase(ctx context.Context) error {
 }
 
 func (c *Coordinator) runFixPhase(ctx context.Context) error {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	tasks, err := c.tasks.ListTasks(c.teamName)
 	if err != nil {
 		return err
@@ -282,6 +293,10 @@ func (c *Coordinator) runFixPhase(ctx context.Context) error {
 
 	hasPending := false
 	for _, t := range tasks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		if t.Status == types.TaskFailed {
 			reset, err := c.tasks.ResetFailedTask(c.teamName, t.ID)
 			if err != nil {
@@ -328,7 +343,9 @@ func (c *Coordinator) workerLoop(ctx context.Context, workerID string) error {
 		}
 
 		if err != nil {
-			_ = c.tasks.FailTask(c.teamName, task.ID, token, err.Error())
+			if failErr := c.tasks.FailTask(c.teamName, task.ID, token, err.Error()); failErr != nil {
+				c.logger.Warn("failed to mark worker task as failed", "worker", workerID, "task", task.ID, "error", failErr)
+			}
 			c.emitEvent("task_failed", map[string]interface{}{
 				"worker_id": workerID,
 				"task_id":   task.ID,
@@ -348,8 +365,7 @@ func (c *Coordinator) workerLoop(ctx context.Context, workerID string) error {
 	}
 }
 
-func (c *Coordinator) executeTask(ctx context.Context, task *types.TeamTask, token, workerID string) error {
-	_ = token
+func (c *Coordinator) executeTask(ctx context.Context, task *types.TeamTask, token string, workerID string) error {
 	issue := types.Issue{
 		ID:          fmt.Sprintf("team-%s-%s", c.teamName, workerID),
 		Identifier:  task.ID,
@@ -447,6 +463,12 @@ func (c *Coordinator) renewLeaseLoop(ctx context.Context, taskID, token string) 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			if err := c.tasks.RenewLease(c.teamName, taskID, token); err != nil {
 				c.logger.Warn("lease renewal failed", "task", taskID, "error", err)
 				return

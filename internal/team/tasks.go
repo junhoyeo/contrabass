@@ -75,7 +75,10 @@ func (r *TaskRegistry) GetTask(teamName, taskID string) (*types.TeamTask, error)
 		return nil, fmt.Errorf("read task: %w", err)
 	}
 
-	r.applyLeaseExpiry(&task)
+	if r.applyLeaseExpiry(&task) {
+		task.Status = types.TaskPending
+		task.Claim = nil
+	}
 	return &task, nil
 }
 
@@ -101,7 +104,10 @@ func (r *TaskRegistry) ListTasks(teamName string) ([]types.TeamTask, error) {
 			continue
 		}
 
-		r.applyLeaseExpiry(&task)
+		if r.applyLeaseExpiry(&task) {
+			task.Status = types.TaskPending
+			task.Claim = nil
+		}
 		tasks = append(tasks, task)
 	}
 
@@ -121,7 +127,10 @@ func (r *TaskRegistry) ClaimTask(teamName, taskID, workerID string, expectedVers
 		return "", fmt.Errorf("read task: %w", err)
 	}
 
-	r.applyLeaseExpiry(&task)
+	if r.applyLeaseExpiry(&task) {
+		task.Status = types.TaskPending
+		task.Claim = nil
+	}
 
 	if task.Version != expectedVersion {
 		return "", ErrVersionConflict
@@ -174,7 +183,10 @@ func (r *TaskRegistry) RenewLease(teamName, taskID, token string) error {
 		return fmt.Errorf("read task: %w", err)
 	}
 
-	r.applyLeaseExpiry(&task)
+	if r.applyLeaseExpiry(&task) {
+		task.Status = types.TaskPending
+		task.Claim = nil
+	}
 	if task.Claim == nil || task.Claim.Token != token {
 		return ErrInvalidClaim
 	}
@@ -203,7 +215,10 @@ func (r *TaskRegistry) CompleteTask(teamName, taskID, token, result string) erro
 		return fmt.Errorf("read task: %w", err)
 	}
 
-	r.applyLeaseExpiry(&task)
+	if r.applyLeaseExpiry(&task) {
+		task.Status = types.TaskPending
+		task.Claim = nil
+	}
 	if task.Claim == nil || task.Claim.Token != token {
 		return ErrInvalidClaim
 	}
@@ -233,7 +248,10 @@ func (r *TaskRegistry) FailTask(teamName, taskID, token, reason string) error {
 		return fmt.Errorf("read task: %w", err)
 	}
 
-	r.applyLeaseExpiry(&task)
+	if r.applyLeaseExpiry(&task) {
+		task.Status = types.TaskPending
+		task.Claim = nil
+	}
 	if task.Claim == nil || task.Claim.Token != token {
 		return ErrInvalidClaim
 	}
@@ -263,7 +281,10 @@ func (r *TaskRegistry) ReleaseTask(teamName, taskID, token string) error {
 		return fmt.Errorf("read task: %w", err)
 	}
 
-	r.applyLeaseExpiry(&task)
+	if r.applyLeaseExpiry(&task) {
+		task.Status = types.TaskPending
+		task.Claim = nil
+	}
 	if task.Claim == nil || task.Claim.Token != token {
 		return ErrInvalidClaim
 	}
@@ -352,7 +373,10 @@ func (r *TaskRegistry) isBlocked(teamName string, task *types.TeamTask) (bool, e
 			return false, err
 		}
 
-		r.applyLeaseExpiry(&dep)
+		if r.applyLeaseExpiry(&dep) {
+			dep.Status = types.TaskPending
+			dep.Claim = nil
+		}
 		if dep.Status != types.TaskCompleted {
 			return true, nil
 		}
@@ -362,25 +386,24 @@ func (r *TaskRegistry) isBlocked(teamName string, task *types.TeamTask) (bool, e
 }
 
 func (r *TaskRegistry) isClaimable(task *types.TeamTask) bool {
-	r.applyLeaseExpiry(task)
+	if r.applyLeaseExpiry(task) {
+		return true
+	}
 	return task.Status == types.TaskPending
 }
 
-func (r *TaskRegistry) applyLeaseExpiry(task *types.TeamTask) {
+func (r *TaskRegistry) applyLeaseExpiry(task *types.TeamTask) bool {
 	if task.Status != types.TaskInProgress || task.Claim == nil {
-		return
+		return false
 	}
 	if r.leaseSeconds <= 0 {
-		return
+		return false
 	}
 
 	leaseDuration := time.Duration(r.leaseSeconds) * time.Second
 	if time.Since(task.Claim.LeasedAt) <= leaseDuration {
-		return
+		return false
 	}
 
-	task.Status = types.TaskPending
-	task.Claim = nil
-	task.Version++
-	task.UpdatedAt = time.Now()
+	return true
 }

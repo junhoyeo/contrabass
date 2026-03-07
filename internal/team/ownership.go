@@ -79,25 +79,6 @@ func (r *OwnershipRegistry) Claim(teamName, workerID, taskID string, paths []str
 	return conflicts, nil
 }
 
-// Release removes ownership entries for a specific worker.
-func (r *OwnershipRegistry) Release(teamName, workerID string) error {
-	r.store.mu.Lock()
-	defer r.store.mu.Unlock()
-
-	data, err := r.loadOwnership(teamName)
-	if err != nil {
-		return fmt.Errorf("load ownership: %w", err)
-	}
-
-	for path, entry := range data.Entries {
-		if entry.WorkerID == workerID {
-			delete(data.Entries, path)
-		}
-	}
-
-	return r.saveOwnership(teamName, data)
-}
-
 // ReleaseTask removes ownership entries for a specific task.
 func (r *OwnershipRegistry) ReleaseTask(teamName, taskID string) error {
 	r.store.mu.Lock()
@@ -117,28 +98,6 @@ func (r *OwnershipRegistry) ReleaseTask(teamName, taskID string) error {
 	return r.saveOwnership(teamName, data)
 }
 
-// CheckConflicts returns any files from the given list that are owned by a different worker.
-func (r *OwnershipRegistry) CheckConflicts(teamName, workerID string, paths []string) ([]types.FileOwnership, error) {
-	r.store.mu.Lock()
-	defer r.store.mu.Unlock()
-
-	data, err := r.loadOwnership(teamName)
-	if err != nil {
-		return nil, fmt.Errorf("load ownership: %w", err)
-	}
-
-	var conflicts []types.FileOwnership
-	for _, p := range paths {
-		if existing, ok := data.Entries[p]; ok {
-			if existing.WorkerID != workerID {
-				conflicts = append(conflicts, existing)
-			}
-		}
-	}
-	return conflicts, nil
-}
-
-// ListAll returns all current ownership entries for a team.
 func (r *OwnershipRegistry) ListAll(teamName string) ([]types.FileOwnership, error) {
 	r.store.mu.Lock()
 	defer r.store.mu.Unlock()

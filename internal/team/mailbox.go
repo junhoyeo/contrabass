@@ -73,7 +73,6 @@ func (m *Mailbox) Broadcast(teamName, from string, recipients []string, content 
 	return nil
 }
 
-// ListPending returns all pending messages for a worker.
 func (m *Mailbox) ListPending(teamName, workerID string) ([]types.MailboxMessage, error) {
 	dir := m.paths.WorkerMailboxDir(teamName, workerID)
 	entries, err := os.ReadDir(dir)
@@ -99,21 +98,6 @@ func (m *Mailbox) ListPending(teamName, workerID string) ([]types.MailboxMessage
 		}
 	}
 	return messages, nil
-}
-
-// Acknowledge marks a message as acknowledged by the worker.
-func (m *Mailbox) Acknowledge(teamName, workerID, messageID string) error {
-	m.store.mu.Lock()
-	defer m.store.mu.Unlock()
-
-	path := filepath.Join(m.paths.WorkerMailboxDir(teamName, workerID), messageID+".json")
-	var msg types.MailboxMessage
-	if err := m.store.ReadJSON(path, &msg); err != nil {
-		return fmt.Errorf("read message: %w", err)
-	}
-
-	msg.Status = types.MessageAcknowledged
-	return m.store.WriteJSON(path, &msg)
 }
 
 // DrainPending reads all pending messages, marks them as delivered,
@@ -158,11 +142,11 @@ func (m *Mailbox) DrainPending(teamName, workerID string) (string, error) {
 		return "", nil
 	}
 
-	return FormatMailboxInjection(parts), nil
+	return formatMailboxInjection(parts), nil
 }
 
-// FormatMailboxInjection formats messages for injection into a worker's prompt.
-func FormatMailboxInjection(messages []string) string {
+// formatMailboxInjection formats messages for injection into a worker's prompt.
+func formatMailboxInjection(messages []string) string {
 	if len(messages) == 0 {
 		return ""
 	}

@@ -86,7 +86,6 @@ func (m *PhaseMachine) Transition(teamName string, to types.TeamPhase, reason st
 	})
 }
 
-// SetArtifact stores a named artifact (e.g., plan document path) in the phase state.
 func (m *PhaseMachine) SetArtifact(teamName, key, value string) error {
 	return m.store.UpdatePhaseState(teamName, func(state *types.TeamPhaseState) error {
 		if state.Artifacts == nil {
@@ -97,7 +96,6 @@ func (m *PhaseMachine) SetArtifact(teamName, key, value string) error {
 	})
 }
 
-// GetArtifact retrieves a named artifact from the phase state.
 func (m *PhaseMachine) GetArtifact(teamName, key string) (string, error) {
 	state, err := m.store.LoadPhaseState(teamName)
 	if err != nil {
@@ -140,7 +138,6 @@ func (m *PhaseMachine) AllTasksCompleted(teamName string) (bool, error) {
 	return true, nil
 }
 
-// AnyTaskFailed returns true if any task has failed.
 func (m *PhaseMachine) AnyTaskFailed(teamName string) (bool, error) {
 	tasks, err := m.tasks.ListTasks(teamName)
 	if err != nil {
@@ -168,7 +165,6 @@ func (m *PhaseMachine) Cancel(teamName, reason string) error {
 	return m.Transition(teamName, types.PhaseCancelled, reason)
 }
 
-// TransitionHistory returns the full list of phase transitions.
 func (m *PhaseMachine) TransitionHistory(teamName string) ([]types.PhaseTransition, error) {
 	state, err := m.store.LoadPhaseState(teamName)
 	if err != nil {
