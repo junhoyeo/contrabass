@@ -19,9 +19,10 @@ Today Contrabass ships with:
 
 - A Cobra CLI with TUI, headless, and optional embedded web dashboard modes
 - A `WORKFLOW.md` parser with YAML front matter, Liquid prompt rendering, and `$ENV_VAR` interpolation
-- Issue tracker adapters for **Linear** and **GitHub Issues**
-- Agent runners for **Codex app-server** and **OpenCode**
+- Issue tracker adapters for **Linear**, **GitHub Issues**, and a built-in **Internal Board** (local filesystem, no external service required)
+- Agent runners for **Codex app-server**, **OpenCode**, and **oh-my-opencode**
 - Git-worktree-based workspace provisioning under `workspaces/<issue-id>`
+- Teams: multi-agent coordination with a local task board, phased pipeline (plan → exec → verify), and live TUI team table
 - An orchestrator with claim/release, timeout detection, stall detection, deterministic retry backoff, and state snapshots
 - A Charm v2 terminal UI built with Bubble Tea, Bubbles, and Lip Gloss
 - A React dashboard served from the Go binary, with state snapshots and live SSE updates
@@ -34,7 +35,8 @@ Today Contrabass ships with:
 - **Git** (workspace creation uses `git worktree`)
 - A supported agent runtime:
   - `codex app-server`
-  - or `opencode serve`
+  - `opencode serve`
+  - or `oh-my-opencode`
 - Tracker credentials for the backend you use:
   - Linear: `LINEAR_API_KEY`
   - GitHub: `GITHUB_TOKEN`
@@ -173,14 +175,15 @@ Examples:
 
 - [`testdata/workflow.demo.md`](testdata/workflow.demo.md) — demo Linear + Codex workflow
 - [`testdata/workflow.github.md`](testdata/workflow.github.md) — GitHub + OpenCode workflow
+- [`testdata/workflow.ohmyopencode.md`](testdata/workflow.ohmyopencode.md) — oh-my-opencode workflow
 - [`testdata/workflow.md`](testdata/workflow.md) — realistic Linear fixture
 
 ## Supported integrations
 
 | Surface | Current support |
 |---|---|
-| Trackers | Linear, GitHub Issues |
-| Agent runners | Codex app-server, OpenCode |
+| Trackers | Linear, GitHub Issues, Internal Board |
+| Agent runners | Codex app-server, OpenCode, oh-my-opencode |
 | Operator surfaces | Charm TUI, embedded web dashboard, headless mode |
 | Live config reload | Yes (`WORKFLOW.md` via `fsnotify`) |
 | State streaming | JSON snapshot API + SSE |
@@ -193,6 +196,10 @@ Examples:
 - **GitHub Issues**
   - REST-based issue fetch, assign/unassign, comment, and close-on-release behavior
   - Pull requests are skipped when fetching issues
+- **Internal Board**
+  - File-based local issue tracking under `.contrabass/board/` — no external service required
+  - Supports team-scoped boards for multi-agent coordination
+  - See [`docs/local-board.md`](docs/local-board.md) for format details
 
 ### Agent runners
 
@@ -203,6 +210,9 @@ Examples:
 - **OpenCode**
   - Starts or reuses an `opencode serve` process
   - Creates sessions over HTTP and streams events over SSE
+- **oh-my-opencode**
+  - Wraps the `oh-my-opencode` agent binary
+  - HTTP session creation with SSE event streaming
 
 ## Web dashboard and HTTP API (WIP)
 
@@ -263,6 +273,7 @@ go run ./cmd/contrabass --config testdata/workflow.demo.md --port 8080
 ## Docs and fixtures
 
 - [`docs/codex-protocol.md`](docs/codex-protocol.md) — notes on the Codex app-server framing and lifecycle used here
+- [`docs/local-board.md`](docs/local-board.md) — internal board tracker file format and schema
 - [`docs/test-plan.md`](docs/test-plan.md) — ported test-plan notes from the Elixir codebase
 - [`testdata/snapshots/`](testdata/snapshots/) — golden snapshots for the TUI renderer
 
@@ -304,6 +315,8 @@ publishes a GitHub Release with grouped changelogs, and updates the
 [Homebrew tap](https://github.com/junhoyeo/homebrew-contrabass).
 
 ## Notes for contributors
+
+For detailed contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - The dashboard assets must exist before the Go binary is built because the binary embeds `packages/dashboard/dist`.
 - `packages/landing` renders `README.md`, so README changes also affect the landing site.
