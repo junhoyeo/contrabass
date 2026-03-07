@@ -43,10 +43,24 @@ type Model struct {
 	stats          HeaderData
 	startTime      time.Time
 	unknownEvents  int
+
+	agentSortDirty   bool
+	backoffSortDirty bool
+	teamSortDirty    bool
+	agentRowsDirty   bool
+	backoffRowsDirty bool
+	teamRowsDirty    bool
+	agentKeys        []string
+	backoffKeys      []string
+	teamKeys         []string
+	agentRowsCache   []AgentRow
+	backoffRowsCache []BackoffRow
+	teamRowsCache    []TeamRow
 }
 
 func NewModel() Model {
 	now := time.Now()
+	InitLogo()
 	vp := viewport.New()
 	vp.MouseWheelEnabled = true
 	s := spinner.New(
@@ -71,6 +85,12 @@ func NewModel() Model {
 		stats: HeaderData{
 			RefreshIn: 1,
 		},
+		agentSortDirty:   true,
+		backoffSortDirty: true,
+		teamSortDirty:    true,
+		agentRowsDirty:   true,
+		backoffRowsDirty: true,
+		teamRowsDirty:    true,
 	}
 }
 
@@ -79,6 +99,9 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	needsSync := false
+	var cmd tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch {
@@ -93,16 +116,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			headerH := lipgloss.Height(m.header.View())
 			helpH := lipgloss.Height(m.help.View(m.keys))
 			m.viewport.SetHeight(m.height - headerH - helpH)
-			m.syncTables()
-			return m, nil
+			needsSync = true
 		}
-		var vpCmd tea.Cmd
-		m.viewport, vpCmd = m.viewport.Update(msg)
-		return m, vpCmd
+		if !key.Matches(msg, m.keys.Help) {
+			m.viewport, cmd = m.viewport.Update(msg)
+		}
 	case tea.MouseMsg:
-		var vpCmd tea.Cmd
-		m.viewport, vpCmd = m.viewport.Update(msg)
-		return m, vpCmd
+		m.viewport, cmd = m.viewport.Update(msg)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -115,36 +135,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		helpH := lipgloss.Height(m.help.View(m.keys))
 		m.viewport.SetWidth(msg.Width)
 		m.viewport.SetHeight(msg.Height - headerH - helpH)
-		m.syncTables()
+		needsSync = true
 		m.imageDirty = true
 		// Immediately re-emit native image on resize instead of waiting for next tick
 		if rawSeq := buildNativeImageRaw(); rawSeq != "" {
-			return m, tea.Raw(rawSeq)
+			cmd = tea.Raw(rawSeq)
 		}
 	case spinner.TickMsg:
-		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		m.syncTables()
-		return m, cmd
+		needsSync = true
 	case OrchestratorEventMsg:
 		m = m.applyOrchestratorEvent(msg.Event)
+		needsSync = true
 	case TeamEventMsg:
 		m = m.applyTeamEvent(msg.Event)
+		needsSync = true
 	case tickMsg:
 		m = m.refreshDerivedFields(time.Time(msg))
 		cmds := []tea.Cmd{doTick()}
+		needsSync = true
 		if m.imageDirty {
 			m.imageDirty = false
 			if rawSeq := buildNativeImageRaw(); rawSeq != "" {
 				cmds = append(cmds, tea.Raw(rawSeq))
 			}
 		}
-		return m, tea.Batch(cmds...)
+		cmd = tea.Batch(cmds...)
 	default:
 		m.unknownEvents++
 		log.Debug("unhandled tea.Msg type", "type", fmt.Sprintf("%T", msg))
 	}
-	return m, nil
+
+	if needsSync {
+		m = m.syncTables()
+	}
+	return m, cmd
 }
 
 func (m Model) View() tea.View {
@@ -259,11 +284,19 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 	case orchestrator.EventAgentStarted:
 		switch started := event.Data.(type) {
 		case orchestrator.AgentStarted:
+			_, hadBackoff := m.backoffs[event.IssueID]
 			delete(m.backoffs, event.IssueID)
 			delete(m.backoffRetryAt, event.IssueID)
+			if hadBackoff {
+				m.backoffSortDirty = true
+				m.backoffRowsDirty = true
+			}
 			displayID := event.IssueID
 			if started.IssueIdentifier != "" {
 				displayID = started.IssueIdentifier
+			}
+			if _, exists := m.agents[event.IssueID]; !exists {
+				m.agentSortDirty = true
 			}
 			m.agentStartTime[event.IssueID] = event.Timestamp
 			m.agents[event.IssueID] = AgentRow{
@@ -278,7 +311,7 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 				LastEvent: event.Type.String(),
 				Phase:     types.InitializingSession,
 			}
-			m.syncTables()
+			m.agentRowsDirty = true
 		default:
 			log.Warn("event payload type mismatch",
 				"expected", "AgentStarted",
@@ -298,7 +331,8 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 			}
 			delete(m.agents, event.IssueID)
 			delete(m.agentStartTime, event.IssueID)
-			m.syncTables()
+			m.agentSortDirty = true
+			m.agentRowsDirty = true
 		default:
 			log.Warn("event payload type mismatch",
 				"expected", "AgentFinished",
@@ -308,6 +342,9 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 	case orchestrator.EventBackoffEnqueued:
 		switch backoff := event.Data.(type) {
 		case orchestrator.BackoffEnqueued:
+			if _, exists := m.backoffs[event.IssueID]; !exists {
+				m.backoffSortDirty = true
+			}
 			retryIn := durationString(backoff.RetryAt.Sub(event.Timestamp))
 			m.backoffs[event.IssueID] = BackoffRow{
 				IssueID: event.IssueID,
@@ -316,7 +353,7 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 				Error:   backoff.Error,
 			}
 			m.backoffRetryAt[event.IssueID] = backoff.RetryAt
-			m.syncTables()
+			m.backoffRowsDirty = true
 		default:
 			log.Warn("event payload type mismatch",
 				"expected", "BackoffEnqueued",
@@ -326,11 +363,20 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 	case orchestrator.EventIssueReleased:
 		switch event.Data.(type) {
 		case orchestrator.IssueReleased:
+			_, hadAgent := m.agents[event.IssueID]
+			_, hadBackoff := m.backoffs[event.IssueID]
 			delete(m.agents, event.IssueID)
 			delete(m.agentStartTime, event.IssueID)
 			delete(m.backoffs, event.IssueID)
 			delete(m.backoffRetryAt, event.IssueID)
-			m.syncTables()
+			if hadAgent {
+				m.agentSortDirty = true
+				m.agentRowsDirty = true
+			}
+			if hadBackoff {
+				m.backoffSortDirty = true
+				m.backoffRowsDirty = true
+			}
 		default:
 			log.Warn("event payload type mismatch",
 				"expected", "IssueReleased",
@@ -371,22 +417,23 @@ func (m Model) refreshDerivedFields(now time.Time) Model {
 		row.Age = durationString(now.Sub(startedAt))
 		m.agents[issueID] = row
 	}
+	m.agentRowsDirty = true
 
 	for issueID, row := range m.backoffs {
 		retryAt := m.backoffRetryAt[issueID]
 		row.RetryIn = durationString(retryAt.Sub(now))
 		m.backoffs[issueID] = row
 	}
+	m.backoffRowsDirty = true
 
-	m.syncTables()
 	m.header = m.header.Update(m.stats)
 	return m
 }
 
-func (m *Model) syncTables() {
-	m.table = m.table.Update(agentRowsSorted(m.agents), m.spinner.View())
-	m.backoff = m.backoff.Update(backoffRowsSorted(m.backoffs))
-	m.teamTable = m.teamTable.Update(teamRowsSorted(m.teams), m.teamWorkers, m.spinner.View())
+func (m Model) syncTables() Model {
+	m.table = m.table.Update(m.sortedAgentRows(), m.spinner.View())
+	m.backoff = m.backoff.Update(m.sortedBackoffRows())
+	m.teamTable = m.teamTable.Update(m.sortedTeamRows(), m.teamWorkers, m.spinner.View())
 	content := m.table.View()
 	if bv := m.backoff.View(); bv != "" {
 		content += "\n" + bv
@@ -395,34 +442,59 @@ func (m *Model) syncTables() {
 		content += "\n" + tv
 	}
 	m.viewport.SetContent(content)
+	return m
 }
 
-func agentRowsSorted(items map[string]AgentRow) []AgentRow {
-	keys := make([]string, 0, len(items))
-	for issueID := range items {
-		keys = append(keys, issueID)
+func (m *Model) sortedAgentRows() []AgentRow {
+	needsSort := m.agentSortDirty || len(m.agentKeys) != len(m.agents)
+	if !needsSort {
+		for _, issueID := range m.agentKeys {
+			if _, exists := m.agents[issueID]; !exists {
+				needsSort = true
+				break
+			}
+		}
 	}
-	sort.Strings(keys)
-
-	rows := make([]AgentRow, 0, len(keys))
-	for _, issueID := range keys {
-		rows = append(rows, items[issueID])
+	if needsSort {
+		m.agentKeys = m.agentKeys[:0]
+		for issueID := range m.agents {
+			m.agentKeys = append(m.agentKeys, issueID)
+		}
+		sort.Strings(m.agentKeys)
+		m.agentSortDirty = false
 	}
-	return rows
+	m.agentRowsCache = m.agentRowsCache[:0]
+	for _, issueID := range m.agentKeys {
+		m.agentRowsCache = append(m.agentRowsCache, m.agents[issueID])
+	}
+	m.agentRowsDirty = false
+	return m.agentRowsCache
 }
 
-func backoffRowsSorted(items map[string]BackoffRow) []BackoffRow {
-	keys := make([]string, 0, len(items))
-	for issueID := range items {
-		keys = append(keys, issueID)
+func (m *Model) sortedBackoffRows() []BackoffRow {
+	needsSort := m.backoffSortDirty || len(m.backoffKeys) != len(m.backoffs)
+	if !needsSort {
+		for _, issueID := range m.backoffKeys {
+			if _, exists := m.backoffs[issueID]; !exists {
+				needsSort = true
+				break
+			}
+		}
 	}
-	sort.Strings(keys)
-
-	rows := make([]BackoffRow, 0, len(keys))
-	for _, issueID := range keys {
-		rows = append(rows, items[issueID])
+	if needsSort {
+		m.backoffKeys = m.backoffKeys[:0]
+		for issueID := range m.backoffs {
+			m.backoffKeys = append(m.backoffKeys, issueID)
+		}
+		sort.Strings(m.backoffKeys)
+		m.backoffSortDirty = false
 	}
-	return rows
+	m.backoffRowsCache = m.backoffRowsCache[:0]
+	for _, issueID := range m.backoffKeys {
+		m.backoffRowsCache = append(m.backoffRowsCache, m.backoffs[issueID])
+	}
+	m.backoffRowsDirty = false
+	return m.backoffRowsCache
 }
 
 func durationString(d time.Duration) string {
@@ -433,18 +505,30 @@ func durationString(d time.Duration) string {
 	return (time.Duration(seconds) * time.Second).String()
 }
 
-func teamRowsSorted(items map[string]TeamRow) []TeamRow {
-	keys := make([]string, 0, len(items))
-	for teamName := range items {
-		keys = append(keys, teamName)
+func (m *Model) sortedTeamRows() []TeamRow {
+	needsSort := m.teamSortDirty || len(m.teamKeys) != len(m.teams)
+	if !needsSort {
+		for _, teamName := range m.teamKeys {
+			if _, exists := m.teams[teamName]; !exists {
+				needsSort = true
+				break
+			}
+		}
 	}
-	sort.Strings(keys)
-
-	rows := make([]TeamRow, 0, len(keys))
-	for _, teamName := range keys {
-		rows = append(rows, items[teamName])
+	if needsSort {
+		m.teamKeys = m.teamKeys[:0]
+		for teamName := range m.teams {
+			m.teamKeys = append(m.teamKeys, teamName)
+		}
+		sort.Strings(m.teamKeys)
+		m.teamSortDirty = false
 	}
-	return rows
+	m.teamRowsCache = m.teamRowsCache[:0]
+	for _, teamName := range m.teamKeys {
+		m.teamRowsCache = append(m.teamRowsCache, m.teams[teamName])
+	}
+	m.teamRowsDirty = false
+	return m.teamRowsCache
 }
 
 func (m Model) applyTeamEvent(event types.TeamEvent) Model {
@@ -455,6 +539,9 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 	switch event.Type {
 	case "team_created":
 		maxWorkers, _ := intFromEventData(event.Data, "max_workers")
+		if _, exists := m.teams[event.TeamName]; !exists {
+			m.teamSortDirty = true
+		}
 		m.teams[event.TeamName] = TeamRow{
 			TeamName:       event.TeamName,
 			BoardIssueID:   stringFromEventData(event.Data, "board_issue_id"),
@@ -468,22 +555,22 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 			Age:            "0s",
 		}
 		m.teamWorkers[event.TeamName] = []TeamWorkerRow{}
-		m.syncTables()
+		m.teamRowsDirty = true
 	case "pipeline_started":
 		if row, exists := m.teams[event.TeamName]; exists {
 			if taskCount, ok := intFromEventData(event.Data, "task_count"); ok {
 				row.Tasks = taskCount
 			}
 			m.teams[event.TeamName] = row
-			m.syncTables()
+			m.teamRowsDirty = true
 		}
 	case "phase_started":
 		if row, exists := m.teams[event.TeamName]; exists {
 			if phase, ok := event.Data["phase"].(string); ok {
 				row.Phase = phase
 				m.teams[event.TeamName] = row
+				m.teamRowsDirty = true
 			}
-			m.syncTables()
 		}
 	case "task_claimed":
 		if workerID, ok := event.Data["worker_id"].(string); ok {
@@ -510,7 +597,7 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 				}
 				m.teamWorkers[event.TeamName] = workers
 				m.updateTeamActiveWorkers(event.TeamName)
-				m.syncTables()
+				m.teamRowsDirty = true
 			}
 		}
 	case "task_completed":
@@ -519,7 +606,7 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 			m.teams[event.TeamName] = row
 			m.markWorkerIdle(event.TeamName, stringFromEventData(event.Data, "worker_id"), stringFromEventData(event.Data, "task_id"))
 			m.updateTeamActiveWorkers(event.TeamName)
-			m.syncTables()
+			m.teamRowsDirty = true
 		}
 	case "task_failed":
 		if row, exists := m.teams[event.TeamName]; exists {
@@ -527,13 +614,13 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 			m.teams[event.TeamName] = row
 			m.markWorkerIdle(event.TeamName, stringFromEventData(event.Data, "worker_id"), stringFromEventData(event.Data, "task_id"))
 			m.updateTeamActiveWorkers(event.TeamName)
-			m.syncTables()
+			m.teamRowsDirty = true
 		}
 	case "pipeline_completed":
 		if row, exists := m.teams[event.TeamName]; exists {
 			row.Phase = firstNonEmpty(stringFromEventData(event.Data, "phase"), "complete")
 			m.teams[event.TeamName] = row
-			m.syncTables()
+			m.teamRowsDirty = true
 		}
 	}
 

@@ -62,23 +62,46 @@ type HeaderData struct {
 type Header struct {
 	width int
 	data  HeaderData
+	cache *headerRenderCache
+}
+
+type headerRenderCache struct {
+	dirty    bool
+	rendered string
+	width    int
+	data     HeaderData
 }
 
 func NewHeader() Header {
-	return Header{}
+	return Header{
+		cache: &headerRenderCache{dirty: true},
+	}
 }
 
 func (h Header) Update(data HeaderData) Header {
+	h.ensureCache()
+	if h.data != data {
+		h.cache.dirty = true
+	}
 	h.data = data
 	return h
 }
 
 func (h Header) SetWidth(w int) Header {
+	h.ensureCache()
+	if h.width != w {
+		h.cache.dirty = true
+	}
 	h.width = w
 	return h
 }
 
 func (h Header) View() string {
+	h.ensureCache()
+	if !h.cache.dirty && h.cache.width == h.width && h.cache.data == h.data {
+		return h.cache.rendered
+	}
+
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
 	labelStyle := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("244"))
 	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("45"))
@@ -146,7 +169,18 @@ func (h Header) View() string {
 	if h.width > 0 {
 		outerBox = outerBox.Width(innerWidth)
 	}
-	return outerBox.Render(inner)
+	rendered := outerBox.Render(inner)
+	h.cache.rendered = rendered
+	h.cache.width = h.width
+	h.cache.data = h.data
+	h.cache.dirty = false
+	return rendered
+}
+
+func (h *Header) ensureCache() {
+	if h.cache == nil {
+		h.cache = &headerRenderCache{dirty: true}
+	}
 }
 
 // termImageMode represents the detected terminal image capability.
@@ -210,6 +244,11 @@ func renderHeaderLogo() string {
 		}
 	})
 	return headerLogoArt
+}
+
+func InitLogo() {
+	_ = renderHeaderLogo()
+	initNativeImageEscape()
 }
 
 // initNativeImageEscape pre-renders the native image escape sequence once.

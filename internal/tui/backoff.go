@@ -43,19 +43,29 @@ func (b Backoff) View() string {
 			b2.WriteByte('\n')
 		}
 		errMsg := r.Error
-		// Truncate error to fit within terminal width.
-		// Prefix "  ↻ <id>  attempt N  retry in Ns  error: " is ~50 chars + issueID + retryIn.
-		maxErr := maxWidth - 60 - len(r.IssueID) - len(r.RetryIn)
-		if maxErr < 10 {
-			maxErr = 10
+		prefix := fmt.Sprintf("  %s %s  attempt %d  retry in %s  error: ",
+			arrow, idStyle.Render(r.IssueID), r.Attempt, retryStyle.Render(r.RetryIn))
+		maxErr := maxWidth - lipgloss.Width(prefix)
+		if maxErr < 0 {
+			maxErr = 0
 		}
-		if len(errMsg) > maxErr {
-			errMsg = errMsg[:maxErr-3] + "..."
-		}
-		line := fmt.Sprintf("  %s %s  attempt %d  retry in %s  error: %s",
-			arrow, idStyle.Render(r.IssueID), r.Attempt,
-			retryStyle.Render(r.RetryIn), dimStyle.Render(errMsg))
+		errMsg = truncateRunesWithEllipsis(errMsg, maxErr)
+		line := prefix + dimStyle.Render(errMsg)
 		b2.WriteString(line)
 	}
 	return b2.String()
+}
+
+func truncateRunesWithEllipsis(input string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(input)
+	if len(runes) <= max {
+		return input
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
 }
