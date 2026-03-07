@@ -29,12 +29,23 @@ type Table struct {
 	width       int
 	rows        []AgentRow
 	spinnerView string
+	rowBuf      *tableRowBuffer
 }
 
-func NewTable() Table { return Table{} }
+type tableRowBuffer struct {
+	rows [][]string
+}
+
+func NewTable() Table {
+	return Table{rowBuf: &tableRowBuffer{}}
+}
+
 func (t Table) Update(rows []AgentRow, spinnerView string) Table {
 	t.rows = rows
 	t.spinnerView = spinnerView
+	if t.rowBuf == nil {
+		t.rowBuf = &tableRowBuffer{}
+	}
 	return t
 }
 func (t Table) SetWidth(w int) Table { t.width = w; return t }
@@ -43,7 +54,10 @@ func (t Table) View() string {
 	if len(t.rows) == 0 {
 		return lipgloss.NewStyle().Faint(true).Render("  No agents running")
 	}
-	rows := make([][]string, 0, len(t.rows))
+	if t.rowBuf == nil {
+		t.rowBuf = &tableRowBuffer{}
+	}
+	rows := t.rowBuf.rows[:0]
 	for i, r := range t.rows {
 		tok := fmt.Sprintf("%s/%s", formatTokensShort(r.TokensIn), formatTokensShort(r.TokensOut))
 		sess := truncateSessionID(r.SessionID, 14)
@@ -59,6 +73,7 @@ func (t Table) View() string {
 			compactEvent(r.LastEvent),
 		})
 	}
+	t.rowBuf.rows = rows
 
 	tbl := ltable.New().
 		Headers("", "ID", "STAGE", "PID", "AGE", "TOKENS", "SESSION", "EVENT").
@@ -142,25 +157,6 @@ func statusGlyph(phase types.RunPhase, spinnerView string) string {
 		return spinnerView
 	}
 	return "●"
-}
-
-func statusIndicator(phase types.RunPhase, spinnerView string) string {
-	switch phase {
-	case types.StreamingTurn, types.Finishing:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render(spinnerView)
-	case types.InitializingSession, types.LaunchingAgentProcess:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Render(spinnerView)
-	case types.PreparingWorkspace, types.BuildingPrompt:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render(spinnerView)
-	case types.Failed, types.TimedOut, types.Stalled:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("●")
-	case types.CanceledByReconciliation:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("●")
-	case types.Succeeded:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("●")
-	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render("●")
-	}
 }
 
 func truncateSessionID(id string, maxLen int) string {

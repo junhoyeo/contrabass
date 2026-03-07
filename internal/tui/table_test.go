@@ -26,7 +26,7 @@ func TestTableWithRows(t *testing.T) {
 	assert.Contains(t, out, "ISSUE-456")
 }
 
-func TestStatusIndicator(t *testing.T) {
+func TestStatusGlyph(t *testing.T) {
 	activePhases := map[types.RunPhase]bool{
 		types.StreamingTurn:         true,
 		types.Finishing:             true,
@@ -54,7 +54,7 @@ func TestStatusIndicator(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := statusIndicator(tt.phase, "⠋")
+			result := statusGlyph(tt.phase, "⠋")
 			assert.NotEmpty(t, result)
 			stripped := stripANSI(result)
 			if activePhases[tt.phase] {

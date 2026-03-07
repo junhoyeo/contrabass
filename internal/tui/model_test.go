@@ -713,7 +713,7 @@ func TestHelpToggleRefreshesViewportContent(t *testing.T) {
 	m = updated.(Model)
 
 	m.agents["ISSUE-1"] = AgentRow{IssueID: "ISSUE-1", Stage: "StreamingTurn", PID: 1, Phase: types.StreamingTurn}
-	m.syncTables()
+	m = m.syncTables()
 
 	before := stripANSI(m.View().Content)
 	assert.Contains(t, before, "ISSUE-1")
@@ -770,7 +770,7 @@ func TestViewportScrollBasic(t *testing.T) {
 			Phase:   types.StreamingTurn,
 		}
 	}
-	m.syncTables()
+	m = m.syncTables()
 
 	assert.Equal(t, 0, m.viewport.YOffset())
 	updated, _ = m.Update(tea.KeyPressMsg{Text: "j", Code: 'j'})
@@ -797,7 +797,7 @@ func TestViewportContentShorterThanHeight(t *testing.T) {
 
 	m.agents["ISSUE-1"] = AgentRow{IssueID: "ISSUE-1", Stage: "StreamingTurn", PID: 1, Phase: types.StreamingTurn}
 	m.agents["ISSUE-2"] = AgentRow{IssueID: "ISSUE-2", Stage: "Finishing", PID: 2, Phase: types.Finishing}
-	m.syncTables()
+	m = m.syncTables()
 
 	updated, _ = m.Update(tea.KeyPressMsg{Text: "j", Code: 'j'})
 	model := updated.(Model)

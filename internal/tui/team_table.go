@@ -36,11 +36,17 @@ type TeamTable struct {
 	teams   []TeamRow
 	workers map[string][]TeamWorkerRow
 	spinner string
+	rowBuf  *teamTableRowBuffer
+}
+
+type teamTableRowBuffer struct {
+	rows [][]string
 }
 
 func NewTeamTable() TeamTable {
 	return TeamTable{
 		workers: make(map[string][]TeamWorkerRow),
+		rowBuf:  &teamTableRowBuffer{},
 	}
 }
 
@@ -48,6 +54,9 @@ func (t TeamTable) Update(teams []TeamRow, workers map[string][]TeamWorkerRow, s
 	t.teams = teams
 	t.workers = workers
 	t.spinner = spinnerView
+	if t.rowBuf == nil {
+		t.rowBuf = &teamTableRowBuffer{}
+	}
 	return t
 }
 
@@ -57,7 +66,10 @@ func (t TeamTable) SetWidth(w int) TeamTable {
 }
 
 func (t TeamTable) buildRows() ([][]string, map[int]int) {
-	rows := make([][]string, 0)
+	if t.rowBuf == nil {
+		t.rowBuf = &teamTableRowBuffer{}
+	}
+	rows := t.rowBuf.rows[:0]
 	teamRowIndex := make(map[int]int, len(t.teams))
 
 	for teamIdx, team := range t.teams {
@@ -115,6 +127,7 @@ func (t TeamTable) buildRows() ([][]string, map[int]int) {
 			}
 		}
 	}
+	t.rowBuf.rows = rows
 
 	return rows, teamRowIndex
 }
