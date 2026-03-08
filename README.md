@@ -20,7 +20,7 @@ Today Contrabass ships with:
 - A Cobra CLI with TUI, headless, and optional embedded web dashboard modes
 - A `WORKFLOW.md` parser with YAML front matter, Liquid prompt rendering, and `$ENV_VAR` interpolation
 - Issue tracker adapters for **Linear**, **GitHub Issues**, and a built-in **Internal Board** (local filesystem, no external service required)
-- Agent runners for **Codex app-server**, **OpenCode**, and **oh-my-opencode**
+- Agent runners for **Codex app-server**, **OpenCode**, **oh-my-opencode**, **OMX (oh-my-codex)**, and **OMC (oh-my-claudecode)**
 - Git-worktree-based workspace provisioning under `workspaces/<issue-id>`
 - Teams: multi-agent coordination with a local task board, phased pipeline (plan → exec → verify), and live TUI team table
 - An orchestrator with claim/release, timeout detection, stall detection, deterministic retry backoff, and state snapshots
@@ -36,7 +36,9 @@ Today Contrabass ships with:
 - A supported agent runtime:
   - `codex app-server`
   - `opencode serve`
-  - or `oh-my-opencode`
+  - `oh-my-opencode`
+  - `omx` (oh-my-codex team runtime)
+  - `omc` (oh-my-claudecode team runtime)
 - Tracker credentials for the backend you use:
   - Linear: `LINEAR_API_KEY`
   - GitHub: `GITHUB_TOKEN`
@@ -170,12 +172,48 @@ Examples:
 
 - `tracker.token: $GITHUB_TOKEN`
 - `opencode.password: $OPENCODE_SERVER_PASSWORD`
+- `omx.binary_path: $OMX_BINARY`
+- `omc.binary_path: $OMC_BINARY`
+
+### OMC / OMX workflow sections
+
+For team-runtime-backed runners, set `agent.type` to `omx` or `omc` and configure the corresponding section.
+
+```yaml
+agent:
+  type: omx
+omx:
+  binary_path: omx
+  team_spec: 2:executor
+  poll_interval_ms: 1500
+  startup_timeout_ms: 22000
+  ralph: true
+```
+
+```yaml
+agent:
+  type: omc
+omc:
+  binary_path: omc
+  team_spec: 2:claude
+  poll_interval_ms: 1200
+  startup_timeout_ms: 21000
+```
+
+Notes:
+
+- `binary_path` can point to the installed CLI wrapper, for example `omx` or `omc`.
+- `team_spec` is passed directly to the team runtime, such as `1:executor`, `2:executor`, or `2:claude`.
+- Contrabass writes the rendered task prompt into `.contrabass/runner/<runner>/...` inside the workspace and instructs the team runtime to execute from that file.
+- OMC/OMX team runners generally require the underlying toolchain prerequisites those CLIs expect, especially tmux-based team support.
 
 ### Example workflow files
 
 - [`testdata/workflow.demo.md`](testdata/workflow.demo.md) — demo Linear + Codex workflow
 - [`testdata/workflow.github.md`](testdata/workflow.github.md) — GitHub + OpenCode workflow
 - [`testdata/workflow.ohmyopencode.md`](testdata/workflow.ohmyopencode.md) — oh-my-opencode workflow
+- [`testdata/workflow.omx.md`](testdata/workflow.omx.md) — OMX workflow
+- [`testdata/workflow.omc.md`](testdata/workflow.omc.md) — OMC workflow
 - [`testdata/workflow.md`](testdata/workflow.md) — realistic Linear fixture
 
 ## Supported integrations
@@ -183,7 +221,7 @@ Examples:
 | Surface | Current support |
 |---|---|
 | Trackers | Linear, GitHub Issues, Internal Board |
-| Agent runners | Codex app-server, OpenCode, oh-my-opencode |
+| Agent runners | Codex app-server, OpenCode, oh-my-opencode, OMX, OMC |
 | Operator surfaces | Charm TUI, embedded web dashboard, headless mode |
 | Live config reload | Yes (`WORKFLOW.md` via `fsnotify`) |
 | State streaming | JSON snapshot API + SSE |
@@ -213,6 +251,14 @@ Examples:
 - **oh-my-opencode**
   - Wraps the `oh-my-opencode` agent binary
   - HTTP session creation with SSE event streaming
+- **OMX (oh-my-codex)**
+  - Launches `omx team ...` with a workspace-scoped task file
+  - Polls `omx team api get-summary` and `omx team api list-tasks` for status and results
+  - Shuts down the team with `omx team shutdown ... --force` (and `--ralph` when configured)
+- **OMC (oh-my-claudecode)**
+  - Launches `omc team ...` with a workspace-scoped task file
+  - Polls `omc team api get-summary` and `omc team api list-tasks` for status and results
+  - Shuts down the team with `omc team shutdown ... --force`
 
 ## Web dashboard and HTTP API (WIP)
 
