@@ -360,6 +360,10 @@ This builds cross-platform binaries (macOS/Linux, amd64/arm64) via [GoReleaser](
 publishes a GitHub Release with grouped changelogs, and updates the
 [Homebrew tap](https://github.com/junhoyeo/homebrew-contrabass).
 
+After GoReleaser publishes the release, [`scripts/generate-release-notes.ts`](scripts/generate-release-notes.ts)
+appends contributor attribution — each change is tagged with the author's `@username` and linked PR,
+and first-time contributors get a dedicated shout-out section.
+
 ## Notes for contributors
 
 For detailed contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
