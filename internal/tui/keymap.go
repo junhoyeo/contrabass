@@ -5,7 +5,23 @@ import (
 	"charm.land/bubbles/v2/key"
 )
 
-// KeyMap defines all keybindings for the TUI.
+// ViewMode tracks whether the TUI is in list overview or agent detail mode.
+type ViewMode int
+
+const (
+	ViewOverview ViewMode = iota
+	ViewDetail
+)
+
+// FocusedPanel tracks which table panel the cursor is in.
+type FocusedPanel int
+
+const (
+	PanelAgents FocusedPanel = iota
+	PanelTeam
+	PanelBackoff
+)
+
 type KeyMap struct {
 	Quit     key.Binding
 	Up       key.Binding
@@ -15,9 +31,11 @@ type KeyMap struct {
 	Home     key.Binding
 	End      key.Binding
 	Help     key.Binding
+	Enter    key.Binding
+	Back     key.Binding
+	Tab      key.Binding
 }
 
-// NewKeyMap returns a new KeyMap with default bindings.
 func NewKeyMap() KeyMap {
 	return KeyMap{
 		Quit: key.NewBinding(
@@ -26,11 +44,11 @@ func NewKeyMap() KeyMap {
 		),
 		Up: key.NewBinding(
 			key.WithKeys("up", "k"),
-			key.WithHelp("↑/k", "scroll up"),
+			key.WithHelp("↑/k", "up"),
 		),
 		Down: key.NewBinding(
 			key.WithKeys("down", "j"),
-			key.WithHelp("↓/j", "scroll down"),
+			key.WithHelp("↓/j", "down"),
 		),
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup"),
@@ -52,21 +70,31 @@ func NewKeyMap() KeyMap {
 			key.WithKeys("?"),
 			key.WithHelp("?", "toggle help"),
 		),
+		Enter: key.NewBinding(
+			key.WithKeys("enter"),
+			key.WithHelp("⏎", "view detail"),
+		),
+		Back: key.NewBinding(
+			key.WithKeys("esc"),
+			key.WithHelp("esc", "back"),
+		),
+		Tab: key.NewBinding(
+			key.WithKeys("tab"),
+			key.WithHelp("⇥", "next panel"),
+		),
 	}
 }
 
-// ShortHelp returns the short help for the keymap.
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Enter, k.Tab, k.Help, k.Quit}
 }
 
-// FullHelp returns the full help for the keymap.
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.PageUp, k.PageDown, k.Home, k.End},
+		{k.Enter, k.Back, k.Tab},
 		{k.Help, k.Quit},
 	}
 }
 
-// Compile-time interface check.
 var _ help.KeyMap = KeyMap{}

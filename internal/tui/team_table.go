@@ -30,13 +30,14 @@ type TeamWorkerRow struct {
 	Age         string
 }
 
-// TeamTable renders a static team status table using lipgloss.
 type TeamTable struct {
-	width   int
-	teams   []TeamRow
-	workers map[string][]TeamWorkerRow
-	spinner string
-	rowBuf  *teamTableRowBuffer
+	width    int
+	teams    []TeamRow
+	workers  map[string][]TeamWorkerRow
+	spinner  string
+	selected int
+	focused  bool
+	rowBuf   *teamTableRowBuffer
 }
 
 type teamTableRowBuffer struct {
@@ -60,9 +61,25 @@ func (t TeamTable) Update(teams []TeamRow, workers map[string][]TeamWorkerRow, s
 	return t
 }
 
-func (t TeamTable) SetWidth(w int) TeamTable {
-	t.width = w
-	return t
+func (t TeamTable) SetWidth(w int) TeamTable    { t.width = w; return t }
+func (t TeamTable) SetSelected(i int) TeamTable { t.selected = i; return t }
+func (t TeamTable) SetFocused(f bool) TeamTable { t.focused = f; return t }
+func (t TeamTable) TeamCount() int              { return len(t.teams) }
+func (t TeamTable) Selected() int               { return t.selected }
+
+func (t TeamTable) SelectedTeam() (TeamRow, bool) {
+	if t.selected < 0 || t.selected >= len(t.teams) {
+		return TeamRow{}, false
+	}
+	return t.teams[t.selected], true
+}
+
+func (t TeamTable) SelectedWorkers() []TeamWorkerRow {
+	team, ok := t.SelectedTeam()
+	if !ok {
+		return nil
+	}
+	return t.workers[team.TeamName]
 }
 
 func (t TeamTable) buildRows() ([][]string, map[int]int) {
@@ -161,25 +178,29 @@ func (t TeamTable) View() string {
 				return lipgloss.NewStyle().Bold(true).Faint(true).Padding(0, 1)
 			}
 
+			teamIdx, isTeamRow := teamRowIndex[row]
+			isSelected := t.focused && isTeamRow && teamIdx == t.selected
+
 			bg := "234"
 			if row%2 == 1 {
 				bg = "235"
 			}
+			if isSelected {
+				bg = "238"
+			}
 
 			style := lipgloss.NewStyle().Padding(0, 1).Background(lipgloss.Color(bg))
 
-			if teamIdx, isTeamRow := teamRowIndex[row]; isTeamRow {
-				// Team row styling
+			if isTeamRow {
 				team := t.teams[teamIdx]
-				phaseColor := teamPhaseColor(team.Phase)
-				style = style.Foreground(lipgloss.Color(phaseColor))
-				if isActiveTeamPhase(team.Phase) {
+				if isSelected {
+					style = style.Bold(true).Foreground(lipgloss.Color("255"))
+				} else if isActiveTeamPhase(team.Phase) {
 					style = style.Bold(true).Foreground(lipgloss.Color("255"))
 				} else {
 					style = style.Foreground(lipgloss.Color("250"))
 				}
 			} else {
-				// Worker row styling
 				style = style.Foreground(lipgloss.Color("250"))
 			}
 

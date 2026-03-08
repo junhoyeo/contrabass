@@ -20,26 +20,32 @@ import (
 const refreshInterval = time.Second
 
 type Model struct {
-	header    Header
-	table     Table
-	backoff   Backoff
-	teamTable TeamTable
-	viewport  viewport.Model
-	keys      KeyMap
-	spinner   spinner.Model
-	help      help.Model
+	header     Header
+	table      Table
+	backoff    Backoff
+	teamTable  TeamTable
+	detailView DetailView
+	viewport   viewport.Model
+	keys       KeyMap
+	spinner    spinner.Model
+	help       help.Model
 
 	width    int
 	height   int
 	quitting bool
 
+	viewMode     ViewMode
+	focusedPanel FocusedPanel
+
 	imageDirty     bool
 	agents         map[string]AgentRow
 	agentStartTime map[string]time.Time
+	agentEvents    map[string]*EventLog
 	backoffs       map[string]BackoffRow
 	backoffRetryAt map[string]time.Time
 	teams          map[string]TeamRow
 	teamWorkers    map[string][]TeamWorkerRow
+	teamEvents     map[string]*EventLog
 	stats          HeaderData
 	startTime      time.Time
 	unknownEvents  int
@@ -71,16 +77,19 @@ func NewModel() Model {
 		table:          NewTable(),
 		backoff:        NewBackoff(),
 		teamTable:      NewTeamTable(),
+		detailView:     NewDetailView(),
 		viewport:       vp,
 		keys:           NewKeyMap(),
 		spinner:        s,
 		help:           help.New(),
 		agents:         make(map[string]AgentRow),
 		agentStartTime: make(map[string]time.Time),
+		agentEvents:    make(map[string]*EventLog),
 		backoffs:       make(map[string]BackoffRow),
 		backoffRetryAt: make(map[string]time.Time),
 		teams:          make(map[string]TeamRow),
 		teamWorkers:    make(map[string][]TeamWorkerRow),
+		teamEvents:     make(map[string]*EventLog),
 		startTime:      now,
 		stats: HeaderData{
 			RefreshIn: 1,
@@ -111,14 +120,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Sequence(tea.Raw(cleanup), tea.Quit)
 			}
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.Back):
+			if m.viewMode == ViewDetail {
+				m.viewMode = ViewOverview
+				needsSync = true
+			}
+		case key.Matches(msg, m.keys.Enter):
+			if m.viewMode == ViewOverview {
+				m.viewMode = ViewDetail
+				needsSync = true
+			}
+		case key.Matches(msg, m.keys.Tab):
+			if m.viewMode == ViewOverview {
+				m = m.cyclePanel()
+				needsSync = true
+			}
+		case key.Matches(msg, m.keys.Up):
+			if m.viewMode == ViewOverview {
+				m = m.moveCursor(-1)
+				needsSync = true
+			} else {
+				m.viewport, cmd = m.viewport.Update(msg)
+			}
+		case key.Matches(msg, m.keys.Down):
+			if m.viewMode == ViewOverview {
+				m = m.moveCursor(1)
+				needsSync = true
+			} else {
+				m.viewport, cmd = m.viewport.Update(msg)
+			}
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 			headerH := lipgloss.Height(m.header.View())
 			helpH := lipgloss.Height(m.help.View(m.keys))
 			m.viewport.SetHeight(m.height - headerH - helpH)
 			needsSync = true
-		}
-		if !key.Matches(msg, m.keys.Help) {
+		default:
 			m.viewport, cmd = m.viewport.Update(msg)
 		}
 	case tea.MouseMsg:
@@ -180,6 +217,92 @@ func (m Model) View() tea.View {
 		m.help.View(m.keys),
 	)
 	return tea.NewView(rendered)
+}
+
+func (m Model) cyclePanel() Model {
+	panels := m.availablePanels()
+	if len(panels) <= 1 {
+		return m
+	}
+	for i, p := range panels {
+		if p == m.focusedPanel {
+			m.focusedPanel = panels[(i+1)%len(panels)]
+			return m
+		}
+	}
+	m.focusedPanel = panels[0]
+	return m
+}
+
+func (m Model) availablePanels() []FocusedPanel {
+	var panels []FocusedPanel
+	if len(m.agents) > 0 {
+		panels = append(panels, PanelAgents)
+	}
+	if len(m.teams) > 0 {
+		panels = append(panels, PanelTeam)
+	}
+	if len(m.backoffs) > 0 {
+		panels = append(panels, PanelBackoff)
+	}
+	if len(panels) == 0 {
+		panels = append(panels, PanelAgents)
+	}
+	return panels
+}
+
+func (m Model) moveCursor(delta int) Model {
+	switch m.focusedPanel {
+	case PanelAgents:
+		count := len(m.agentKeys)
+		if count == 0 {
+			return m
+		}
+		sel := m.table.Selected() + delta
+		if sel < 0 {
+			sel = 0
+		}
+		if sel >= count {
+			sel = count - 1
+		}
+		m.table = m.table.SetSelected(sel)
+	case PanelTeam:
+		count := len(m.teamKeys)
+		if count == 0 {
+			return m
+		}
+		sel := m.teamTable.Selected() + delta
+		if sel < 0 {
+			sel = 0
+		}
+		if sel >= count {
+			sel = count - 1
+		}
+		m.teamTable = m.teamTable.SetSelected(sel)
+	}
+	return m
+}
+
+func (m Model) selectedIssueID() string {
+	if m.focusedPanel != PanelAgents {
+		return ""
+	}
+	sel := m.table.Selected()
+	if sel < 0 || sel >= len(m.agentKeys) {
+		return ""
+	}
+	return m.agentKeys[sel]
+}
+
+func (m Model) selectedTeamName() string {
+	if m.focusedPanel != PanelTeam {
+		return ""
+	}
+	sel := m.teamTable.Selected()
+	if sel < 0 || sel >= len(m.teamKeys) {
+		return ""
+	}
+	return m.teamKeys[sel]
 }
 
 func StartEventBridge(ctx context.Context, p *tea.Program, events <-chan orchestrator.OrchestratorEvent) {
@@ -297,7 +420,9 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 			}
 			if _, exists := m.agents[event.IssueID]; !exists {
 				m.agentSortDirty = true
+				m.agentEvents[event.IssueID] = NewEventLog(defaultEventLogSize)
 			}
+			m.pushAgentEvent(event.IssueID, event.Timestamp, event.Type.String(), fmt.Sprintf("PID=%d attempt=%d", started.PID, started.Attempt))
 			m.agentStartTime[event.IssueID] = event.Timestamp
 			m.agents[event.IssueID] = AgentRow{
 				IssueID:   displayID,
@@ -321,6 +446,7 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 	case orchestrator.EventAgentFinished:
 		switch finished := event.Data.(type) {
 		case orchestrator.AgentFinished:
+			m.pushAgentEvent(event.IssueID, event.Timestamp, event.Type.String(), fmt.Sprintf("phase=%s tokens=%d/%d", finished.Phase, finished.TokensIn, finished.TokensOut))
 			if row, exists := m.agents[event.IssueID]; exists {
 				row.TokensIn = finished.TokensIn
 				row.TokensOut = finished.TokensOut
@@ -331,6 +457,7 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 			}
 			delete(m.agents, event.IssueID)
 			delete(m.agentStartTime, event.IssueID)
+			delete(m.agentEvents, event.IssueID)
 			m.agentSortDirty = true
 			m.agentRowsDirty = true
 		default:
@@ -342,6 +469,7 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 	case orchestrator.EventBackoffEnqueued:
 		switch backoff := event.Data.(type) {
 		case orchestrator.BackoffEnqueued:
+			m.pushAgentEvent(event.IssueID, event.Timestamp, event.Type.String(), fmt.Sprintf("attempt=%d error=%s", backoff.Attempt, backoff.Error))
 			if _, exists := m.backoffs[event.IssueID]; !exists {
 				m.backoffSortDirty = true
 			}
@@ -367,6 +495,7 @@ func (m Model) applyOrchestratorEvent(event orchestrator.OrchestratorEvent) Mode
 			_, hadBackoff := m.backoffs[event.IssueID]
 			delete(m.agents, event.IssueID)
 			delete(m.agentStartTime, event.IssueID)
+			delete(m.agentEvents, event.IssueID)
 			delete(m.backoffs, event.IssueID)
 			delete(m.backoffRetryAt, event.IssueID)
 			if hadAgent {
@@ -432,17 +561,55 @@ func (m Model) refreshDerivedFields(now time.Time) Model {
 
 func (m Model) syncTables() Model {
 	m.table = m.table.Update(m.sortedAgentRows(), m.spinner.View())
+	m.table = m.table.SetFocused(m.focusedPanel == PanelAgents && m.viewMode == ViewOverview)
 	m.backoff = m.backoff.Update(m.sortedBackoffRows())
 	m.teamTable = m.teamTable.Update(m.sortedTeamRows(), m.teamWorkers, m.spinner.View())
-	content := m.table.View()
-	if bv := m.backoff.View(); bv != "" {
-		content += "\n" + bv
+	m.teamTable = m.teamTable.SetFocused(m.focusedPanel == PanelTeam && m.viewMode == ViewOverview)
+	m.detailView = m.detailView.SetWidth(m.width)
+
+	if m.viewMode == ViewDetail {
+		m.viewport.SetContent(m.renderDetailContent())
+	} else {
+		content := m.table.View()
+		if bv := m.backoff.View(); bv != "" {
+			content += "\n" + bv
+		}
+		if tv := m.teamTable.View(); tv != "" {
+			content += "\n" + tv
+		}
+		m.viewport.SetContent(content)
 	}
-	if tv := m.teamTable.View(); tv != "" {
-		content += "\n" + tv
-	}
-	m.viewport.SetContent(content)
 	return m
+}
+
+func (m Model) renderDetailContent() string {
+	switch m.focusedPanel {
+	case PanelAgents:
+		issueID := m.selectedIssueID()
+		row, exists := m.agents[issueID]
+		if !exists {
+			return lipgloss.NewStyle().Faint(true).Render("  Agent no longer running")
+		}
+		var entries []EventLogEntry
+		if log, ok := m.agentEvents[issueID]; ok {
+			entries = log.Entries()
+		}
+		return m.detailView.RenderAgent(row, entries)
+	case PanelTeam:
+		teamName := m.selectedTeamName()
+		row, exists := m.teams[teamName]
+		if !exists {
+			return lipgloss.NewStyle().Faint(true).Render("  Team no longer running")
+		}
+		workers := m.teamWorkers[teamName]
+		var entries []EventLogEntry
+		if log, ok := m.teamEvents[teamName]; ok {
+			entries = log.Entries()
+		}
+		return m.detailView.RenderTeam(row, workers, entries)
+	default:
+		return lipgloss.NewStyle().Faint(true).Render("  No detail available")
+	}
 }
 
 func (m *Model) sortedAgentRows() []AgentRow {
@@ -541,7 +708,9 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 		maxWorkers, _ := intFromEventData(event.Data, "max_workers")
 		if _, exists := m.teams[event.TeamName]; !exists {
 			m.teamSortDirty = true
+			m.teamEvents[event.TeamName] = NewEventLog(defaultEventLogSize)
 		}
+		m.pushTeamEvent(event.TeamName, event.Timestamp, event.Type, fmt.Sprintf("workers=%d", maxWorkers))
 		m.teams[event.TeamName] = TeamRow{
 			TeamName:       event.TeamName,
 			BoardIssueID:   stringFromEventData(event.Data, "board_issue_id"),
@@ -561,6 +730,7 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 			if taskCount, ok := intFromEventData(event.Data, "task_count"); ok {
 				row.Tasks = taskCount
 			}
+			m.pushTeamEvent(event.TeamName, event.Timestamp, event.Type, fmt.Sprintf("tasks=%d", row.Tasks))
 			m.teams[event.TeamName] = row
 			m.teamRowsDirty = true
 		}
@@ -568,11 +738,13 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 		if row, exists := m.teams[event.TeamName]; exists {
 			if phase, ok := event.Data["phase"].(string); ok {
 				row.Phase = phase
+				m.pushTeamEvent(event.TeamName, event.Timestamp, event.Type, fmt.Sprintf("phase=%s", phase))
 				m.teams[event.TeamName] = row
 				m.teamRowsDirty = true
 			}
 		}
 	case "task_claimed":
+		m.pushTeamEvent(event.TeamName, event.Timestamp, event.Type, fmt.Sprintf("worker=%s task=%s", stringFromEventData(event.Data, "worker_id"), stringFromEventData(event.Data, "task_id")))
 		if workerID, ok := event.Data["worker_id"].(string); ok {
 			if taskID, ok := event.Data["task_id"].(string); ok {
 				workers := m.teamWorkers[event.TeamName]
@@ -601,6 +773,7 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 			}
 		}
 	case "task_completed":
+		m.pushTeamEvent(event.TeamName, event.Timestamp, event.Type, fmt.Sprintf("worker=%s task=%s", stringFromEventData(event.Data, "worker_id"), stringFromEventData(event.Data, "task_id")))
 		if row, exists := m.teams[event.TeamName]; exists {
 			row.CompletedTasks++
 			m.teams[event.TeamName] = row
@@ -609,6 +782,7 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 			m.teamRowsDirty = true
 		}
 	case "task_failed":
+		m.pushTeamEvent(event.TeamName, event.Timestamp, event.Type, fmt.Sprintf("worker=%s task=%s", stringFromEventData(event.Data, "worker_id"), stringFromEventData(event.Data, "task_id")))
 		if row, exists := m.teams[event.TeamName]; exists {
 			row.FailedTasks++
 			m.teams[event.TeamName] = row
@@ -617,6 +791,7 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 			m.teamRowsDirty = true
 		}
 	case "pipeline_completed":
+		m.pushTeamEvent(event.TeamName, event.Timestamp, event.Type, fmt.Sprintf("phase=%s", firstNonEmpty(stringFromEventData(event.Data, "phase"), "complete")))
 		if row, exists := m.teams[event.TeamName]; exists {
 			row.Phase = firstNonEmpty(stringFromEventData(event.Data, "phase"), "complete")
 			m.teams[event.TeamName] = row
@@ -627,6 +802,24 @@ func (m Model) applyTeamEvent(event types.TeamEvent) Model {
 	m.syncTeamStats()
 	m.header = m.header.Update(m.stats)
 	return m
+}
+
+func (m *Model) pushAgentEvent(issueID string, ts time.Time, eventType, detail string) {
+	log, ok := m.agentEvents[issueID]
+	if !ok {
+		log = NewEventLog(defaultEventLogSize)
+		m.agentEvents[issueID] = log
+	}
+	log.Push(EventLogEntry{Timestamp: ts, Type: eventType, Detail: detail})
+}
+
+func (m *Model) pushTeamEvent(teamName string, ts time.Time, eventType, detail string) {
+	log, ok := m.teamEvents[teamName]
+	if !ok {
+		log = NewEventLog(defaultEventLogSize)
+		m.teamEvents[teamName] = log
+	}
+	log.Push(EventLogEntry{Timestamp: ts, Type: eventType, Detail: detail})
 }
 
 func (m *Model) syncTeamStats() {
