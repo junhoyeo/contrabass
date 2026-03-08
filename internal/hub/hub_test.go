@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -91,29 +90,24 @@ func TestHub(t *testing.T) {
 				_, slowSub := h.Subscribe()
 				_, fastSub := h.Subscribe()
 
-				var wg sync.WaitGroup
-				wg.Add(1)
-				lastSeen := make(chan orchestrator.OrchestratorEvent, 1)
-				go func() {
-					defer wg.Done()
-					for event := range fastSub {
-						if event.IssueID == "last" {
-							lastSeen <- event
-							return
-						}
-					}
-				}()
-
 				for i := 0; i < defaultSubscriberBufferSize; i++ {
 					source <- testEvent("fill")
+				}
+
+				require.Eventually(t, func() bool {
+					return len(slowSub) == defaultSubscriberBufferSize
+				}, 5*time.Second, 10*time.Millisecond)
+
+				for len(fastSub) > 0 {
+					<-fastSub
 				}
 
 				source <- testEvent("last")
 
 				select {
-				case event := <-lastSeen:
+				case event := <-fastSub:
 					assert.Equal(t, "last", event.IssueID)
-				case <-time.After(10 * time.Second):
+				case <-time.After(5 * time.Second):
 					t.Fatal("timed out waiting for fast subscriber to receive event")
 				}
 
@@ -121,7 +115,6 @@ func TestHub(t *testing.T) {
 
 				cancel()
 				waitDone(t, done)
-				wg.Wait()
 			},
 		},
 		{

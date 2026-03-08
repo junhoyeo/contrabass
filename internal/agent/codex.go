@@ -360,6 +360,7 @@ func (r *CodexRunner) cleanupOnStartFailure(process *codexProcess) {
 		_ = process.cmd.Process.Kill()
 	}
 	_ = process.cmd.Wait()
+	<-process.stderrDone
 
 	r.mu.Lock()
 	if process.cmd.Process != nil {
