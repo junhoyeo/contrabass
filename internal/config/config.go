@@ -8,23 +8,31 @@ import (
 )
 
 const (
-	defaultMaxConcurrency     = 10
-	defaultPollIntervalMs     = 30_000
-	defaultMaxRetryBackoffMs  = 300_000
-	defaultAgentTimeoutMs     = 600_000
-	defaultStallTimeoutMs     = 120_000
-	defaultTrackerType        = "internal"
-	defaultBackoffStrategy    = "exponential"
-	defaultWorkspaceBaseDir   = "."
-	defaultBranchPrefix       = "symphony/"
-	defaultCodexBinaryPath    = "codex app-server"
-	defaultApprovalPolicy     = "auto-edit"
-	defaultSandbox            = "docker"
-	defaultAgentType          = "codex"
-	defaultOpenCodeBinaryPath = "opencode serve"
-	defaultGitHubEndpoint     = "https://api.github.com"
-	defaultLocalBoardDir      = ".contrabass/board"
-	defaultLocalIssuePrefix   = "CB"
+	defaultMaxConcurrency      = 10
+	defaultPollIntervalMs      = 30_000
+	defaultMaxRetryBackoffMs   = 300_000
+	defaultAgentTimeoutMs      = 600_000
+	defaultStallTimeoutMs      = 120_000
+	defaultTrackerType         = "internal"
+	defaultBackoffStrategy     = "exponential"
+	defaultWorkspaceBaseDir    = "."
+	defaultBranchPrefix        = "symphony/"
+	defaultCodexBinaryPath     = "codex app-server"
+	defaultApprovalPolicy      = "auto-edit"
+	defaultSandbox             = "docker"
+	defaultAgentType           = "codex"
+	defaultOpenCodeBinaryPath  = "opencode serve"
+	defaultOMXBinaryPath       = "omx"
+	defaultOMXTeamSpec         = "1:executor"
+	defaultOMXPollIntervalMs   = 1000
+	defaultOMXStartupTimeoutMs = 15000
+	defaultOMCBinaryPath       = "omc"
+	defaultOMCTeamSpec         = "1:claude"
+	defaultOMCPollIntervalMs   = 1000
+	defaultOMCStartupTimeoutMs = 15000
+	defaultGitHubEndpoint      = "https://api.github.com"
+	defaultLocalBoardDir       = ".contrabass/board"
+	defaultLocalIssuePrefix    = "CB"
 
 	defaultOhMyOpenCodePluginVersion = "oh-my-opencode"
 	defaultOhMyOpenCodeAgentModel    = "anthropic/claude-sonnet-4-6"
@@ -62,6 +70,8 @@ type WorkflowConfig struct {
 	Codex                CodexConfig        `yaml:"codex"`
 	Agent                AgentConfig        `yaml:"agent"`
 	OpenCode             OpenCodeConfig     `yaml:"opencode"`
+	OMX                  OMXConfig          `yaml:"omx"`
+	OMC                  OMCConfig          `yaml:"omc"`
 	OhMyOpenCode         OhMyOpenCodeConfig `yaml:"oh_my_opencode"`
 	Team                 TeamSectionConfig  `yaml:"team"`
 	PromptTemplate       string             `yaml:"-"`
@@ -116,6 +126,21 @@ type OpenCodeConfig struct {
 	Port       int    `yaml:"port"`
 	Password   string `yaml:"password"`
 	Username   string `yaml:"username"`
+}
+
+type OMXConfig struct {
+	BinaryPath       string `yaml:"binary_path"`
+	TeamSpec         string `yaml:"team_spec"`
+	PollIntervalMs   int    `yaml:"poll_interval_ms"`
+	StartupTimeoutMs int    `yaml:"startup_timeout_ms"`
+	Ralph            bool   `yaml:"ralph"`
+}
+
+type OMCConfig struct {
+	BinaryPath       string `yaml:"binary_path"`
+	TeamSpec         string `yaml:"team_spec"`
+	PollIntervalMs   int    `yaml:"poll_interval_ms"`
+	StartupTimeoutMs int    `yaml:"startup_timeout_ms"`
 }
 
 // TeamSectionConfig holds settings for multi-agent team coordination.
@@ -333,6 +358,69 @@ func (c *WorkflowConfig) OpenCodeUsername() string {
 		return ""
 	}
 	return c.OpenCode.Username
+}
+
+func (c *WorkflowConfig) OMXBinaryPath() string {
+	if c == nil || c.OMX.BinaryPath == "" {
+		return defaultOMXBinaryPath
+	}
+	return c.OMX.BinaryPath
+}
+
+func (c *WorkflowConfig) OMXTeamSpec() string {
+	if c == nil || c.OMX.TeamSpec == "" {
+		return defaultOMXTeamSpec
+	}
+	return c.OMX.TeamSpec
+}
+
+func (c *WorkflowConfig) OMXPollIntervalMs() int {
+	if c == nil || c.OMX.PollIntervalMs <= 0 {
+		return defaultOMXPollIntervalMs
+	}
+	return c.OMX.PollIntervalMs
+}
+
+func (c *WorkflowConfig) OMXStartupTimeoutMs() int {
+	if c == nil || c.OMX.StartupTimeoutMs <= 0 {
+		return defaultOMXStartupTimeoutMs
+	}
+	return c.OMX.StartupTimeoutMs
+}
+
+func (c *WorkflowConfig) OMXRalph() bool {
+	if c == nil {
+		return false
+	}
+	return c.OMX.Ralph
+}
+
+func (c *WorkflowConfig) OMCBinaryPath() string {
+	if c == nil || c.OMC.BinaryPath == "" {
+		return defaultOMCBinaryPath
+	}
+	return c.OMC.BinaryPath
+}
+
+func (c *WorkflowConfig) OMCTeamSpec() string {
+	if c == nil || c.OMC.TeamSpec == "" {
+		return defaultOMCTeamSpec
+	}
+	return c.OMC.TeamSpec
+}
+
+func (c *WorkflowConfig) OMCPollIntervalMs() int {
+	if c == nil || c.OMC.PollIntervalMs <= 0 {
+		return defaultOMCPollIntervalMs
+	}
+	return c.OMC.PollIntervalMs
+}
+
+func (c *WorkflowConfig) OMCStartupTimeoutMs() int {
+	if c == nil || c.OMC.StartupTimeoutMs <= 0 {
+		return defaultOMCStartupTimeoutMs
+	}
+	return c.OMC.StartupTimeoutMs
 }
 
 func (c *WorkflowConfig) OhMyOpenCodePluginVersion() string {

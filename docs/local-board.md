@@ -116,7 +116,10 @@ team runtime.
 
 When the workflow resolves to the internal tracker, the default
 `contrabass --config WORKFLOW.md` path now uses the board/team runtime instead
-of the legacy single-agent orchestrator path. That means the default root app:
+of the legacy single-agent orchestrator path. When `agent.type` is `omx` or `omc`,
+`contrabass team run --issue ...` uses the corresponding local team CLI runner
+instead of the Codex/OpenCode-style single-session runtimes. That means the
+default root app:
 
 - polls the internal board for runnable tickets
 - dispatches them into `contrabass team` execution automatically

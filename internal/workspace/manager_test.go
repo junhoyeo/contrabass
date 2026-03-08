@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/junhoyeo/contrabass/internal/types"
 	"github.com/stretchr/testify/assert"
@@ -423,4 +424,7 @@ func writeFakeGit(t *testing.T, path, content string) {
 	require.NoError(t, err)
 	require.NoError(t, f.Sync())
 	require.NoError(t, f.Close())
+	// Brief pause to allow the kernel to finish releasing the file after
+	// close+sync — prevents sporadic ETXTBSY on Linux CI runners.
+	time.Sleep(50 * time.Millisecond)
 }
