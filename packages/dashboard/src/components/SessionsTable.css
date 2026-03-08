@@ -2,7 +2,7 @@
   width: 100%;
   overflow-x: auto;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-secondary);
 }
 
@@ -11,6 +11,7 @@
   min-width: 980px;
   border-collapse: collapse;
   font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .sessions-table th,
@@ -29,6 +30,7 @@
 
 .sessions-table tbody tr {
   background: var(--bg-secondary);
+  transition: background-color var(--duration-fast) var(--ease-out-quart);
 }
 
 .sessions-table tbody tr:hover {
@@ -42,6 +44,7 @@
 .sessions-table__mono {
   font-family: var(--font-mono);
   font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .sessions-table__last-event {

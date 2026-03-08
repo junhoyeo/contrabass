@@ -12,9 +12,10 @@
 │ │                    │ │ Refresh in 1s                                                     │ │    
 │ └────────────────────┘ └───────────────────────────────────────────────────────────────────┘ │    
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯    
+  AGENTS                                                                                            
                ID          STAGE       PID         AGE         TOKENS     SESSION      EVENT        
   ──────────────────────────────────────────────────────────────────────────────────────────────────
-   ●           ISSUE-1     Init             12345       2m30s        0/0  sess-abc123  session init 
+   ▶           ISSUE-1     Init             12345       2m30s        0/0  sess-abc123  session init 
                                                                                                     
                                                                                                     
                                                                                                     
@@ -36,5 +37,4 @@
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                                    
-↑/k scroll up • ↓/j scroll down • ? toggle help • q quit                                            
+↑/k up • ↓/j down • ⏎ view detail • ⇥ next panel • ? toggle help • q quit                           

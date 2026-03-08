@@ -20,7 +20,7 @@ func TestHub(t *testing.T) {
 			name: "single_subscriber_receives_events",
 			run: func(t *testing.T) {
 				source := make(chan orchestrator.OrchestratorEvent, 1)
-				h := NewHub(source)
+				h := NewHub[orchestrator.OrchestratorEvent](source)
 
 				ctx, cancel := context.WithCancel(context.Background())
 				t.Cleanup(cancel)
@@ -47,7 +47,7 @@ func TestHub(t *testing.T) {
 			name: "multiple_subscribers_receive_same_event",
 			run: func(t *testing.T) {
 				source := make(chan orchestrator.OrchestratorEvent, 1)
-				h := NewHub(source)
+				h := NewHub[orchestrator.OrchestratorEvent](source)
 
 				ctx, cancel := context.WithCancel(context.Background())
 				t.Cleanup(cancel)
@@ -77,7 +77,7 @@ func TestHub(t *testing.T) {
 			name: "slow_subscriber_does_not_block_other_subscribers",
 			run: func(t *testing.T) {
 				source := make(chan orchestrator.OrchestratorEvent, defaultSubscriberBufferSize+16)
-				h := NewHub(source)
+				h := NewHub[orchestrator.OrchestratorEvent](source)
 
 				ctx, cancel := context.WithCancel(context.Background())
 				t.Cleanup(cancel)
@@ -128,7 +128,7 @@ func TestHub(t *testing.T) {
 			name: "unsubscribe_removes_subscriber_and_closes_channel",
 			run: func(t *testing.T) {
 				source := make(chan orchestrator.OrchestratorEvent)
-				h := NewHub(source)
+				h := NewHub[orchestrator.OrchestratorEvent](source)
 
 				id, sub := h.Subscribe()
 				require.Equal(t, 1, h.SubscriberCount())
@@ -144,7 +144,7 @@ func TestHub(t *testing.T) {
 			name: "context_cancellation_closes_all_subscribers",
 			run: func(t *testing.T) {
 				source := make(chan orchestrator.OrchestratorEvent)
-				h := NewHub(source)
+				h := NewHub[orchestrator.OrchestratorEvent](source)
 
 				_, sub1 := h.Subscribe()
 				_, sub2 := h.Subscribe()
@@ -170,7 +170,7 @@ func TestHub(t *testing.T) {
 			name: "subscriber_count_tracks_add_and_remove",
 			run: func(t *testing.T) {
 				source := make(chan orchestrator.OrchestratorEvent)
-				h := NewHub(source)
+				h := NewHub[orchestrator.OrchestratorEvent](source)
 
 				id1, _ := h.Subscribe()
 				id2, _ := h.Subscribe()

@@ -37,4 +37,4 @@
                                                                                                     
                                                                                                     
                                                                                                     
-↑/k scroll up • ↓/j scroll down • ? toggle help • q quit                                            
+↑/k up • ↓/j down • ⏎ view detail • ⇥ next panel • ? toggle help • q quit                           

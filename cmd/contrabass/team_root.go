@@ -5,17 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"net"
 	"os"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/log"
 
+	contrabass "github.com/junhoyeo/contrabass"
 	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/hub"
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
 	"github.com/junhoyeo/contrabass/internal/tracker"
 	"github.com/junhoyeo/contrabass/internal/tui"
 	"github.com/junhoyeo/contrabass/internal/types"
+	"github.com/junhoyeo/contrabass/internal/web"
 )
 
 const teamEventBufferSize = 256
@@ -24,6 +29,7 @@ var (
 	startTUITeamEventBridge = tui.StartTeamEventBridge
 	dispatchRootBoardIssues = dispatchBoardIssues
 	runRootTeamIssue        = runTeamWithHooks
+	startTeamWebServer      = runTeamExecutionWebServer
 )
 
 func runTeamExecutionApp(
@@ -33,9 +39,16 @@ func runTeamExecutionApp(
 	logger *log.Logger,
 	noTUI bool,
 	dryRun bool,
+	port int,
 ) error {
 	if watcher == nil {
 		return errors.New("config watcher is required for team execution")
+	}
+
+	if port > 0 {
+		if err := startTeamWebServer(ctx, logger, port); err != nil {
+			return err
+		}
 	}
 
 	if dryRun {
@@ -54,6 +67,33 @@ func runTeamExecutionApp(
 	})
 }
 
+func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int) error {
+	webEvents := make(chan web.WebEvent, 256)
+	h := hub.NewHub(webEvents)
+	go h.Run(ctx)
+
+	dashboardFS, err := fs.Sub(contrabass.DashboardDistFS, "packages/dashboard/dist")
+	if err != nil {
+		return fmt.Errorf("sub dashboard dist fs: %w", err)
+	}
+
+	provider := web.NewTeamSnapshotProvider()
+	srv := web.NewServer(fmt.Sprintf("localhost:%d", port), provider, h, dashboardFS)
+
+	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		return fmt.Errorf("listen web dashboard: %w", err)
+	}
+
+	go func() {
+		if serveErr := srv.Serve(ctx, listener); serveErr != nil && logger != nil {
+			logger.Error("web server error", "err", serveErr)
+		}
+	}()
+
+	fmt.Fprintf(os.Stderr, "Web dashboard available at http://localhost:%d\n", port)
+	return nil
+}
 func runTeamExecutionLoop(
 	ctx context.Context,
 	cfgPath string,

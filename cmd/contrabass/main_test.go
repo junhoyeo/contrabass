@@ -372,12 +372,14 @@ Prompt.
 		logger *log.Logger,
 		noTUI bool,
 		dryRun bool,
+		port int,
 	) error {
 		called = true
 		require.NotNil(t, watcher)
 		assert.Equal(t, cfgPath, gotCfgPath)
 		assert.True(t, noTUI)
 		assert.False(t, dryRun)
+		assert.Equal(t, 0, port)
 		return nil
 	}
 
@@ -408,6 +410,7 @@ Prompt.
 		*log.Logger,
 		bool,
 		bool,
+		int,
 	) error {
 		t.Fatal("team execution path should not be called when execution_mode=single")
 		return nil

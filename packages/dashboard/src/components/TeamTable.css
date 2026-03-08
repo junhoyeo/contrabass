@@ -1,0 +1,112 @@
+.team-table__section {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.team-table__header {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.team-table__name {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.team-table__config {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.team-table__wrapper {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+
+.team-table {
+  width: 100%;
+  min-width: 540px;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.team-table th,
+.team-table td {
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.team-table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.team-table tbody tr {
+  background: var(--bg-secondary);
+  transition: background-color var(--duration-fast) var(--ease-out-quart);
+}
+
+.team-table tbody tr:hover {
+  background: var(--bg-tertiary);
+}
+
+.team-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.team-table__mono {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.team-table__phase-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  padding: 0.1rem 0.42rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  transition: color var(--duration-fast) var(--ease-out-quart);
+}
+
+.team-table__phase-badge--plan {
+  color: var(--accent-blue);
+}
+
+.team-table__phase-badge--exec {
+  color: color-mix(in srgb, var(--accent-blue) 40%, var(--accent-red) 60%);
+}
+
+.team-table__phase-badge--verify {
+  color: var(--accent-green);
+}
+
+.team-table__phase-badge--fix {
+  color: var(--accent-yellow);
+}
+
+.team-table__phase-badge--failed {
+  color: var(--accent-red);
+}
+
+.team-table__phase-badge--unknown {
+  color: var(--text-secondary);
+}
+
+.team-table__empty {
+  color: var(--text-secondary);
+  padding: 0.9rem 0.1rem;
+  font-size: 0.9rem;
+}

@@ -12,9 +12,10 @@
 │ │                    │ │ Refresh in 1s                                                     │ │    
 │ └────────────────────┘ └───────────────────────────────────────────────────────────────────┘ │    
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯    
+  AGENTS                                                                                            
                ID          STAGE       PID         AGE         TOKENS     SESSION      EVENT        
   ──────────────────────────────────────────────────────────────────────────────────────────────────
-   ●           ISSUE-1     Init             20001       3m15s        0/0  sess-mix111  session init 
+   ▶           ISSUE-1     Init             20001       3m15s        0/0  sess-mix111  session init 
    ●           ISSUE-2     Init             20002       3m10s        0/0  sess-mix222  session init 
   ↻ ISSUE-3  attempt 2  retry in 0s  error: context deadline exceeded                               
                                                                                                     
@@ -36,5 +37,4 @@
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                                    
-↑/k scroll up • ↓/j scroll down • ? toggle help • q quit                                            
+↑/k up • ↓/j down • ⏎ view detail • ⇥ next panel • ? toggle help • q quit                           

@@ -24,11 +24,12 @@ type AgentRow struct {
 	Phase     types.RunPhase
 }
 
-// Table renders a static agent status table using lipgloss.
 type Table struct {
 	width       int
 	rows        []AgentRow
 	spinnerView string
+	selected    int
+	focused     bool
 	rowBuf      *tableRowBuffer
 }
 
@@ -48,7 +49,19 @@ func (t Table) Update(rows []AgentRow, spinnerView string) Table {
 	}
 	return t
 }
-func (t Table) SetWidth(w int) Table { t.width = w; return t }
+
+func (t Table) SetWidth(w int) Table    { t.width = w; return t }
+func (t Table) SetSelected(i int) Table { t.selected = i; return t }
+func (t Table) SetFocused(f bool) Table { t.focused = f; return t }
+func (t Table) RowCount() int           { return len(t.rows) }
+func (t Table) Selected() int           { return t.selected }
+
+func (t Table) SelectedRow() (AgentRow, bool) {
+	if t.selected < 0 || t.selected >= len(t.rows) {
+		return AgentRow{}, false
+	}
+	return t.rows[t.selected], true
+}
 
 func (t Table) View() string {
 	if len(t.rows) == 0 {
@@ -61,9 +74,12 @@ func (t Table) View() string {
 	for i, r := range t.rows {
 		tok := fmt.Sprintf("%s/%s", formatTokensShort(r.TokensIn), formatTokensShort(r.TokensOut))
 		sess := truncateSessionID(r.SessionID, 14)
-		_ = i
+		glyph := statusGlyph(r.Phase, t.spinnerView)
+		if t.focused && i == t.selected {
+			glyph = "▶"
+		}
 		rows = append(rows, []string{
-			statusGlyph(r.Phase, t.spinnerView),
+			glyph,
 			displayIssueID(r.IssueID),
 			compactStage(r.Stage),
 			fmt.Sprintf("%d", r.PID),
@@ -93,12 +109,20 @@ func (t Table) View() string {
 				return lipgloss.NewStyle().Bold(true).Faint(true).Padding(0, 1)
 			}
 			phase := t.rows[row].Phase
+			isSelected := t.focused && row == t.selected
+
 			bg := "234"
 			if row%2 == 1 {
 				bg = "235"
 			}
+			if isSelected {
+				bg = "238"
+			}
+
 			style := lipgloss.NewStyle().Padding(0, 1).Background(lipgloss.Color(bg))
-			if isActivePhase(phase) {
+			if isSelected {
+				style = style.Bold(true).Foreground(lipgloss.Color("255"))
+			} else if isActivePhase(phase) {
 				style = style.Bold(true).Foreground(lipgloss.Color("255"))
 			} else {
 				style = style.Foreground(lipgloss.Color("250"))
@@ -106,6 +130,9 @@ func (t Table) View() string {
 
 			switch col {
 			case 0:
+				if isSelected {
+					return style.Foreground(lipgloss.Color("42"))
+				}
 				return style.Foreground(lipgloss.Color(phaseColor(phase)))
 			case 3, 4, 5:
 				return style.Align(lipgloss.Right)
@@ -118,7 +145,13 @@ func (t Table) View() string {
 		tbl.Width(t.width - 2)
 	}
 
-	return lipgloss.NewStyle().PaddingLeft(2).Render(tbl.String())
+	title := "  AGENTS"
+	if t.focused {
+		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42")).Render(title)
+	} else {
+		title = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("240")).Render(title)
+	}
+	return title + "\n" + lipgloss.NewStyle().PaddingLeft(2).Render(tbl.String())
 }
 
 func isActivePhase(phase types.RunPhase) bool {

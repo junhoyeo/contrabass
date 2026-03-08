@@ -23,7 +23,7 @@ describe('MetricCards', () => {
       PollCount: 42,
     }
 
-    render(<MetricCards stats={stats} backoffCount={2} runtimeSeconds={125} />)
+    render(<MetricCards stats={stats} backoffCount={2} />)
 
     expectInDocument(screen.getByText('Running'))
     expectInDocument(screen.getByText('3/5'))
@@ -32,7 +32,5 @@ describe('MetricCards', () => {
     expectInDocument(screen.getByText('Total Tokens'))
     expectInDocument(screen.getByText('2.0K'))
     expectInDocument(screen.getByText('1.6K in / 400 out'))
-    expectInDocument(screen.getByText('Runtime'))
-    expectInDocument(screen.getByText('2m 5s'))
   })
 })

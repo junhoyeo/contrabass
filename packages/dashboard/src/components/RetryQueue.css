@@ -1,13 +1,22 @@
 .retry-queue {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 
 .retry-queue__table {
   width: 100%;
   border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.retry-queue__table tbody tr {
+  transition: background-color var(--duration-fast) var(--ease-out-quart);
+}
+
+.retry-queue__table tbody tr:hover {
+  background: var(--bg-tertiary);
 }
 
 .retry-queue__table th,

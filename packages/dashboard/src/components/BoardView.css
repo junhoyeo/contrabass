@@ -1,0 +1,217 @@
+.board-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.board-view__create {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: var(--space-sm);
+}
+
+.board-view__input {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  transition: outline-color var(--duration-fast) var(--ease-out-quart), border-color var(--duration-fast) var(--ease-out-quart);
+}
+
+.board-view__input::placeholder {
+  color: var(--text-secondary);
+}
+
+.board-view__input:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.board-view__input--compact {
+  padding: 0.35rem 0.5rem;
+}
+
+.board-view__button {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  padding: 0.42rem 0.66rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out-quart), border-color var(--duration-fast) var(--ease-out-quart);
+}
+
+.board-view__button:hover:enabled {
+  background: var(--accent-blue-tint);
+  border-color: var(--accent-blue);
+}
+
+.board-view__button:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+.board-view__button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.board-view__button--small {
+  padding: 0.2rem 0.45rem;
+  font-size: 0.72rem;
+}
+
+.board-view__button--ghost {
+  background: transparent;
+}
+
+.board-view__button--active {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.board-view__error {
+  margin: 0;
+  color: var(--accent-red);
+  font-size: 0.82rem;
+}
+
+.board-view__empty {
+  color: var(--text-secondary);
+  padding: 0.9rem 0.1rem;
+  font-size: 0.9rem;
+}
+
+.board-view__wrapper {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+
+.board-view__table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.board-view__table th,
+.board-view__table td {
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+}
+
+.board-view__table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.board-view__table tbody tr {
+  background: var(--bg-secondary);
+  transition: background-color var(--duration-fast) var(--ease-out-quart);
+}
+
+.board-view__table tbody tr:hover {
+  background: var(--bg-tertiary);
+}
+
+.board-view__table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.board-view__mono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.board-view__title {
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  padding: 0;
+  text-align: left;
+  font-size: 0.86rem;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out-quart);
+}
+
+.board-view__title:hover {
+  color: var(--accent-blue);
+}
+
+.board-view__title:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+.board-view__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 220px;
+}
+
+.board-view__actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.board-view__state {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.board-view__state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.board-view__state-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 0.1rem 0.48rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: lowercase;
+}
+
+.board-view__state-badge--open {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-tint);
+}
+
+.board-view__state-badge--in-progress {
+  color: var(--accent-yellow);
+  border-color: var(--accent-yellow);
+  background: var(--accent-yellow-tint);
+}
+
+.board-view__state-badge--done {
+  color: var(--accent-green);
+  border-color: var(--accent-green);
+  background: var(--accent-green-tint);
+}
+
+@media (max-width: 900px) {
+  .board-view__create {
+    grid-template-columns: 1fr;
+  }
+}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/charmbracelet/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -83,6 +84,49 @@ Prompt.
 	default:
 		t.Fatal("expected forwarded team event")
 	}
+}
+
+func TestTeamExecutionAppPort(t *testing.T) {
+	boardDir := filepath.Join(t.TempDir(), "board")
+	cfgPath := writeRootWorkflowConfig(t, fmt.Sprintf(`---
+model: openai/gpt-5-codex
+project_url: https://linear.app/example/project/internal
+tracker:
+  type: internal
+  board_dir: %q
+---
+Prompt.
+`, boardDir))
+
+	watcher, err := config.NewWatcher(cfgPath)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = watcher.Stop()
+	})
+
+	localTracker := tracker.NewLocalTracker(tracker.LocalConfig{
+		BoardDir:    boardDir,
+		IssuePrefix: "CB",
+		Actor:       "test-bot",
+	})
+	_, err = localTracker.InitBoard(context.Background())
+	require.NoError(t, err)
+
+	originalStartTeamWebServer := startTeamWebServer
+	t.Cleanup(func() {
+		startTeamWebServer = originalStartTeamWebServer
+	})
+
+	called := false
+	startTeamWebServer = func(_ context.Context, _ *log.Logger, port int) error {
+		called = true
+		assert.Equal(t, 43111, port)
+		return nil
+	}
+
+	err = runTeamExecutionApp(context.Background(), cfgPath, watcher, nil, true, true, 43111)
+	require.NoError(t, err)
+	assert.True(t, called)
 }
 
 func TestValidateTeamExecutionConfigRejectsExternalTrackers(t *testing.T) {

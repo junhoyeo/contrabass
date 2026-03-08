@@ -65,12 +65,13 @@ func TestHandleSSEStreamsHubEvents(t *testing.T) {
 
 	_ = readSSEFrame(t, reader)
 
-	event := orchestrator.OrchestratorEvent{
+	orchEvent := orchestrator.OrchestratorEvent{
 		Type:      orchestrator.EventStatusUpdate,
 		IssueID:   "issue-42",
 		Data:      orchestrator.StatusUpdate{BackoffQueue: 3},
 		Timestamp: time.Now().UTC(),
 	}
+	event := NewOrchestratorWebEvent(orchEvent)
 	source <- event
 
 	frame := readSSEFrame(t, reader)
@@ -79,13 +80,13 @@ func TestHandleSSEStreamsHubEvents(t *testing.T) {
 	assert.Contains(t, frame, "retry: 1000")
 
 	data := mustSSEData(t, frame)
-	var got struct {
-		Type    orchestrator.EventType `json:"Type"`
-		IssueID string                 `json:"IssueID"`
-	}
+	var got WebEvent
 	require.NoError(t, json.Unmarshal([]byte(data), &got))
+	assert.Equal(t, WebEventOrchestrator, got.Kind)
 	assert.Equal(t, event.Type, got.Type)
-	assert.Equal(t, event.IssueID, got.IssueID)
+	payload, ok := got.Payload.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, orchEvent.IssueID, payload["IssueID"])
 }
 
 func TestHandleSSESkipsStaleBufferedEventsAfterSnapshot(t *testing.T) {
@@ -102,20 +103,20 @@ func TestHandleSSESkipsStaleBufferedEventsAfterSnapshot(t *testing.T) {
 
 	_ = readSSEFrame(t, reader)
 
-	stale := orchestrator.OrchestratorEvent{
+	stale := NewOrchestratorWebEvent(orchestrator.OrchestratorEvent{
 		Type:      orchestrator.EventStatusUpdate,
 		IssueID:   "issue-stale",
 		Data:      orchestrator.StatusUpdate{BackoffQueue: 1},
 		Timestamp: now.Add(-time.Second),
-	}
+	})
 	source <- stale
 
-	fresh := orchestrator.OrchestratorEvent{
+	fresh := NewOrchestratorWebEvent(orchestrator.OrchestratorEvent{
 		Type:      orchestrator.EventStatusUpdate,
 		IssueID:   "issue-fresh",
 		Data:      orchestrator.StatusUpdate{BackoffQueue: 2},
 		Timestamp: now.Add(time.Second),
-	}
+	})
 	source <- fresh
 
 	frame := readSSEFrame(t, reader)
@@ -123,11 +124,11 @@ func TestHandleSSESkipsStaleBufferedEventsAfterSnapshot(t *testing.T) {
 	assert.Contains(t, frame, "id: 2")
 
 	data := mustSSEData(t, frame)
-	var got struct {
-		IssueID string `json:"IssueID"`
-	}
+	var got WebEvent
 	require.NoError(t, json.Unmarshal([]byte(data), &got))
-	assert.Equal(t, fresh.IssueID, got.IssueID)
+	payload, ok := got.Payload.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "issue-fresh", payload["IssueID"])
 }
 
 func TestHandleSSEUnsubscribesOnClientDisconnect(t *testing.T) {
@@ -150,7 +151,7 @@ func TestHandleSSEUnsubscribesOnClientDisconnect(t *testing.T) {
 }
 
 func TestHandleSSEReturns500WhenFlusherUnsupported(t *testing.T) {
-	s := &Server{snapshotProvider: fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{}}, hub: hub.NewHub(make(chan orchestrator.OrchestratorEvent)), dashboardFS: nil}
+	s := &Server{snapshotProvider: fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{}}, hub: hub.NewHub(make(chan WebEvent)), dashboardFS: nil}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
 	w := &nonFlusherResponseWriter{header: make(http.Header)}
 
@@ -208,10 +209,13 @@ func TestShouldSkipStaleEvent(t *testing.T) {
 	}
 }
 
-func newSSETestServer(t *testing.T, provider fakeSnapshotProvider) (*Server, chan orchestrator.OrchestratorEvent, *hub.Hub, func()) {
+func newSSETestServer(
+	t *testing.T,
+	provider fakeSnapshotProvider,
+) (*Server, chan WebEvent, *hub.Hub[WebEvent], func()) {
 	t.Helper()
 
-	source := make(chan orchestrator.OrchestratorEvent, 1)
+	source := make(chan WebEvent, 1)
 	h := hub.NewHub(source)
 	ctx, cancel := context.WithCancel(context.Background())
 	go h.Run(ctx)

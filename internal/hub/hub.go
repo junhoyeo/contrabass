@@ -3,40 +3,38 @@ package hub
 import (
 	"context"
 	"sync"
-
-	"github.com/junhoyeo/contrabass/internal/orchestrator"
 )
 
 const defaultSubscriberBufferSize = 256
 
-type Hub struct {
+type Hub[T any] struct {
 	mu          sync.RWMutex
-	subscribers map[int]chan orchestrator.OrchestratorEvent
+	subscribers map[int]chan T
 	nextID      int
-	source      <-chan orchestrator.OrchestratorEvent
+	source      <-chan T
 }
 
-func NewHub(source <-chan orchestrator.OrchestratorEvent) *Hub {
-	return &Hub{
-		subscribers: make(map[int]chan orchestrator.OrchestratorEvent),
+func NewHub[T any](source <-chan T) *Hub[T] {
+	return &Hub[T]{
+		subscribers: make(map[int]chan T),
 		source:      source,
 	}
 }
 
-func (h *Hub) Subscribe() (int, <-chan orchestrator.OrchestratorEvent) {
+func (h *Hub[T]) Subscribe() (int, <-chan T) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	id := h.nextID
 	h.nextID++
 
-	ch := make(chan orchestrator.OrchestratorEvent, defaultSubscriberBufferSize)
+	ch := make(chan T, defaultSubscriberBufferSize)
 	h.subscribers[id] = ch
 
 	return id, ch
 }
 
-func (h *Hub) Unsubscribe(id int) {
+func (h *Hub[T]) Unsubscribe(id int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -49,14 +47,14 @@ func (h *Hub) Unsubscribe(id int) {
 	close(ch)
 }
 
-func (h *Hub) SubscriberCount() int {
+func (h *Hub[T]) SubscriberCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	return len(h.subscribers)
 }
 
-func (h *Hub) Run(ctx context.Context) {
+func (h *Hub[T]) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -85,7 +83,7 @@ func (h *Hub) Run(ctx context.Context) {
 	}
 }
 
-func (h *Hub) closeAllSubscribersLocked() {
+func (h *Hub[T]) closeAllSubscribersLocked() {
 	for id, sub := range h.subscribers {
 		close(sub)
 		delete(h.subscribers, id)

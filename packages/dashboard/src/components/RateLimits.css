@@ -1,15 +1,20 @@
 .rate-limits {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 0.75rem;
+  gap: var(--space-md);
 }
 
 .rate-limits__item {
   margin: 0;
-  padding: 0.75rem;
+  padding: var(--space-md);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-secondary);
+  transition: border-color var(--duration-fast) var(--ease-out-quart);
+}
+
+.rate-limits__item:hover {
+  border-color: oklch(38% 0.02 250);
 }
 
 .rate-limits__row {
@@ -29,6 +34,7 @@
   margin: 0;
   color: var(--text-primary);
   font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .rate-limits__mono {
@@ -37,7 +43,7 @@
 
 .rate-limits--empty {
   border: 1px dashed var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   padding: 1rem;
   background: var(--bg-secondary);
 }

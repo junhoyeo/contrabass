@@ -46,7 +46,17 @@ var (
 	startTUIEventBridge = func(ctx context.Context, p *tea.Program, events <-chan orchestrator.OrchestratorEvent) {
 		tui.StartEventBridge(ctx, p, events)
 	}
-	runRootTeamExecution  = runTeamExecutionApp
+	runRootTeamExecution = func(
+		ctx context.Context,
+		cfgPath string,
+		watcher *config.Watcher,
+		logger *log.Logger,
+		noTUI bool,
+		dryRun bool,
+		port int,
+	) error {
+		return runTeamExecutionApp(ctx, cfgPath, watcher, logger, noTUI, dryRun, port)
+	}
 	runTUIShutdownTimeout = 6 * time.Second
 )
 
@@ -142,7 +152,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 
 	switch cfg.TeamExecutionMode() {
 	case config.TeamExecutionModeTeam:
-		return runRootTeamExecution(ctx, cfgPath, watcher, logger, noTUI, dryRun)
+		return runRootTeamExecution(ctx, cfgPath, watcher, logger, noTUI, dryRun, port)
 	case config.TeamExecutionModeSingle:
 		// Continue into the original single-agent orchestrator path.
 	default:
@@ -266,10 +276,18 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 		return runDryRun(ctx, orch)
 	}
 
-	var h *hub.Hub
+	var h *hub.Hub[web.WebEvent]
 	if port > 0 {
-		h = hub.NewHub(orch.Events())
+		webEvents := make(chan web.WebEvent, 256)
+		h = hub.NewHub(webEvents)
 		go h.Run(ctx)
+
+		go func() {
+			for orchEvent := range orch.Events() {
+				webEvents <- web.NewOrchestratorWebEvent(orchEvent)
+			}
+			close(webEvents)
+		}()
 
 		dashboardFS, err := fs.Sub(contrabass.DashboardDistFS, "packages/dashboard/dist")
 		if err != nil {
@@ -318,22 +336,33 @@ func runDryRun(ctx context.Context, orch *orchestrator.Orchestrator) error {
 }
 
 // runHeadless runs the orchestrator without TUI, logging events to the logger.
-func runHeadless(ctx context.Context, orch *orchestrator.Orchestrator, logger *log.Logger, h *hub.Hub) error {
-	events := orch.Events()
+func runHeadless(
+	ctx context.Context,
+	orch *orchestrator.Orchestrator,
+	logger *log.Logger,
+	h *hub.Hub[web.WebEvent],
+) error {
 	if h != nil {
 		subID, subscribedEvents := h.Subscribe()
 		defer h.Unsubscribe(subID)
-		events = subscribedEvents
+		go func() {
+			for webEvt := range subscribedEvents {
+				logger.Info("event",
+					"kind", string(webEvt.Kind),
+					"type", webEvt.Type,
+				)
+			}
+		}()
+	} else {
+		go func() {
+			for event := range orch.Events() {
+				logger.Info("event",
+					"type", event.Type.String(),
+					"issue_id", event.IssueID,
+				)
+			}
+		}()
 	}
-
-	go func() {
-		for event := range events {
-			logger.Info("event",
-				"type", event.Type.String(),
-				"issue_id", event.IssueID,
-			)
-		}
-	}()
 
 	return orch.Run(ctx)
 }
@@ -358,21 +387,18 @@ func startSignalShutdownHook(
 }
 
 // runTUI starts the orchestrator and renders the Charm TUI.
-func runTUI(ctx context.Context, orch *orchestrator.Orchestrator, h *hub.Hub) error {
+func runTUI(
+	ctx context.Context,
+	orch *orchestrator.Orchestrator,
+	_ *hub.Hub[web.WebEvent],
+) error {
 	tuiCtx, tuiCancel := context.WithCancel(ctx)
 	defer tuiCancel()
 
 	model := tui.NewModel()
 	p := tea.NewProgram(withViewportProgramOptions(model))
 
-	events := orch.Events()
-	if h != nil {
-		subID, subscribedEvents := h.Subscribe()
-		defer h.Unsubscribe(subID)
-		events = subscribedEvents
-	}
-
-	startTUIEventBridge(tuiCtx, p, events)
+	startTUIEventBridge(tuiCtx, p, orch.Events())
 
 	orchDone := make(chan error, 1)
 	orchestratorRunner := runTUIOrchestrator

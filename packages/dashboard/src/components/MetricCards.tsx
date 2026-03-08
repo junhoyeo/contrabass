@@ -6,15 +6,6 @@ import './MetricCards.css'
 interface MetricCardsProps {
   stats: Stats
   backoffCount: number
-  runtimeSeconds: number
-}
-
-function formatRuntime(runtimeSeconds: number): string {
-  const safeSeconds = Math.max(0, Math.floor(runtimeSeconds))
-  const minutes = Math.floor(safeSeconds / 60)
-  const seconds = safeSeconds % 60
-
-  return `${minutes}m ${seconds}s`
 }
 
 function formatCompactNumber(value: number): string {
@@ -33,7 +24,7 @@ function formatCompactNumber(value: number): string {
   return value.toString()
 }
 
-export function MetricCards({ stats, backoffCount, runtimeSeconds }: MetricCardsProps) {
+export function MetricCards({ stats, backoffCount }: MetricCardsProps) {
   const totalTokens = stats.TotalTokensIn + stats.TotalTokensOut
 
   return (
@@ -49,7 +40,6 @@ export function MetricCards({ stats, backoffCount, runtimeSeconds }: MetricCards
         value={formatCompactNumber(totalTokens)}
         subtitle={`${formatCompactNumber(stats.TotalTokensIn)} in / ${formatCompactNumber(stats.TotalTokensOut)} out`}
       />
-      <MetricCard title="Runtime" value={formatRuntime(runtimeSeconds)} subtitle="Since startup" />
     </section>
   )
 }

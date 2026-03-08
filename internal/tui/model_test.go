@@ -769,13 +769,18 @@ func TestViewportScrollBasic(t *testing.T) {
 			Age:     "1m",
 			Phase:   types.StreamingTurn,
 		}
+		m.agentEvents[id] = NewEventLog(defaultEventLogSize)
 	}
 	m = m.syncTables()
 
 	assert.Equal(t, 0, m.viewport.YOffset())
+	// PageDown still scrolls the viewport directly
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 0x100 + 6}) // pgdown
+	_ = updated
+	// j/k now moves cursor in overview mode rather than scrolling
 	updated, _ = m.Update(tea.KeyPressMsg{Text: "j", Code: 'j'})
 	model := updated.(Model)
-	assert.Greater(t, model.viewport.YOffset(), 0)
+	assert.Equal(t, 1, model.table.Selected())
 }
 
 func TestViewportWindowResize(t *testing.T) {

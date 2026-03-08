@@ -1,15 +1,56 @@
 :root {
-  --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #21262d;
-  --border-color: #30363d;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --accent-green: #3fb950;
-  --accent-yellow: #d29922;
-  --accent-red: #f85149;
-  --accent-blue: #58a6ff;
+  /* Surfaces - cool-tinted dark backgrounds */
+  --bg-primary: oklch(13% 0.01 250);
+  --bg-secondary: oklch(17% 0.01 250);
+  --bg-tertiary: oklch(22% 0.01 250);
+
+  /* Borders */
+  --border-color: oklch(30% 0.01 250);
+  --border-subtle: oklch(25% 0.008 250);
+
+  /* Text */
+  --text-primary: oklch(92% 0.01 250);
+  --text-secondary: oklch(62% 0.015 250);
+  --text-tertiary: oklch(48% 0.01 250);
+
+  /* Warm accent - scoped to header branding */
+  --text-warm: oklch(99% 0.012 95);
+
+  /* Accents - keep vivid but OKLCH */
+  --accent-green: oklch(72% 0.19 145);
+  --accent-yellow: oklch(72% 0.15 80);
+  --accent-red: oklch(65% 0.22 25);
+  --accent-blue: oklch(72% 0.14 245);
+
+  /* Accent tints - for subtle backgrounds */
+  --accent-green-tint: oklch(22% 0.04 145);
+  --accent-yellow-tint: oklch(22% 0.04 80);
+  --accent-red-tint: oklch(22% 0.04 25);
+  --accent-blue-tint: oklch(22% 0.04 245);
+
+  /* Motion tokens */
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 350ms;
+
+  /* Spacing scale (4pt base) */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --space-xl: 1.5rem;
+  --space-2xl: 2rem;
+  --space-3xl: 3rem;
+
+  /* Typography */
   --font-mono: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
 }
 
 * {
@@ -24,4 +65,25 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+[role='button']:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms;
+    transition-duration: 0.01ms;
+  }
 }

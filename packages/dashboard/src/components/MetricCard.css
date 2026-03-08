@@ -1,13 +1,18 @@
 .metric-card {
   background-color: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 0.75rem;
-  padding: 1rem;
+  border-radius: var(--radius-lg);
+  padding: var(--space-md) var(--space-lg);
   min-height: 7.5rem;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--space-sm);
+  transition: border-color var(--duration-fast) var(--ease-out-quart);
+}
+
+.metric-card:hover {
+  border-color: oklch(38% 0.02 250);
 }
 
 .metric-card__title {
@@ -20,10 +25,12 @@
   line-height: 1.2;
   font-weight: 700;
   color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
 .metric-card__subtitle {
   font-size: 0.8125rem;
   color: var(--text-secondary);
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }

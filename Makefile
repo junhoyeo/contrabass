@@ -46,7 +46,9 @@ test-quick: test test-dashboard test-landing
 test-all: test-quick
 
 # Run the preferred CI/local full validation flow
+# Dashboard must be built first: embed_dashboard.go requires packages/dashboard/dist/
 ci:
+	$(MAKE) build-dashboard
 	$(MAKE) lint
 	$(MAKE) test-quick
 	$(MAKE) build

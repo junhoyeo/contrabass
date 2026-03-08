@@ -202,16 +202,32 @@ func (c *Coordinator) runWorkerPhase(ctx context.Context, next types.TeamPhase, 
 		return fmt.Errorf("claim next task: %w", err)
 	}
 
+	c.emitEvent("task_claimed", map[string]interface{}{
+		"worker_id": "coordinator",
+		"task_id":   task.ID,
+		"task":      task.Subject,
+	})
+
 	if err := c.executeTask(ctx, task, token, "coordinator"); err != nil {
 		if failErr := c.tasks.FailTask(c.teamName, task.ID, token, err.Error()); failErr != nil {
 			c.logger.Warn("failed to mark task as failed", "team", c.teamName, "task", task.ID, "error", failErr)
 		}
+		c.emitEvent("task_failed", map[string]interface{}{
+			"worker_id": "coordinator",
+			"task_id":   task.ID,
+			"error":     err.Error(),
+		})
 		return err
 	}
 
 	if err := c.tasks.CompleteTask(c.teamName, task.ID, token, "completed by coordinator"); err != nil {
 		return err
 	}
+
+	c.emitEvent("task_completed", map[string]interface{}{
+		"worker_id": "coordinator",
+		"task_id":   task.ID,
+	})
 
 	return c.phases.Transition(c.teamName, next, reason)
 }

@@ -1,0 +1,20 @@
+{
+  "id": "CB-1",
+  "identifier": "CB-1",
+  "title": "Add godoc comment to EventLog struct",
+  "description": "The EventLog struct in internal/tui/event_log.go is missing a godoc comment. Add a clear, concise godoc comment explaining what EventLog does: it is a fixed-size ring buffer that stores recent agent or team events for display in the TUI detail view.",
+  "state": "retry",
+  "assignee": "issue-cb-1",
+  "url": "local://CB-1",
+  "tracker_meta": {
+    "last_task_id": "001-cb-1-plan",
+    "last_team_event": "run_error",
+    "last_team_event_at": "2026-03-08T06:24:55.083118Z",
+    "last_worker_id": "coordinator",
+    "team_name": "issue-cb-1",
+    "team_phase": "team-plan",
+    "team_status": "retry"
+  },
+  "created_at": "2026-03-08T06:16:38.652099Z",
+  "updated_at": "2026-03-08T06:24:55.083119Z"
+}
