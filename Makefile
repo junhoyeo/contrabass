@@ -1,7 +1,7 @@
 # Contrabass — Build Tooling
 # Build order: dashboard SPA must build before Go binary (embed.FS requires dist/)
 
-.PHONY: build-dashboard build-landing build dev-dashboard dev-landing dev test test-dashboard test-landing test-quick test-all ci clean lint release-dry
+.PHONY: build-dashboard build-landing build dev-dashboard dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
 
 # Build the React dashboard SPA to packages/dashboard/dist/
 build-dashboard:
@@ -30,6 +30,15 @@ dev:
 # Run all Go tests
 test:
 	go test ./... -count=1
+
+# Run Go tests with race detector
+test-race:
+	go test -race ./... -count=1
+
+# Run Go tests with coverage for critical packages
+test-cover:
+	go test -coverprofile=coverage.out -covermode=atomic ./internal/team/... ./internal/orchestrator/... ./internal/agent/...
+	go tool cover -func=coverage.out | tail -1
 
 # Run React dashboard tests
 test-dashboard:
