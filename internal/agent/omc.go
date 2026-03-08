@@ -24,7 +24,7 @@ func NewOMCRunner(cfg *config.WorkflowConfig, timeout time.Duration) *OMCRunner 
 		startupTimeout = time.Duration(cfg.OMCStartupTimeoutMs()) * time.Millisecond
 	}
 
-	inner := newTeamCLIRunner(teamCLIRunner{
+	inner := newTeamCLIRunner(&teamCLIRunner{
 		name:           "omc",
 		binaryPath:     cfg.OMCBinaryPath(),
 		teamSpec:       cfg.OMCTeamSpec(),

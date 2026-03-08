@@ -128,7 +128,7 @@ type teamSnapshot struct {
 	Tasks   []teamTask
 }
 
-func newTeamCLIRunner(cfg teamCLIRunner) *teamCLIRunner {
+func newTeamCLIRunner(cfg *teamCLIRunner) *teamCLIRunner {
 	if cfg.pollInterval <= 0 {
 		cfg.pollInterval = time.Second
 	}
