@@ -6,13 +6,6 @@ import (
 	"github.com/junhoyeo/contrabass/internal/config"
 )
 
-const (
-	defaultOMXBinaryPath       = "omx"
-	defaultOMXTeamSpec         = "1:executor"
-	defaultOMXPollIntervalMs   = 1000
-	defaultOMXStartupTimeoutMs = 15000
-)
-
 type OMXRunner struct {
 	*teamCLIRunner
 }

@@ -27,10 +27,10 @@ func TestOMXRunner_Defaults(t *testing.T) {
 	cfg := &config.WorkflowConfig{}
 	runner := NewOMXRunner(cfg, 0)
 	require.NotNil(t, runner)
-	assert.Equal(t, defaultOMXBinaryPath, runner.binaryPath)
-	assert.Equal(t, defaultOMXTeamSpec, runner.teamSpec)
-	assert.Equal(t, time.Duration(defaultOMXPollIntervalMs)*time.Millisecond, runner.pollInterval)
-	assert.Equal(t, time.Duration(defaultOMXStartupTimeoutMs)*time.Millisecond, runner.startupTimeout)
+	assert.Equal(t, "omx", runner.binaryPath)
+	assert.Equal(t, "1:executor", runner.teamSpec)
+	assert.Equal(t, 1000*time.Millisecond, runner.pollInterval)
+	assert.Equal(t, 15000*time.Millisecond, runner.startupTimeout)
 }
 
 func TestOMXRunner_StartStopLifecycle(t *testing.T) {
@@ -51,7 +51,6 @@ func TestOMXRunner_StartStopLifecycle(t *testing.T) {
 	proc, err := runner.Start(context.Background(), issue, workspace, "Implement the feature")
 	require.NoError(t, err)
 	require.NotEmpty(t, proc.SessionID)
-	assert.NotEmpty(t, proc.SessionID)
 
 	events := collectOpenCodeEvents(t, proc.Events, proc.Done, 4, 5*time.Second)
 	require.Len(t, events, 4)

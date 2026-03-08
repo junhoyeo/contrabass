@@ -20,10 +20,10 @@ func TestOMCRunner_Defaults(t *testing.T) {
 	cfg := &config.WorkflowConfig{}
 	runner := NewOMCRunner(cfg, 0)
 	require.NotNil(t, runner)
-	assert.Equal(t, defaultOMCBinaryPath, runner.binaryPath)
-	assert.Equal(t, defaultOMCTeamSpec, runner.teamSpec)
-	assert.Equal(t, time.Duration(defaultOMCPollIntervalMs)*time.Millisecond, runner.pollInterval)
-	assert.Equal(t, time.Duration(defaultOMCStartupTimeoutMs)*time.Millisecond, runner.startupTimeout)
+	assert.Equal(t, "omc", runner.binaryPath)
+	assert.Equal(t, "1:claude", runner.teamSpec)
+	assert.Equal(t, 1000*time.Millisecond, runner.pollInterval)
+	assert.Equal(t, 15000*time.Millisecond, runner.startupTimeout)
 }
 
 func TestOMCRunner_UsesTeamRuntime(t *testing.T) {

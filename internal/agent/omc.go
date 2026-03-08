@@ -6,13 +6,6 @@ import (
 	"github.com/junhoyeo/contrabass/internal/config"
 )
 
-const (
-	defaultOMCBinaryPath       = "omc"
-	defaultOMCTeamSpec         = "1:claude"
-	defaultOMCPollIntervalMs   = 1000
-	defaultOMCStartupTimeoutMs = 15000
-)
-
 type OMCRunner struct {
 	*teamCLIRunner
 }
