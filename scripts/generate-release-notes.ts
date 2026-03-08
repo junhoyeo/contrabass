@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
 /**
- * Usage: bun scripts/generate-release-notes.ts <version>
+ * Appends contributor attribution to an existing GitHub release created by GoReleaser.
+ *
+ * Usage: bun scripts/generate-release-notes.ts <tag>
  * Env:   GITHUB_REPOSITORY (default: junhoyeo/contrabass)
  */
 export {};
 
 import { execFileSync } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
 
 const REPO = process.env.GITHUB_REPOSITORY || "junhoyeo/contrabass";
 
@@ -22,36 +25,15 @@ interface PRInfo {
   authorLogin: string;
 }
 
-interface ChangeEntry {
-  hash: string;
-  message: string;
+interface ContributorEntry {
   author: string;
+  message: string;
   prNumber?: number;
-  group: string;
-  groupOrder: number;
 }
 
-interface ContributorInfo {
+interface NewContributor {
   username: string;
   firstPrNumber: number;
-}
-
-const COMMIT_GROUPS: Array<{ title: string; prefix: string; order: number }> = [
-  { title: "🚀 Features", prefix: "feat", order: 0 },
-  { title: "🐛 Bug Fixes", prefix: "fix", order: 1 },
-  { title: "⚡ Performance", prefix: "perf", order: 2 },
-  { title: "♻️ Refactoring", prefix: "refactor", order: 3 },
-  { title: "📝 Documentation", prefix: "docs", order: 4 },
-  { title: "🧪 Tests", prefix: "test", order: 5 },
-  { title: "🔧 Chore", prefix: "chore", order: 6 },
-];
-
-function classifyCommit(message: string): { group: string; order: number } {
-  for (const g of COMMIT_GROUPS) {
-    const re = new RegExp(`^${g.prefix}(\\([^)]+\\))?!?:`);
-    if (re.test(message)) return { group: g.title, order: g.order };
-  }
-  return { group: "🔧 Other", order: 999 };
 }
 
 function run(command: string, args: string[], allowFailure = false): string {
@@ -79,8 +61,8 @@ function runJson<T>(command: string, args: string[], allowFailure = false): T | 
   }
 }
 
-function getPreviousTag(): string | null {
-  const tag = run("git", ["describe", "--tags", "--abbrev=0", "HEAD^"], true);
+function getPreviousTag(currentTag: string): string | null {
+  const tag = run("git", ["describe", "--tags", "--abbrev=0", `${currentTag}^`], true);
   return tag || null;
 }
 
@@ -88,10 +70,10 @@ function getTagDate(tag: string): string {
   return run("git", ["log", "-1", "--format=%cI", tag]);
 }
 
-function getCommitsBetween(fromTag: string, toRef: string): Commit[] {
+function getCommitsBetween(fromTag: string, toTag: string): Commit[] {
   const output = run("git", [
     "log",
-    `${fromTag}..${toRef}`,
+    `${fromTag}..${toTag}`,
     "--format=%H%x1f%s%x1f%an%x1f%ae",
     "--no-merges",
   ]);
@@ -147,33 +129,13 @@ function findAssociatedPR(commitHash: string): PRInfo | null {
     result[0];
   if (!pr?.number || !pr.user?.login) return null;
 
-  let title = pr.title;
-  if (title.endsWith("…")) {
-    const commits = runJson<Array<{ commit: { message: string } }>>(
-      "gh",
-      ["api", `repos/${REPO}/pulls/${pr.number}/commits`],
-      true,
-    );
-    if (commits?.length) {
-      const last = commits[commits.length - 1];
-      const lastSubject = last.commit.message.split("\n")[0];
-      const firstSubject = commits[0].commit.message.split("\n")[0];
-      const truncatedPrefix = title.slice(0, -1);
-      title = lastSubject.startsWith(truncatedPrefix)
-        ? lastSubject
-        : firstSubject.startsWith(truncatedPrefix)
-          ? firstSubject
-          : title;
-    }
-  }
-
-  return { number: pr.number, title, authorLogin: pr.user.login };
+  return { number: pr.number, title: pr.title, authorLogin: pr.user.login };
 }
 
 function isFirstContributionAfter(
   login: string,
   thresholdDate: string,
-): ContributorInfo | null {
+): NewContributor | null {
   const result = runJson<Array<{ number: number; mergedAt: string }>>(
     "gh",
     [
@@ -201,15 +163,37 @@ function isFirstContributionAfter(
     : null;
 }
 
-function generateReleaseNotes(version: string): string {
-  const prevTag = getPreviousTag();
+function getExistingReleaseBody(tag: string): string {
+  return run(
+    "gh",
+    ["release", "view", tag, "--repo", REPO, "--json", "body", "-q", ".body"],
+    true,
+  );
+}
+
+function updateReleaseBody(tag: string, body: string): void {
+  const tmpFile = `/tmp/contrabass-release-${Date.now()}.md`;
+  writeFileSync(tmpFile, body);
+  run("gh", ["release", "edit", tag, "--repo", REPO, "--notes-file", tmpFile]);
+  unlinkSync(tmpFile);
+}
+
+function main(): void {
+  const tag = process.argv[2];
+  if (!tag) {
+    console.error("Usage: bun scripts/generate-release-notes.ts <tag>");
+    process.exit(1);
+  }
+
+  const prevTag = getPreviousTag(tag);
   if (!prevTag) {
-    throw new Error("No previous tag found. Aborting release-note generation.");
+    console.error("No previous tag found, skipping contributor attribution.");
+    process.exit(0);
   }
 
   const prevTagDate = getTagDate(prevTag);
-  const commits = getCommitsBetween(prevTag, "HEAD");
-  const entries: ChangeEntry[] = [];
+  const commits = getCommitsBetween(prevTag, tag);
+  const contributors: ContributorEntry[] = [];
   const candidateLogins = new Set<string>();
   const seenPRs = new Set<number>();
 
@@ -227,16 +211,10 @@ function generateReleaseNotes(version: string): string {
       ? `@${prInfo.authorLogin}`
       : resolveGitHubUsername(commit.authorEmail, commit.authorName);
 
-    const msg = prInfo?.title || commit.message;
-    const { group, order } = classifyCommit(msg);
-
-    entries.push({
-      hash: commit.hash,
-      message: msg,
+    contributors.push({
       author,
+      message: prInfo?.title || commit.message,
       prNumber: prInfo?.number,
-      group,
-      groupOrder: order,
     });
 
     if (prInfo?.authorLogin) {
@@ -244,73 +222,43 @@ function generateReleaseNotes(version: string): string {
     }
   }
 
+  if (contributors.length === 0) {
+    console.log("No contributors to attribute.");
+    return;
+  }
+
   const newContributors = Array.from(candidateLogins)
     .map((login) => isFirstContributionAfter(login, prevTagDate))
-    .filter((item): item is ContributorInfo => Boolean(item));
+    .filter((item): item is NewContributor => Boolean(item));
 
-  const lines: string[] = [
-    '<div align="center">',
-    "",
-    `[<img alt="Contrabass" width="320px" src="https://github.com/${REPO}/raw/main/.github/assets/contrabass.png" />](https://github.com/${REPO})`,
-    "",
-    `# \`contrabass@v${version}\` is here!`,
-    "",
-    "</div>",
-  ];
+  const appendLines: string[] = ["", "---", "", "## Contributors"];
 
-  if (entries.length === 0) {
-    lines.push("", "## What's Changed", "", "* No notable changes");
-  } else {
-    const grouped = new Map<string, ChangeEntry[]>();
-    for (const entry of entries) {
-      const list = grouped.get(entry.group) || [];
-      list.push(entry);
-      grouped.set(entry.group, list);
-    }
-
-    const sortedGroups = [...grouped.entries()].sort(
-      ([, a], [, b]) => (a[0]?.groupOrder ?? 999) - (b[0]?.groupOrder ?? 999),
-    );
-
-    for (const [groupTitle, groupEntries] of sortedGroups) {
-      lines.push("", `## ${groupTitle}`, "");
-      for (const entry of groupEntries.reverse()) {
-        const prLink = entry.prNumber
-          ? ` in https://github.com/${REPO}/pull/${entry.prNumber}`
-          : "";
-        const commitLink = entry.prNumber ? "" : ` (${entry.hash.slice(0, 7)})`;
-        lines.push(
-          `* ${entry.message} by ${entry.author}${prLink}${commitLink}`,
-        );
-      }
-    }
+  for (const entry of contributors) {
+    const prLink = entry.prNumber
+      ? ` in https://github.com/${REPO}/pull/${entry.prNumber}`
+      : "";
+    appendLines.push(`* ${entry.message} by ${entry.author}${prLink}`);
   }
 
   if (newContributors.length > 0) {
-    lines.push("", "## New Contributors", "");
-    for (const contributor of newContributors) {
-      lines.push(
-        `* ${contributor.username} made their first contribution in https://github.com/${REPO}/pull/${contributor.firstPrNumber}`,
+    appendLines.push("", "## New Contributors");
+    for (const c of newContributors) {
+      appendLines.push(
+        `* ${c.username} made their first contribution in https://github.com/${REPO}/pull/${c.firstPrNumber}`,
       );
     }
   }
 
-  lines.push(
+  appendLines.push(
     "",
-    `**Full Changelog**: https://github.com/${REPO}/compare/${prevTag}...v${version}`,
+    `**Full Changelog**: https://github.com/${REPO}/compare/${prevTag}...${tag}`,
   );
 
-  return lines.join("\n");
-}
+  const existingBody = getExistingReleaseBody(tag);
+  const updatedBody = existingBody + appendLines.join("\n") + "\n";
 
-function main(): void {
-  const version = process.argv[2];
-  if (!version) {
-    console.error("Usage: bun scripts/generate-release-notes.ts <version>");
-    process.exit(1);
-  }
-  const notes = generateReleaseNotes(version);
-  console.log(notes);
+  updateReleaseBody(tag, updatedBody);
+  console.log(`Updated release ${tag} with contributor attribution.`);
 }
 
 main();

@@ -38,5 +38,43 @@ brews:
     install: |
       bin.install "contrabass"
 
+release:
+  header: |
+    <div align="center">
+
+    [<img alt="Contrabass" width="320px" src="https://github.com/junhoyeo/contrabass/raw/main/.github/assets/contrabass.png" />](https://github.com/junhoyeo/contrabass)
+
+    # `contrabass@{{ .Tag }}` is here!
+
+    </div>
+
 changelog:
-  disable: true
+  sort: asc
+  groups:
+    - title: "🚀 Features"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: "⚡ Performance"
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: "♻️ Refactoring"
+      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: "📝 Documentation"
+      regexp: '^.*?docs(\([[:word:]]+\))??!?:.+$'
+      order: 4
+    - title: "🧪 Tests"
+      regexp: '^.*?test(\([[:word:]]+\))??!?:.+$'
+      order: 5
+    - title: "🔧 Chore"
+      regexp: '^.*?chore(\([[:word:]]+\))??!?:.+$'
+      order: 6
+    - title: "🔧 Other"
+      order: 999
+  filters:
+    exclude:
+      - "^Merge"
+      - "^chore\\(project\\): auto-fix"
