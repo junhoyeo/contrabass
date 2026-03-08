@@ -162,6 +162,13 @@ func Check(ctx context.Context, currentVersion string) Result {
 	now := time.Now()
 	state := readState()
 	if !ShouldCheck(now, state) {
+		if state != nil && state.LastSeenLatest != "" && IsNewer(currentVersion, state.LastSeenLatest) {
+			return Result{
+				Available: true,
+				Current:   currentVersion,
+				Latest:    state.LastSeenLatest,
+			}
+		}
 		return Result{}
 	}
 
