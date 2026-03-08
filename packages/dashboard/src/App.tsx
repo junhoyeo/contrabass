@@ -17,7 +17,8 @@ function computeRuntimeSeconds(startTime: string | undefined): number {
   }
 
   const start = Date.parse(startTime)
-  if (Number.isNaN(start)) {
+  // Guard against Go zero time ("0001-01-01T00:00:00Z") and other pre-epoch dates
+  if (Number.isNaN(start) || start <= 0) {
     return 0
   }
 
