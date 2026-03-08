@@ -24,6 +24,7 @@ import (
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
 	"github.com/junhoyeo/contrabass/internal/tracker"
 	"github.com/junhoyeo/contrabass/internal/tui"
+	"github.com/junhoyeo/contrabass/internal/update"
 	"github.com/junhoyeo/contrabass/internal/web"
 	"github.com/junhoyeo/contrabass/internal/workspace"
 )
@@ -77,6 +78,8 @@ func newRootCmd() *cobra.Command {
 		port     int
 	)
 
+	var updateResult update.Result
+
 	cmd := &cobra.Command{
 		Use:     "contrabass",
 		Short:   "Orchestrate coding agents with a Charm TUI dashboard",
@@ -85,6 +88,14 @@ func newRootCmd() *cobra.Command {
 It orchestrates coding agents against an issue tracker and visualises
 progress in a terminal UI built with the Charm stack.`,
 		SilenceUsage: true,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			updateResult = update.Check(context.Background(), version)
+		},
+		PersistentPostRun: func(cmd *cobra.Command, args []string) {
+			if msg := update.FormatNotification(updateResult); msg != "" {
+				fmt.Fprint(os.Stderr, msg)
+			}
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(cfgPath, noTUI, logFile, logLevel, dryRun, port)
 		},
