@@ -6,23 +6,71 @@ on:
   pull_request:
 
 jobs:
-  ci:
-    name: Lint, Test & Build
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: make build-dashboard
+      - run: make lint
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: make build-dashboard
+      - run: make test-quick
 
-      - name: Install JS dependencies
-        run: bun install
+  test-race:
+    name: Race Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: make build-dashboard
+      - run: go test -race ./... -count=1 -timeout=300s
 
-      - name: Run full CI
-        run: make ci
+  test-cover:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: make build-dashboard
+      - run: make test-cover
+      - run: |
+          total=$(go tool cover -func=coverage.out | grep total: | awk '{print $3}' | tr -d '%')
+          awk -v total="$total" 'BEGIN { if (total < 70) { printf "Coverage %.1f%% is below required 70%%\n", total; exit 1 } }'
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint, test, test-race, test-cover]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: make build
+      - run: make build-landing
