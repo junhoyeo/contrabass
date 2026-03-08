@@ -167,7 +167,6 @@ function getExistingReleaseBody(tag: string): string {
   return run(
     "gh",
     ["release", "view", tag, "--repo", REPO, "--json", "body", "-q", ".body"],
-    true,
   );
 }
 
