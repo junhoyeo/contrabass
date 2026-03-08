@@ -2,7 +2,7 @@
 
 # - Built binaries
 symphony-charm
-contrabass
+/contrabass
 
 # - Runtime artifacts
 contrabass.log

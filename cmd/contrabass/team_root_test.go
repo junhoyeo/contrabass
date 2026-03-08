@@ -13,6 +13,7 @@ import (
 	"github.com/junhoyeo/contrabass/internal/config"
 	"github.com/junhoyeo/contrabass/internal/tracker"
 	"github.com/junhoyeo/contrabass/internal/types"
+	"github.com/junhoyeo/contrabass/internal/web"
 )
 
 func TestRunTeamExecutionLoopDispatchesBoardIssuesThroughTeams(t *testing.T) {
@@ -118,10 +119,10 @@ Prompt.
 	})
 
 	called := false
-	startTeamWebServer = func(_ context.Context, _ *log.Logger, port int) error {
+	startTeamWebServer = func(_ context.Context, _ *log.Logger, port int) (chan<- web.WebEvent, error) {
 		called = true
 		assert.Equal(t, 43111, port)
-		return nil
+		return make(chan<- web.WebEvent, 1), nil
 	}
 
 	err = runTeamExecutionApp(context.Background(), cfgPath, watcher, nil, true, true, 43111)

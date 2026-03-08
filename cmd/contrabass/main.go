@@ -387,10 +387,13 @@ func startSignalShutdownHook(
 }
 
 // runTUI starts the orchestrator and renders the Charm TUI.
+// When a hub is provided (web dashboard active), the TUI subscribes to the hub
+// instead of reading orch.Events() directly — otherwise both consumers would
+// compete for the same channel and randomly split events.
 func runTUI(
 	ctx context.Context,
 	orch *orchestrator.Orchestrator,
-	_ *hub.Hub[web.WebEvent],
+	h *hub.Hub[web.WebEvent],
 ) error {
 	tuiCtx, tuiCancel := context.WithCancel(ctx)
 	defer tuiCancel()
@@ -398,7 +401,32 @@ func runTUI(
 	model := tui.NewModel()
 	p := tea.NewProgram(withViewportProgramOptions(model))
 
-	startTUIEventBridge(tuiCtx, p, orch.Events())
+	if h != nil {
+		subID, webEvents := h.Subscribe()
+		defer h.Unsubscribe(subID)
+		orchEvents := make(chan orchestrator.OrchestratorEvent, 256)
+		go func() {
+			defer close(orchEvents)
+			for {
+				select {
+				case <-tuiCtx.Done():
+					return
+				case we, ok := <-webEvents:
+					if !ok {
+						return
+					}
+					if we.Kind == web.WebEventOrchestrator {
+						if oe, ok := we.Payload.(orchestrator.OrchestratorEvent); ok {
+							orchEvents <- oe
+						}
+					}
+				}
+			}
+		}()
+		startTUIEventBridge(tuiCtx, p, orchEvents)
+	} else {
+		startTUIEventBridge(tuiCtx, p, orch.Events())
+	}
 
 	orchDone := make(chan error, 1)
 	orchestratorRunner := runTUIOrchestrator

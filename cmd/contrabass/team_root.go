@@ -45,10 +45,28 @@ func runTeamExecutionApp(
 		return errors.New("config watcher is required for team execution")
 	}
 
+	var webSink chan<- web.WebEvent
 	if port > 0 {
-		if err := startTeamWebServer(ctx, logger, port); err != nil {
+		var err error
+		webSink, err = startTeamWebServer(ctx, logger, port)
+		if err != nil {
 			return err
 		}
+	}
+
+	forwardToWeb := func(teamEvents <-chan types.TeamEvent) <-chan types.TeamEvent {
+		if webSink == nil {
+			return teamEvents
+		}
+		out := make(chan types.TeamEvent, teamEventBufferSize)
+		go func() {
+			defer close(out)
+			for evt := range teamEvents {
+				webSink <- web.NewTeamWebEvent(evt)
+				out <- evt
+			}
+		}()
+		return out
 	}
 
 	if dryRun {
@@ -61,20 +79,20 @@ func runTeamExecutionApp(
 
 	teamEvents := make(chan types.TeamEvent, teamEventBufferSize)
 	cfg := watcher.GetConfig()
-	return runTeamTUI(ctx, cfg, teamEvents, func(runCtx context.Context) error {
+	return runTeamTUI(ctx, cfg, forwardToWeb(teamEvents), func(runCtx context.Context) error {
 		defer close(teamEvents)
 		return runTeamExecutionLoop(runCtx, cfgPath, watcher, teamEvents, false)
 	})
 }
 
-func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int) error {
+func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int) (chan<- web.WebEvent, error) {
 	webEvents := make(chan web.WebEvent, 256)
 	h := hub.NewHub(webEvents)
 	go h.Run(ctx)
 
 	dashboardFS, err := fs.Sub(contrabass.DashboardDistFS, "packages/dashboard/dist")
 	if err != nil {
-		return fmt.Errorf("sub dashboard dist fs: %w", err)
+		return nil, fmt.Errorf("sub dashboard dist fs: %w", err)
 	}
 
 	provider := web.NewTeamSnapshotProvider()
@@ -82,7 +100,7 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
-		return fmt.Errorf("listen web dashboard: %w", err)
+		return nil, fmt.Errorf("listen web dashboard: %w", err)
 	}
 
 	go func() {
@@ -92,7 +110,7 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 	}()
 
 	fmt.Fprintf(os.Stderr, "Web dashboard available at http://localhost:%d\n", port)
-	return nil
+	return webEvents, nil
 }
 func runTeamExecutionLoop(
 	ctx context.Context,
