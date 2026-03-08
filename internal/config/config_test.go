@@ -691,3 +691,92 @@ func TestWorkflowConfig_CloneDeepCopy(t *testing.T) {
 	assert.Equal(t, "anthropic/claude-sonnet-4-6", original.OhMyOpenCode.Agents["sisyphus"].Model)
 	assert.Equal(t, "anthropic/claude-haiku-4-5", original.OhMyOpenCode.Categories["quick"].Model)
 }
+
+func TestWorkflowConfig_OMXDefaults(t *testing.T) {
+	t.Parallel()
+
+	var nilCfg *WorkflowConfig
+	assert.Equal(t, defaultOMXBinaryPath, nilCfg.OMXBinaryPath())
+	assert.Equal(t, defaultOMXTeamSpec, nilCfg.OMXTeamSpec())
+	assert.Equal(t, defaultOMXPollIntervalMs, nilCfg.OMXPollIntervalMs())
+	assert.Equal(t, defaultOMXStartupTimeoutMs, nilCfg.OMXStartupTimeoutMs())
+	assert.False(t, nilCfg.OMXRalph())
+
+	cfg := &WorkflowConfig{}
+	assert.Equal(t, defaultOMXBinaryPath, cfg.OMXBinaryPath())
+	assert.Equal(t, defaultOMXTeamSpec, cfg.OMXTeamSpec())
+	assert.Equal(t, defaultOMXPollIntervalMs, cfg.OMXPollIntervalMs())
+	assert.Equal(t, defaultOMXStartupTimeoutMs, cfg.OMXStartupTimeoutMs())
+	assert.False(t, cfg.OMXRalph())
+
+	custom := &WorkflowConfig{OMX: OMXConfig{
+		BinaryPath:       "/usr/local/bin/omx",
+		TeamSpec:         "2:executor",
+		PollIntervalMs:   1500,
+		StartupTimeoutMs: 22000,
+		Ralph:            true,
+	}}
+	assert.Equal(t, "/usr/local/bin/omx", custom.OMXBinaryPath())
+	assert.Equal(t, "2:executor", custom.OMXTeamSpec())
+	assert.Equal(t, 1500, custom.OMXPollIntervalMs())
+	assert.Equal(t, 22000, custom.OMXStartupTimeoutMs())
+	assert.True(t, custom.OMXRalph())
+}
+
+func TestWorkflowConfig_OMCDefaults(t *testing.T) {
+	t.Parallel()
+
+	var nilCfg *WorkflowConfig
+	assert.Equal(t, defaultOMCBinaryPath, nilCfg.OMCBinaryPath())
+	assert.Equal(t, defaultOMCTeamSpec, nilCfg.OMCTeamSpec())
+	assert.Equal(t, defaultOMCPollIntervalMs, nilCfg.OMCPollIntervalMs())
+	assert.Equal(t, defaultOMCStartupTimeoutMs, nilCfg.OMCStartupTimeoutMs())
+
+	cfg := &WorkflowConfig{}
+	assert.Equal(t, defaultOMCBinaryPath, cfg.OMCBinaryPath())
+	assert.Equal(t, defaultOMCTeamSpec, cfg.OMCTeamSpec())
+	assert.Equal(t, defaultOMCPollIntervalMs, cfg.OMCPollIntervalMs())
+	assert.Equal(t, defaultOMCStartupTimeoutMs, cfg.OMCStartupTimeoutMs())
+
+	custom := &WorkflowConfig{OMC: OMCConfig{
+		BinaryPath:       "/usr/local/bin/omc",
+		TeamSpec:         "2:claude",
+		PollIntervalMs:   1200,
+		StartupTimeoutMs: 21000,
+	}}
+	assert.Equal(t, "/usr/local/bin/omc", custom.OMCBinaryPath())
+	assert.Equal(t, "2:claude", custom.OMCTeamSpec())
+	assert.Equal(t, 1200, custom.OMCPollIntervalMs())
+	assert.Equal(t, 21000, custom.OMCStartupTimeoutMs())
+}
+
+func TestParseWorkflow_OMXConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ParseWorkflow("../../testdata/workflow.omx.md")
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	assert.Equal(t, "omx", cfg.AgentType())
+	assert.Equal(t, "omx", cfg.OMXBinaryPath())
+	assert.Equal(t, "2:executor", cfg.OMXTeamSpec())
+	assert.Equal(t, 1500, cfg.OMXPollIntervalMs())
+	assert.Equal(t, 22000, cfg.OMXStartupTimeoutMs())
+	assert.True(t, cfg.OMXRalph())
+	assert.Contains(t, cfg.PromptTemplate, "OMX")
+}
+
+func TestParseWorkflow_OMCConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ParseWorkflow("../../testdata/workflow.omc.md")
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	assert.Equal(t, "omc", cfg.AgentType())
+	assert.Equal(t, "omc", cfg.OMCBinaryPath())
+	assert.Equal(t, "2:claude", cfg.OMCTeamSpec())
+	assert.Equal(t, 1200, cfg.OMCPollIntervalMs())
+	assert.Equal(t, 21000, cfg.OMCStartupTimeoutMs())
+	assert.Contains(t, cfg.PromptTemplate, "OMC")
+}

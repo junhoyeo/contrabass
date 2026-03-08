@@ -131,6 +131,22 @@ func createRunner(cfg *config.WorkflowConfig) (agent.AgentRunner, error) {
 			username = cfg.OpenCodeUsername()
 		}
 		return agent.NewOpenCodeRunner(opencodeBin, port, password, username, 30*time.Second), nil
+	case "omx":
+		omxBin := os.Getenv("OMX_BINARY")
+		if omxBin == "" {
+			omxBin = cfg.OMXBinaryPath()
+		}
+		omxCfg := cfg.Clone()
+		omxCfg.OMX.BinaryPath = omxBin
+		return agent.NewOMXRunner(omxCfg, 30*time.Second), nil
+	case "omc":
+		omcBin := os.Getenv("OMC_BINARY")
+		if omcBin == "" {
+			omcBin = cfg.OMCBinaryPath()
+		}
+		omcCfg := cfg.Clone()
+		omcCfg.OMC.BinaryPath = omcBin
+		return agent.NewOMCRunner(omcCfg, 30*time.Second), nil
 	case "oh-my-opencode":
 		return agent.NewOhMyOpenCodeRunner(cfg, 30*time.Second)
 	default:
