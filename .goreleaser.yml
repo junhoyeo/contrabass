@@ -34,7 +34,7 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/junhoyeo/contrabass
     description: A project-level orchestrator for AI coding agents
-    license: MIT
+    license: Apache-2.0
     install: |
       bin.install "contrabass"
 
@@ -69,6 +69,9 @@ changelog:
     - title: "🧪 Tests"
       regexp: '^.*?test(\([[:word:]]+\))??!?:.+$'
       order: 5
+    - title: "🔧 Chore"
+      regexp: '^.*?chore(\([[:word:]]+\))??!?:.+$'
+      order: 6
     - title: "🔧 Other"
       order: 999
   filters:
