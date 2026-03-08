@@ -174,9 +174,13 @@ func Check(ctx context.Context, currentVersion string) Result {
 
 	latest, err := FetchLatestVersion(ctx)
 
+	seenLatest := latest
+	if seenLatest == "" && state != nil {
+		seenLatest = state.LastSeenLatest
+	}
 	writeState(&State{
 		LastCheckedAt:  now.Format(time.RFC3339),
-		LastSeenLatest: latest,
+		LastSeenLatest: seenLatest,
 	})
 
 	if err != nil || latest == "" {
