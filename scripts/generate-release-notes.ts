@@ -174,8 +174,11 @@ function getExistingReleaseBody(tag: string): string {
 function updateReleaseBody(tag: string, body: string): void {
   const tmpFile = `/tmp/contrabass-release-${Date.now()}.md`;
   writeFileSync(tmpFile, body);
-  run("gh", ["release", "edit", tag, "--repo", REPO, "--notes-file", tmpFile]);
-  unlinkSync(tmpFile);
+  try {
+    run("gh", ["release", "edit", tag, "--repo", REPO, "--notes-file", tmpFile]);
+  } finally {
+    unlinkSync(tmpFile);
+  }
 }
 
 function main(): void {
@@ -255,6 +258,10 @@ function main(): void {
   );
 
   const existingBody = getExistingReleaseBody(tag);
+  if (existingBody.includes("## Contributors")) {
+    console.log(`Release ${tag} already contains contributor attribution, skipping.`);
+    return;
+  }
   const updatedBody = existingBody + appendLines.join("\n") + "\n";
 
   updateReleaseBody(tag, updatedBody);
