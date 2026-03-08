@@ -36,9 +36,9 @@ Today Contrabass ships with:
 - A supported agent runtime:
   - `codex app-server`
   - `opencode serve`
-  - `oh-my-opencode`
-  - `omx` (oh-my-codex team runtime)
-  - `omc` (oh-my-claudecode team runtime)
+  - [`oh-my-opencode`](https://github.com/code-yeongyu/oh-my-openagent)
+  - `omx` ([oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex) team runtime)
+  - `omc` ([oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) team runtime)
 - Tracker credentials for the backend you use:
   - Linear: `LINEAR_API_KEY`
   - GitHub: `GITHUB_TOKEN`
