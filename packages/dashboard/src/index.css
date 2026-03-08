@@ -13,6 +13,9 @@
   --text-secondary: oklch(62% 0.015 250);
   --text-tertiary: oklch(48% 0.01 250);
 
+  /* Warm accent - scoped to header branding */
+  --text-warm: oklch(99% 0.012 95);
+
   /* Accents - keep vivid but OKLCH */
   --accent-green: oklch(72% 0.19 145);
   --accent-yellow: oklch(72% 0.15 80);

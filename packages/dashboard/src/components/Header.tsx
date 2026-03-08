@@ -17,15 +17,28 @@ export function Header({ connected, runtimeSeconds }: HeaderProps) {
   return (
     <header className="header">
       <div className="header__brand">
-        <h1 className="header__title">Contrabass</h1>
+        <img
+          src="/contrabass.png"
+          alt="Contrabass mascot"
+          width={48}
+          height={48}
+          className="header__logo"
+        />
+        <h1 className="header__title header__title--puffy">Contrabass</h1>
       </div>
 
       <div className="header__status">
-        <div className={`status-badge ${connected ? 'is-live' : 'is-offline'}`}>
-          <span className="status-badge__dot" aria-hidden="true" />
-          <span>{connected ? 'Live' : 'Offline'}</span>
+        <div className={`status-pill ${connected ? 'is-live' : 'is-offline'}`}>
+          <span className="status-pill__key">Status</span>
+          <span className="status-pill__value">
+            <span className="status-pill__dot" aria-hidden="true" />
+            {connected ? 'Live' : 'Offline'}
+          </span>
         </div>
-        <span className="header__runtime">Runtime {formatRuntime(runtimeSeconds)}</span>
+        <div className="status-pill">
+          <span className="status-pill__key">Runtime</span>
+          <span className="status-pill__value">{formatRuntime(runtimeSeconds)}</span>
+        </div>
       </div>
     </header>
   )

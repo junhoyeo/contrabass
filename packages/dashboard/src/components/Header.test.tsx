@@ -17,13 +17,15 @@ describe('Header', () => {
 
     expectInDocument(screen.getByRole('heading', { name: 'Contrabass' }))
     expectInDocument(screen.getByText('Live'))
-    expectInDocument(screen.getByText('Runtime 2m 15s'))
+    expectInDocument(screen.getByText('Runtime'))
+    expectInDocument(screen.getByText('2m 15s'))
   })
 
   it('renders offline badge when disconnected', () => {
     render(<Header connected={false} runtimeSeconds={1} />)
 
     expectInDocument(screen.getByText('Offline'))
-    expectInDocument(screen.getByText('Runtime 0m 1s'))
+    expectInDocument(screen.getByText('Runtime'))
+    expectInDocument(screen.getByText('0m 1s'))
   })
 })
