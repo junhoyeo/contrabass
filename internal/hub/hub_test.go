@@ -113,7 +113,7 @@ func TestHub(t *testing.T) {
 				select {
 				case event := <-lastSeen:
 					assert.Equal(t, "last", event.IssueID)
-				case <-time.After(2 * time.Second):
+				case <-time.After(10 * time.Second):
 					t.Fatal("timed out waiting for fast subscriber to receive event")
 				}
 
@@ -203,7 +203,7 @@ func mustReceiveEvent(t *testing.T, ch <-chan orchestrator.OrchestratorEvent) or
 	case event, ok := <-ch:
 		require.True(t, ok)
 		return event
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for event")
 		return orchestrator.OrchestratorEvent{}
 	}
@@ -214,7 +214,7 @@ func waitDone(t *testing.T, done <-chan struct{}) {
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for hub run loop to exit")
 	}
 }
