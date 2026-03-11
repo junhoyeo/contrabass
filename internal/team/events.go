@@ -118,6 +118,15 @@ func (l *EventLogger) ReadSince(teamName string, cursor int64, filter *EventFilt
 	}
 	defer file.Close()
 
+	// Detect rotation: if cursor is beyond file size, reset to 0
+	fi, err := file.Stat()
+	if err != nil {
+		return nil, cursor, fmt.Errorf("stat event log: %w", err)
+	}
+	if cursor > fi.Size() {
+		cursor = 0 // File was rotated/truncated, reset cursor
+	}
+
 	if _, err := file.Seek(cursor, io.SeekStart); err != nil {
 		return nil, cursor, fmt.Errorf("seek events file: %w", err)
 	}

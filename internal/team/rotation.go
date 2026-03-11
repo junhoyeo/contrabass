@@ -214,7 +214,7 @@ func (r *StaleLockRecovery) RecoverStaleLocks(teamName string) error {
 }
 
 func archiveLogName(now time.Time) string {
-	return fmt.Sprintf("events-%s.jsonl", now.Format("20060102-150405"))
+	return fmt.Sprintf("events-%s_%d.jsonl", now.Format("20060102-150405"), now.UnixNano()%1000000)
 }
 
 func isArchiveLogName(name string) bool {
