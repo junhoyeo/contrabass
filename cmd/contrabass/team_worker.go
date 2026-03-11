@@ -154,7 +154,12 @@ func runTeamWorker(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	runner, err := createRunner(cfg, teamName, logger)
+	// Worker processes run inside tmux panes and must use goroutine mode
+	// to avoid recursive tmux spawning. Override the config to force goroutine mode.
+	workerCfg := cfg.Clone()
+	workerCfg.Team.WorkerMode = "goroutine"
+
+	runner, err := createRunner(workerCfg, teamName, logger)
 	if err != nil {
 		cancel()
 		<-heartbeatDone
