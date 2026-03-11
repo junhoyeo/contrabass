@@ -3,6 +3,7 @@ package team
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -16,14 +17,17 @@ type HeartbeatMonitor struct {
 	store          *Store
 	paths          *Paths
 	staleThreshold time.Duration
+	logger         *slog.Logger
 }
 
 // NewHeartbeatMonitor creates a monitor backed by the given Store and Paths.
 func NewHeartbeatMonitor(store *Store, paths *Paths, staleThreshold time.Duration) *HeartbeatMonitor {
+	logger := slog.Default()
 	return &HeartbeatMonitor{
 		store:          store,
 		paths:          paths,
 		staleThreshold: staleThreshold,
+		logger:         logger,
 	}
 }
 
@@ -63,11 +67,12 @@ func (m *HeartbeatMonitor) IsStale(teamName, workerID string) (bool, error) {
 	m.store.mu.Lock()
 	defer m.store.mu.Unlock()
 
-	hb, err := m.readLocked(teamName, workerID)
+	path := m.paths.HeartbeatPath(teamName, workerID)
+	fi, err := os.Stat(path)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read heartbeat metadata: %w", err)
 	}
-	return m.isStale(*hb), nil
+	return m.isStaleAt(fi.ModTime()), nil
 }
 
 // ListStale scans worker heartbeats and returns stale entries.
@@ -82,7 +87,16 @@ func (m *HeartbeatMonitor) ListStale(teamName string) ([]Heartbeat, error) {
 
 	stale := make([]Heartbeat, 0, len(all))
 	for _, hb := range all {
-		if m.isStale(hb) {
+		path := m.paths.HeartbeatPath(teamName, hb.WorkerID)
+		fi, statErr := os.Stat(path)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read heartbeat metadata %s: %w", path, statErr)
+		}
+
+		if m.isStaleAt(fi.ModTime()) {
 			stale = append(stale, hb)
 		}
 	}
@@ -128,6 +142,10 @@ func (m *HeartbeatMonitor) listAllLocked(teamName string) ([]Heartbeat, error) {
 			if errors.Is(readErr, os.ErrNotExist) {
 				continue
 			}
+			if isJSONUnmarshalError(readErr) {
+				m.logger.Warn("skipping malformed heartbeat entry", "team", teamName, "path", hbPath, "error", readErr)
+				continue
+			}
 			return nil, fmt.Errorf("read heartbeat %s: %w", hbPath, readErr)
 		}
 		heartbeats = append(heartbeats, *hb)
@@ -136,9 +154,9 @@ func (m *HeartbeatMonitor) listAllLocked(teamName string) ([]Heartbeat, error) {
 	return heartbeats, nil
 }
 
-func (m *HeartbeatMonitor) isStale(hb Heartbeat) bool {
+func (m *HeartbeatMonitor) isStaleAt(mtime time.Time) bool {
 	if m.staleThreshold <= 0 {
 		return false
 	}
-	return time.Since(hb.Timestamp) > m.staleThreshold
+	return time.Since(mtime) > m.staleThreshold
 }

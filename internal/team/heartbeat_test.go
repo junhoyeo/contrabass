@@ -73,48 +73,77 @@ func TestHeartbeatMonitor_IsStale(t *testing.T) {
 	tests := []struct {
 		name      string
 		threshold time.Duration
-		timestamp time.Time
+		mtime     time.Time
 		wantStale bool
 	}{
 		{
 			name:      "stale when older than threshold",
 			threshold: 5 * time.Second,
-			timestamp: now.Add(-10 * time.Second),
+			mtime:     now.Add(-10 * time.Second),
 			wantStale: true,
 		},
 		{
 			name:      "fresh when within threshold",
 			threshold: 30 * time.Second,
-			timestamp: now.Add(-5 * time.Second),
+			mtime:     now.Add(-5 * time.Second),
 			wantStale: false,
 		},
 		{
 			name:      "never stale when threshold disabled",
 			threshold: 0,
-			timestamp: now.Add(-24 * time.Hour),
+			mtime:     now.Add(-24 * time.Hour),
 			wantStale: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store, _, monitor := setupHeartbeatMonitor(t, tt.threshold)
+			store, paths, monitor := setupHeartbeatMonitor(t, tt.threshold)
 			teamName := "team-a"
 			require.NoError(t, store.EnsureDirs(teamName))
+
+			writeTimestamp := now
+			if tt.wantStale {
+				writeTimestamp = now.Add(1 * time.Hour)
+			}
 
 			err := monitor.Write(teamName, Heartbeat{
 				WorkerID:  "worker-1",
 				PID:       1234,
 				Status:    "running",
-				Timestamp: tt.timestamp,
+				Timestamp: writeTimestamp,
 			})
 			require.NoError(t, err)
+
+			hbPath := paths.HeartbeatPath(teamName, "worker-1")
+			require.NoError(t, os.Chtimes(hbPath, tt.mtime, tt.mtime))
 
 			got, err := monitor.IsStale(teamName, "worker-1")
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantStale, got)
 		})
 	}
+}
+
+func TestHeartbeatMonitor_IsStale_UsesFileModTimeOverPayloadTimestamp(t *testing.T) {
+	store, paths, monitor := setupHeartbeatMonitor(t, 5*time.Second)
+	teamName := "team-a"
+	require.NoError(t, store.EnsureDirs(teamName))
+
+	require.NoError(t, monitor.Write(teamName, Heartbeat{
+		WorkerID:  "worker-1",
+		PID:       1234,
+		Status:    "running",
+		Timestamp: time.Now().Add(1 * time.Hour),
+	}))
+
+	oldTime := time.Now().Add(-30 * time.Second)
+	hbPath := paths.HeartbeatPath(teamName, "worker-1")
+	require.NoError(t, os.Chtimes(hbPath, oldTime, oldTime))
+
+	stale, err := monitor.IsStale(teamName, "worker-1")
+	require.NoError(t, err)
+	assert.True(t, stale)
 }
 
 func TestHeartbeatMonitor_ListStale(t *testing.T) {
@@ -129,8 +158,8 @@ func TestHeartbeatMonitor_ListStale(t *testing.T) {
 			name:      "returns only stale worker heartbeats",
 			threshold: 5 * time.Second,
 			heartbeats: []Heartbeat{
-				{WorkerID: "worker-stale", PID: 10, Status: "running", Timestamp: time.Now().Add(-20 * time.Second)},
-				{WorkerID: "worker-fresh", PID: 11, Status: "running", Timestamp: time.Now().Add(-1 * time.Second)},
+				{WorkerID: "worker-stale", PID: 10, Status: "running", Timestamp: time.Now().Add(1 * time.Hour)},
+				{WorkerID: "worker-fresh", PID: 11, Status: "running", Timestamp: time.Now().Add(-1 * time.Hour)},
 			},
 			workersNoFile: []string{"worker-no-heartbeat"},
 			wantWorkerIDs: []string{"worker-stale"},
@@ -146,6 +175,13 @@ func TestHeartbeatMonitor_ListStale(t *testing.T) {
 			for _, hb := range tt.heartbeats {
 				require.NoError(t, monitor.Write(teamName, hb))
 			}
+
+			staleMtime := time.Now().Add(-20 * time.Second)
+			freshMtime := time.Now().Add(-1 * time.Second)
+			stalePath := paths.HeartbeatPath(teamName, "worker-stale")
+			freshPath := paths.HeartbeatPath(teamName, "worker-fresh")
+			require.NoError(t, os.Chtimes(stalePath, staleMtime, staleMtime))
+			require.NoError(t, os.Chtimes(freshPath, freshMtime, freshMtime))
 
 			for _, workerID := range tt.workersNoFile {
 				dir := filepath.Dir(paths.HeartbeatPath(teamName, workerID))
@@ -199,4 +235,21 @@ func TestHeartbeatMonitor_ListAll(t *testing.T) {
 			assert.Len(t, all, tt.wantCount)
 		})
 	}
+}
+
+func TestHeartbeatMonitor_ListAll_SkipsMalformedHeartbeat(t *testing.T) {
+	store, paths, monitor := setupHeartbeatMonitor(t, 5*time.Minute)
+	teamName := "team-a"
+	require.NoError(t, store.EnsureDirs(teamName))
+
+	require.NoError(t, monitor.Write(teamName, Heartbeat{WorkerID: "worker-valid", PID: 1, Status: "running", Timestamp: time.Now()}))
+
+	malformedPath := paths.HeartbeatPath(teamName, "worker-malformed")
+	require.NoError(t, os.MkdirAll(filepath.Dir(malformedPath), 0o755))
+	require.NoError(t, os.WriteFile(malformedPath, []byte("{\"worker_id\":"), 0o644))
+
+	all, err := monitor.ListAll(teamName)
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	assert.Equal(t, "worker-valid", all[0].WorkerID)
 }
