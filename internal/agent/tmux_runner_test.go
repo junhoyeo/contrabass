@@ -61,7 +61,14 @@ func TestTmuxRunner_StopKillsPaneAndSignalsDone(t *testing.T) {
 	err = runner.Stop(proc)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kill failed")
-	assertDoneNil(t, proc.Done)
+	// Done channel now propagates the KillPane error (not nil)
+	select {
+	case err := <-proc.Done:
+		assert.Error(t, err, "expected kill error on Done channel")
+		assert.Contains(t, err.Error(), "kill failed")
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Done")
+	}
 }
 
 func TestTmuxRunner_CloseStopsAllProcesses(t *testing.T) {

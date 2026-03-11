@@ -221,8 +221,10 @@ func (r *TmuxRunner) Stop(proc *AgentProcess) error {
 	state.cancel()
 	state.remove(r)
 
-	killErr := r.session.KillPane(context.Background(), state.paneID)
-	state.finish(nil)
+	killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer killCancel()
+	killErr := r.session.KillPane(killCtx, state.paneID)
+	state.finish(killErr)
 	if killErr != nil {
 		return fmt.Errorf("%w: %v", errTmuxRunnerStopFailed, killErr)
 	}
@@ -243,10 +245,13 @@ func (r *TmuxRunner) Close() error {
 	for _, proc := range states {
 		proc.cancel()
 		proc.remove(r)
-		if err := r.session.KillPane(context.Background(), proc.paneID); err != nil {
-			errs = append(errs, err)
+		killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		killErr := r.session.KillPane(killCtx, proc.paneID)
+		killCancel()
+		if killErr != nil {
+			errs = append(errs, killErr)
 		}
-		proc.finish(nil)
+		proc.finish(killErr)
 	}
 
 	return errors.Join(errs...)
