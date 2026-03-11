@@ -64,7 +64,7 @@ func TestTmuxRunner_StopKillsPaneAndSignalsDone(t *testing.T) {
 	// Done channel now propagates the KillPane error (not nil)
 	select {
 	case err := <-proc.Done:
-		assert.Error(t, err, "expected kill error on Done channel")
+		require.Error(t, err, "expected kill error on Done channel")
 		assert.Contains(t, err.Error(), "kill failed")
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for Done")

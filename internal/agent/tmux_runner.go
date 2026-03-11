@@ -372,7 +372,6 @@ func (r *TmuxRunner) monitorProcess(ctx context.Context, bootstrap *tmux.WorkerB
 	for {
 		select {
 		case <-ctx.Done():
-			proc.finish(nil)
 			return
 		case <-ticker.C:
 			stopped, err := checkAlive(false)
