@@ -72,3 +72,13 @@ func (p *Paths) OwnershipPath(teamName string) string {
 func (p *Paths) EventsDir(teamName string) string {
 	return filepath.Join(p.TeamDir(teamName), "events")
 }
+
+// DispatchDir returns the directory containing dispatch queue entries.
+func (p *Paths) DispatchDir(teamName string) string {
+	return filepath.Join(p.TeamDir(teamName), "dispatch")
+}
+
+// DispatchPath returns the path to a specific dispatch entry JSON file.
+func (p *Paths) DispatchPath(teamName, taskID string) string {
+	return filepath.Join(p.DispatchDir(teamName), taskID+".json")
+}
