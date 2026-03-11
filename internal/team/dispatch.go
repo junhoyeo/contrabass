@@ -81,6 +81,13 @@ func (q *DispatchQueue) Ack(teamName, taskID, workerID string) error {
 	q.store.mu.Lock()
 	defer q.store.mu.Unlock()
 
+	path := q.paths.DispatchPath(teamName, taskID)
+	lock := NewFileLock(path)
+	if err := lock.Lock(); err != nil {
+		return fmt.Errorf("ack dispatch: acquire lock for %s: %w", path, err)
+	}
+	defer lock.Unlock()
+
 	entry, err := q.readLocked(teamName, taskID)
 	if err != nil {
 		return err
@@ -89,11 +96,16 @@ func (q *DispatchQueue) Ack(teamName, taskID, workerID string) error {
 		return fmt.Errorf("ack dispatch: worker mismatch for task %s", taskID)
 	}
 
+	// State machine guard: only allow ack from pending status
+	if entry.Status != DispatchStatusPending {
+		return fmt.Errorf("ack dispatch: cannot ack task %s: current status is %s", taskID, entry.Status)
+	}
+
 	now := time.Now()
 	entry.AckedAt = &now
 	entry.Status = DispatchStatusAcked
 
-	if err := q.store.WriteJSON(q.paths.DispatchPath(teamName, taskID), entry); err != nil {
+	if err := q.store.writeJSONNoLock(path, entry); err != nil {
 		return fmt.Errorf("ack dispatch: %w", err)
 	}
 	return nil
@@ -111,13 +123,26 @@ func (q *DispatchQueue) Complete(teamName, taskID string) error {
 	q.store.mu.Lock()
 	defer q.store.mu.Unlock()
 
+	path := q.paths.DispatchPath(teamName, taskID)
+	lock := NewFileLock(path)
+	if err := lock.Lock(); err != nil {
+		return fmt.Errorf("complete dispatch: acquire lock for %s: %w", path, err)
+	}
+	defer lock.Unlock()
+
 	entry, err := q.readLocked(teamName, taskID)
 	if err != nil {
 		return err
 	}
+
+	// State machine guard: only allow complete from acked status
+	if entry.Status != DispatchStatusAcked {
+		return fmt.Errorf("complete dispatch: cannot complete task %s: current status is %s", taskID, entry.Status)
+	}
+
 	entry.Status = DispatchStatusCompleted
 
-	if err := q.store.WriteJSON(q.paths.DispatchPath(teamName, taskID), entry); err != nil {
+	if err := q.store.writeJSONNoLock(path, entry); err != nil {
 		return fmt.Errorf("complete dispatch: %w", err)
 	}
 	return nil
@@ -163,17 +188,44 @@ func (q *DispatchQueue) GetTimedOut(teamName string) ([]DispatchEntry, error) {
 	now := time.Now()
 	timedOut := make([]DispatchEntry, 0)
 	for i := range all {
-		entry := &all[i]
+		if all[i].Status != DispatchStatusPending || all[i].AckedAt != nil {
+			continue
+		}
+		if q.ackTimeout <= 0 || now.Sub(all[i].DispatchedAt) <= q.ackTimeout {
+			continue
+		}
+
+		path := q.paths.DispatchPath(teamName, all[i].TaskID)
+		lock := NewFileLock(path)
+		if err := lock.Lock(); err != nil {
+			return nil, fmt.Errorf("get timed out dispatch: acquire lock for %s: %w", path, err)
+		}
+
+		entry, err := q.readLocked(teamName, all[i].TaskID)
+		if err != nil {
+			_ = lock.Unlock()
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+
 		if entry.Status != DispatchStatusPending || entry.AckedAt != nil {
+			_ = lock.Unlock()
 			continue
 		}
 		if q.ackTimeout <= 0 || now.Sub(entry.DispatchedAt) <= q.ackTimeout {
+			_ = lock.Unlock()
 			continue
 		}
 
 		entry.Status = DispatchStatusTimeout
-		if err := q.store.WriteJSON(q.paths.DispatchPath(teamName, entry.TaskID), entry); err != nil {
+		if err := q.store.writeJSONNoLock(path, entry); err != nil {
+			_ = lock.Unlock()
 			return nil, fmt.Errorf("get timed out dispatch: write task %s: %w", entry.TaskID, err)
+		}
+		if err := lock.Unlock(); err != nil {
+			return nil, fmt.Errorf("get timed out dispatch: release lock for %s: %w", path, err)
 		}
 		timedOut = append(timedOut, *entry)
 	}
@@ -193,6 +245,13 @@ func (q *DispatchQueue) Requeue(teamName, taskID string) error {
 	q.store.mu.Lock()
 	defer q.store.mu.Unlock()
 
+	path := q.paths.DispatchPath(teamName, taskID)
+	lock := NewFileLock(path)
+	if err := lock.Lock(); err != nil {
+		return fmt.Errorf("requeue dispatch: acquire lock for %s: %w", path, err)
+	}
+	defer lock.Unlock()
+
 	entry, err := q.readLocked(teamName, taskID)
 	if err != nil {
 		return err
@@ -206,7 +265,7 @@ func (q *DispatchQueue) Requeue(teamName, taskID string) error {
 	entry.AckedAt = nil
 	entry.DispatchedAt = time.Now()
 
-	if err := q.store.WriteJSON(q.paths.DispatchPath(teamName, taskID), entry); err != nil {
+	if err := q.store.writeJSONNoLock(path, entry); err != nil {
 		return fmt.Errorf("requeue dispatch: %w", err)
 	}
 	return nil

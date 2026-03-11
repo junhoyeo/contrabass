@@ -63,9 +63,49 @@ func TestDispatchQueue_Ack(t *testing.T) {
 		workerID  string
 		ackWorker string
 		wantErr   bool
+		setup     func(*DispatchQueue, string, string)
 	}{
-		{name: "ack updates status and timestamp", workerID: "worker-1", ackWorker: "worker-1", wantErr: false},
-		{name: "ack with wrong worker ID returns error", workerID: "worker-1", ackWorker: "worker-2", wantErr: true},
+		{
+			name:      "ack updates status and timestamp",
+			workerID:  "worker-1",
+			ackWorker: "worker-1",
+			wantErr:   false,
+			setup: func(q *DispatchQueue, teamName, taskID string) {
+				require.NoError(t, q.Dispatch(teamName, DispatchEntry{
+					TaskID:   taskID,
+					WorkerID: "worker-1",
+					Prompt:   "run task",
+				}))
+			},
+		},
+		{
+			name:      "ack with wrong worker ID returns error",
+			workerID:  "worker-1",
+			ackWorker: "worker-2",
+			wantErr:   true,
+			setup: func(q *DispatchQueue, teamName, taskID string) {
+				require.NoError(t, q.Dispatch(teamName, DispatchEntry{
+					TaskID:   taskID,
+					WorkerID: "worker-1",
+					Prompt:   "run task",
+				}))
+			},
+		},
+		{
+			name:      "ack fails on already completed entry",
+			workerID:  "worker-1",
+			ackWorker: "worker-1",
+			wantErr:   true,
+			setup: func(q *DispatchQueue, teamName, taskID string) {
+				require.NoError(t, q.Dispatch(teamName, DispatchEntry{
+					TaskID:   taskID,
+					WorkerID: "worker-1",
+					Prompt:   "run task",
+				}))
+				require.NoError(t, q.Ack(teamName, taskID, "worker-1"))
+				require.NoError(t, q.Complete(teamName, taskID))
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -75,11 +115,7 @@ func TestDispatchQueue_Ack(t *testing.T) {
 			taskID := "task-1"
 			require.NoError(t, store.EnsureDirs(teamName))
 
-			require.NoError(t, queue.Dispatch(teamName, DispatchEntry{
-				TaskID:   taskID,
-				WorkerID: tt.workerID,
-				Prompt:   "run task",
-			}))
+			tt.setup(queue, teamName, taskID)
 
 			err := queue.Ack(teamName, taskID, tt.ackWorker)
 			if tt.wantErr {
@@ -98,9 +134,33 @@ func TestDispatchQueue_Ack(t *testing.T) {
 
 func TestDispatchQueue_Complete(t *testing.T) {
 	tests := []struct {
-		name string
+		name    string
+		wantErr bool
+		setup   func(*DispatchQueue, string, string)
 	}{
-		{name: "complete marks entry completed"},
+		{
+			name:    "complete marks entry completed after ack",
+			wantErr: false,
+			setup: func(q *DispatchQueue, teamName, taskID string) {
+				require.NoError(t, q.Dispatch(teamName, DispatchEntry{
+					TaskID:   taskID,
+					WorkerID: "worker-1",
+					Prompt:   "run task",
+				}))
+				require.NoError(t, q.Ack(teamName, taskID, "worker-1"))
+			},
+		},
+		{
+			name:    "complete fails on pending entry",
+			wantErr: true,
+			setup: func(q *DispatchQueue, teamName, taskID string) {
+				require.NoError(t, q.Dispatch(teamName, DispatchEntry{
+					TaskID:   taskID,
+					WorkerID: "worker-1",
+					Prompt:   "run task",
+				}))
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -110,13 +170,15 @@ func TestDispatchQueue_Complete(t *testing.T) {
 			taskID := "task-1"
 			require.NoError(t, store.EnsureDirs(teamName))
 
-			require.NoError(t, queue.Dispatch(teamName, DispatchEntry{
-				TaskID:   taskID,
-				WorkerID: "worker-1",
-				Prompt:   "run task",
-			}))
-			require.NoError(t, queue.Complete(teamName, taskID))
+			tt.setup(queue, teamName, taskID)
 
+			err := queue.Complete(teamName, taskID)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
 			var got DispatchEntry
 			require.NoError(t, store.ReadJSON(paths.DispatchPath(teamName, taskID), &got))
 			assert.Equal(t, DispatchStatusCompleted, got.Status)
@@ -142,6 +204,7 @@ func TestDispatchQueue_GetPending(t *testing.T) {
 			require.NoError(t, queue.Dispatch(teamName, DispatchEntry{TaskID: "task-acked", WorkerID: "worker-2", Prompt: "acked"}))
 			require.NoError(t, queue.Dispatch(teamName, DispatchEntry{TaskID: "task-completed", WorkerID: "worker-3", Prompt: "completed"}))
 			require.NoError(t, queue.Ack(teamName, "task-acked", "worker-2"))
+			require.NoError(t, queue.Ack(teamName, "task-completed", "worker-3"))
 			require.NoError(t, queue.Complete(teamName, "task-completed"))
 
 			pending, err := queue.GetPending(teamName)
