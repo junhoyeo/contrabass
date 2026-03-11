@@ -139,13 +139,14 @@ func (r *TmuxRunner) Start(ctx context.Context, issue types.Issue, workspace str
 	pid := int(r.pidSeq.Add(1))
 	workerID := fmt.Sprintf("worker-%d", pid)
 	taskID := firstNonEmpty(issue.ID, issue.Identifier, workerID)
-	cliCommand := buildCLICommand(binaryPath, cliCfg.BuildArgs(workspace, promptPath))
+	cliArgs := cliCfg.BuildArgs(workspace, promptPath)
 
 	bootstrap := tmux.NewWorkerBootstrap(r.session, tmux.BootstrapConfig{
 		WorkerID:   workerID,
 		TeamName:   r.teamName,
 		WorkDir:    workspace,
-		CLICommand: cliCommand,
+		CLICommand: binaryPath,
+		CLIArgs:    cliArgs,
 		Env:        cliCfg.Env,
 	})
 
@@ -369,13 +370,6 @@ func (r *TmuxRunner) monitorProcess(ctx context.Context, bootstrap *tmux.WorkerB
 			}
 		}
 	}
-}
-
-func buildCLICommand(binaryPath string, args []string) string {
-	parts := make([]string, 0, len(args)+1)
-	parts = append(parts, strings.TrimSpace(binaryPath))
-	parts = append(parts, args...)
-	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
 func callHeartbeatWrite(monitor any, teamName, workerID string, pid int, taskID, status string, timestamp time.Time) error {

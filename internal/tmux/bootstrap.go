@@ -19,6 +19,7 @@ type BootstrapConfig struct {
 	TeamName        string
 	WorkDir         string
 	CLICommand      string
+	CLIArgs         []string
 	BootstrapPrompt string
 	Env             map[string]string
 }
@@ -68,7 +69,14 @@ func (w *WorkerBootstrap) Bootstrap(ctx context.Context) (paneID string, err err
 		return "", fmt.Errorf("change worker %q directory to %q: %w", w.config.WorkerID, w.config.WorkDir, err)
 	}
 
-	if err := w.session.SendKeys(ctx, createdPaneID, strings.TrimSpace(w.config.CLICommand), "C-m"); err != nil {
+	// Build the full CLI command with properly quoted arguments
+	cliParts := []string{shellQuote(strings.TrimSpace(w.config.CLICommand))}
+	for _, arg := range w.config.CLIArgs {
+		cliParts = append(cliParts, shellQuote(arg))
+	}
+	fullCLICmd := strings.Join(cliParts, " ")
+
+	if err := w.session.SendKeys(ctx, createdPaneID, fullCLICmd, "C-m"); err != nil {
 		return "", fmt.Errorf("launch worker %q cli command: %w", w.config.WorkerID, err)
 	}
 

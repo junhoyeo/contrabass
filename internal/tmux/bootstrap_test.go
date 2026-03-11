@@ -21,7 +21,8 @@ func TestWorkerBootstrapBootstrap(t *testing.T) {
 		WorkerID:   "worker-1",
 		TeamName:   "team",
 		WorkDir:    "/tmp/work dir",
-		CLICommand: "contrabass team 2:executor",
+		CLICommand: "contrabass",
+		CLIArgs:    []string{"team", "2:executor"},
 		Env: map[string]string{
 			"ZED":       "value",
 			"API_TOKEN": "a b",
@@ -44,7 +45,7 @@ func TestWorkerBootstrapBootstrap(t *testing.T) {
 		{"send-keys", "-t", "%3", "export API_TOKEN='a b'", "C-m"},
 		{"send-keys", "-t", "%3", "export ZED='value'", "C-m"},
 		{"send-keys", "-t", "%3", "cd '/tmp/work dir'", "C-m"},
-		{"send-keys", "-t", "%3", "contrabass team 2:executor", "C-m"},
+		{"send-keys", "-t", "%3", "'contrabass' 'team' '2:executor'", "C-m"},
 	}
 	assert.Equal(t, expected, got)
 }
