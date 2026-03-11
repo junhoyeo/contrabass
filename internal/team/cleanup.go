@@ -214,6 +214,10 @@ func (c *Cleaner) cleanupPendingDispatchLocked(teamName, workerID string) error 
 			if errors.Is(readErr, os.ErrNotExist) {
 				continue
 			}
+			if isJSONUnmarshalError(readErr) {
+				c.logger.Warn("skipping malformed dispatch entry", "team", teamName, "path", path, "error", readErr)
+				continue
+			}
 			errs = append(errs, fmt.Errorf("read dispatch entry %s: %w", path, readErr))
 			continue
 		}

@@ -282,3 +282,25 @@ func TestCleaner_CleanupStaleHeartbeats(t *testing.T) {
 		})
 	}
 }
+
+func TestCleaner_CleanupWorker_SkipsMalformedDispatchEntries(t *testing.T) {
+	teamName := "team-a"
+	paths := NewPaths(t.TempDir())
+	store := NewStore(paths)
+	require.NoError(t, store.EnsureDirs(teamName))
+
+	require.NoError(t, os.MkdirAll(paths.DispatchDir(teamName), 0o755))
+	require.NoError(t, store.WriteJSON(paths.DispatchPath(teamName, "task-pending-worker-1"), &DispatchEntry{TaskID: "task-pending-worker-1", WorkerID: "worker-1", Status: DispatchStatusPending}))
+
+	malformedPath := paths.DispatchPath(teamName, "task-malformed")
+	require.NoError(t, os.WriteFile(malformedPath, []byte("{\"task_id\":"), 0o644))
+
+	cleaner := NewCleaner(paths, store, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, cleaner.CleanupWorker(context.Background(), teamName, "worker-1"))
+
+	_, err := os.Stat(paths.DispatchPath(teamName, "task-pending-worker-1"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+
+	_, err = os.Stat(malformedPath)
+	require.NoError(t, err)
+}

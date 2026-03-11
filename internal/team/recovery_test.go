@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -68,7 +69,7 @@ func TestRecovery_DiagnoseAndRecover(t *testing.T) {
 		},
 		{
 			name: "stale workers with orphaned tasks",
-			setup: func(t *testing.T, store *Store, _ *Paths, heartbeats *HeartbeatMonitor, tasks *TaskRegistry, _ *DispatchQueue) {
+			setup: func(t *testing.T, store *Store, paths *Paths, heartbeats *HeartbeatMonitor, tasks *TaskRegistry, _ *DispatchQueue) {
 				teamName := "team-a"
 				require.NoError(t, store.EnsureDirs(teamName))
 				require.NoError(t, store.SavePhaseState(teamName, &types.TeamPhaseState{Phase: types.PhaseVerify}))
@@ -79,6 +80,11 @@ func TestRecovery_DiagnoseAndRecover(t *testing.T) {
 
 				require.NoError(t, heartbeats.Write(teamName, Heartbeat{WorkerID: "worker-dead", Status: "working", Timestamp: time.Now().Add(-2 * time.Minute)}))
 				require.NoError(t, heartbeats.Write(teamName, Heartbeat{WorkerID: "worker-alive", Status: "working", Timestamp: time.Now()}))
+
+				staleMTime := time.Now().Add(-2 * time.Minute)
+				freshMTime := time.Now()
+				require.NoError(t, os.Chtimes(paths.HeartbeatPath(teamName, "worker-dead"), staleMTime, staleMTime))
+				require.NoError(t, os.Chtimes(paths.HeartbeatPath(teamName, "worker-alive"), freshMTime, freshMTime))
 			},
 			assertion: func(t *testing.T, report *DiagnosisReport, store *Store, paths *Paths, _ *HeartbeatMonitor, tasks *TaskRegistry, _ *DispatchQueue) {
 				teamName := "team-a"
@@ -140,6 +146,28 @@ func TestRecovery_DiagnoseAndRecover(t *testing.T) {
 				assert.Empty(t, report.StaleWorkers)
 				assert.Empty(t, report.OrphanedTasks)
 				assert.Empty(t, report.PendingDispatch)
+			},
+		},
+		{
+			name: "malformed phase and heartbeat files are skipped",
+			setup: func(t *testing.T, store *Store, paths *Paths, _ *HeartbeatMonitor, tasks *TaskRegistry, _ *DispatchQueue) {
+				teamName := "team-a"
+				require.NoError(t, store.EnsureDirs(teamName))
+
+				require.NoError(t, os.WriteFile(paths.PhaseStatePath(teamName), []byte("{\"phase\":"), 0o644))
+				require.NoError(t, os.MkdirAll(filepath.Dir(paths.HeartbeatPath(teamName, "worker-bad")), 0o755))
+				require.NoError(t, os.WriteFile(paths.HeartbeatPath(teamName, "worker-bad"), []byte("{\"worker_id\":"), 0o644))
+				require.NoError(t, tasks.CreateTask(teamName, &types.TeamTask{ID: "task-good", Subject: "s", Description: "d"}))
+				require.NoError(t, os.WriteFile(paths.TaskPath(teamName, "task-bad"), []byte("{\"id\":"), 0o644))
+			},
+			assertion: func(t *testing.T, report *DiagnosisReport, _ *Store, _ *Paths, _ *HeartbeatMonitor, tasks *TaskRegistry, _ *DispatchQueue) {
+				assert.Nil(t, report.PhaseState)
+				assert.Empty(t, report.StaleWorkers)
+				assert.Empty(t, report.OrphanedTasks)
+
+				task, err := tasks.GetTask("team-a", "task-good")
+				require.NoError(t, err)
+				assert.Equal(t, types.TaskPending, task.Status)
 			},
 		},
 	}

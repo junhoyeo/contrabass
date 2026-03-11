@@ -55,9 +55,11 @@ func (r *Recovery) Diagnose(teamName string) (*DiagnosisReport, error) {
 
 	phaseState, err := r.store.LoadPhaseState(teamName)
 	if err != nil {
-		var pathErr *os.PathError
-		if !errors.As(err, &pathErr) {
+		if !errors.Is(err, os.ErrNotExist) && !isJSONUnmarshalError(err) {
 			return nil, fmt.Errorf("diagnose: load phase state: %w", err)
+		}
+		if isJSONUnmarshalError(err) {
+			r.logger.Warn("skipping malformed phase state", "team", teamName, "error", err)
 		}
 	} else {
 		report.PhaseState = phaseState
