@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
-// MailboxMessage represents a message in a worker's mailbox
-type MailboxMessage struct {
+// cliMailboxMessage is the JSON shape returned by the team CLI mailbox API.
+type cliMailboxMessage struct {
 	MessageID   string    `json:"message_id"`
 	FromWorker  string    `json:"from_worker"`
 	ToWorker    string    `json:"to_worker"`
@@ -17,8 +19,33 @@ type MailboxMessage struct {
 	DeliveredAt time.Time `json:"delivered_at,omitempty"`
 }
 
-// SendMessage sends a direct message from one worker to another
-func (r *teamCLIRunner) SendMessage(ctx context.Context, workspace, teamName, fromWorker, toWorker, body string) (*MailboxMessage, error) {
+func (m *cliMailboxMessage) toMailboxMessage() types.MailboxMessage {
+	status := types.MessagePending
+	if !m.DeliveredAt.IsZero() {
+		status = types.MessageDelivered
+	} else if !m.NotifiedAt.IsZero() {
+		status = types.MessageDelivered
+	}
+	return types.MailboxMessage{
+		ID:        m.MessageID,
+		From:      m.FromWorker,
+		To:        m.ToWorker,
+		Content:   m.Body,
+		Timestamp: m.CreatedAt,
+		Status:    status,
+	}
+}
+
+func convertCLIMessages(msgs []cliMailboxMessage) []types.MailboxMessage {
+	result := make([]types.MailboxMessage, len(msgs))
+	for i, m := range msgs {
+		result[i] = m.toMailboxMessage()
+	}
+	return result
+}
+
+// SendMessage sends a direct message from one worker to another.
+func (r *teamCLIRunner) SendMessage(ctx context.Context, workspace, teamName, fromWorker, toWorker, body string) (*types.MailboxMessage, error) {
 	if fromWorker == "" {
 		return nil, fmt.Errorf("from_worker is required")
 	}
@@ -37,18 +64,19 @@ func (r *teamCLIRunner) SendMessage(ctx context.Context, workspace, teamName, fr
 	}
 
 	var resp struct {
-		Message MailboxMessage `json:"message"`
+		Message cliMailboxMessage `json:"message"`
 	}
 
 	if err := r.runTeamAPI(ctx, workspace, "send-message", input, &resp); err != nil {
 		return nil, fmt.Errorf("send message: %w", err)
 	}
 
-	return &resp.Message, nil
+	msg := resp.Message.toMailboxMessage()
+	return &msg, nil
 }
 
-// BroadcastMessage sends a message from one worker to all other workers
-func (r *teamCLIRunner) BroadcastMessage(ctx context.Context, workspace, teamName, fromWorker, body string) ([]MailboxMessage, error) {
+// BroadcastMessage sends a message from one worker to all other workers.
+func (r *teamCLIRunner) BroadcastMessage(ctx context.Context, workspace, teamName, fromWorker, body string) ([]types.MailboxMessage, error) {
 	if fromWorker == "" {
 		return nil, fmt.Errorf("from_worker is required")
 	}
@@ -63,19 +91,19 @@ func (r *teamCLIRunner) BroadcastMessage(ctx context.Context, workspace, teamNam
 	}
 
 	var resp struct {
-		Count    int              `json:"count"`
-		Messages []MailboxMessage `json:"messages"`
+		Count    int                 `json:"count"`
+		Messages []cliMailboxMessage `json:"messages"`
 	}
 
 	if err := r.runTeamAPI(ctx, workspace, "broadcast", input, &resp); err != nil {
 		return nil, fmt.Errorf("broadcast message: %w", err)
 	}
 
-	return resp.Messages, nil
+	return convertCLIMessages(resp.Messages), nil
 }
 
-// ListMailbox lists messages in a worker's mailbox
-func (r *teamCLIRunner) ListMailbox(ctx context.Context, workspace, teamName, worker string, includeDelivered bool) ([]MailboxMessage, error) {
+// ListMailbox lists messages in a worker's mailbox.
+func (r *teamCLIRunner) ListMailbox(ctx context.Context, workspace, teamName, worker string, includeDelivered bool) ([]types.MailboxMessage, error) {
 	if worker == "" {
 		return nil, fmt.Errorf("worker is required")
 	}
@@ -87,19 +115,19 @@ func (r *teamCLIRunner) ListMailbox(ctx context.Context, workspace, teamName, wo
 	}
 
 	var resp struct {
-		Worker   string           `json:"worker"`
-		Count    int              `json:"count"`
-		Messages []MailboxMessage `json:"messages"`
+		Worker   string              `json:"worker"`
+		Count    int                 `json:"count"`
+		Messages []cliMailboxMessage `json:"messages"`
 	}
 
 	if err := r.runTeamAPI(ctx, workspace, "mailbox-list", input, &resp); err != nil {
 		return nil, fmt.Errorf("list mailbox: %w", err)
 	}
 
-	return resp.Messages, nil
+	return convertCLIMessages(resp.Messages), nil
 }
 
-// MarkMessageDelivered marks a message as delivered
+// MarkMessageDelivered marks a message as delivered.
 func (r *teamCLIRunner) MarkMessageDelivered(ctx context.Context, workspace, teamName, worker, messageID string) error {
 	if worker == "" {
 		return fmt.Errorf("worker is required")
@@ -117,11 +145,10 @@ func (r *teamCLIRunner) MarkMessageDelivered(ctx context.Context, workspace, tea
 	if err := r.runTeamAPI(ctx, workspace, "mailbox-mark-delivered", input, nil); err != nil {
 		return fmt.Errorf("mark message delivered: %w", err)
 	}
-
 	return nil
 }
 
-// MarkMessageNotified marks a message as notified
+// MarkMessageNotified marks a message as notified.
 func (r *teamCLIRunner) MarkMessageNotified(ctx context.Context, workspace, teamName, worker, messageID string) error {
 	if worker == "" {
 		return fmt.Errorf("worker is required")
@@ -139,23 +166,21 @@ func (r *teamCLIRunner) MarkMessageNotified(ctx context.Context, workspace, team
 	if err := r.runTeamAPI(ctx, workspace, "mailbox-mark-notified", input, nil); err != nil {
 		return fmt.Errorf("mark message notified: %w", err)
 	}
-
 	return nil
 }
 
-// GetUnreadMessages returns undelivered messages for a worker
-func (r *teamCLIRunner) GetUnreadMessages(ctx context.Context, workspace, teamName, worker string) ([]MailboxMessage, error) {
+// GetUnreadMessages returns undelivered messages for a worker.
+func (r *teamCLIRunner) GetUnreadMessages(ctx context.Context, workspace, teamName, worker string) ([]types.MailboxMessage, error) {
 	messages, err := r.ListMailbox(ctx, workspace, teamName, worker, false)
 	if err != nil {
 		return nil, err
 	}
 
-	var unread []MailboxMessage
+	var unread []types.MailboxMessage
 	for _, msg := range messages {
-		if msg.DeliveredAt.IsZero() {
+		if msg.Status == types.MessagePending {
 			unread = append(unread, msg)
 		}
 	}
-
 	return unread, nil
 }

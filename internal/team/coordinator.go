@@ -269,7 +269,30 @@ func (c *Coordinator) runExecPhase(ctx context.Context) error {
 		})
 	}
 
-	if err := g.Wait(); err != nil {
+	// Periodic stale worker detection during exec phase (non-blocking).
+	monitorCtx, monitorCancel := context.WithCancel(gCtx)
+	go func() {
+		defer monitorCancel()
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-monitorCtx.Done():
+				return
+			case <-ticker.C:
+				stale := c.checkForStaleWorkers()
+				for _, workerID := range stale {
+					c.logger.Warn("stale worker detected during exec phase",
+						"team", c.teamName, "worker", workerID)
+				}
+			}
+		}
+	}()
+
+	err := g.Wait()
+	monitorCancel() // Stop the monitor goroutine.
+
+	if err != nil {
 		// If the parent context was cancelled (e.g., signal), propagate immediately.
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -559,6 +582,9 @@ func (c *Coordinator) executeTask(ctx context.Context, task *types.TeamTask, tok
 	defer leaseCancel()
 	go c.renewLeaseLoop(leaseCtx, task.ID, token)
 
+	// Write heartbeats so the health monitor can detect stale workers.
+	go c.heartbeatLoop(leaseCtx, workerID, proc.PID)
+
 	select {
 	case err := <-proc.Done:
 		if err != nil {
@@ -598,6 +624,76 @@ func (c *Coordinator) renewLeaseLoop(ctx context.Context, taskID, token string) 
 			}
 		}
 	}
+}
+
+// heartbeatLoop periodically writes heartbeats for a worker so stale-worker
+// detection works correctly during long-running tasks.
+func (c *Coordinator) heartbeatLoop(ctx context.Context, workerID string, pid int) {
+	// Use lease seconds / 3 as interval, similar to renewLeaseLoop.
+	leaseSeconds := c.cfg.TeamClaimLeaseSeconds()
+	interval := time.Duration(leaseSeconds/3) * time.Second
+	if interval < 1*time.Second {
+		interval = 1 * time.Second
+	}
+
+	writeHB := func() {
+		hb := Heartbeat{
+			WorkerID:  workerID,
+			PID:       pid,
+			Status:    "working",
+			Timestamp: time.Now(),
+		}
+		if err := c.heartbeats.Write(c.teamName, hb); err != nil {
+			c.logger.Warn("heartbeat write failed", "worker", workerID, "error", err)
+		}
+	}
+
+	// Write an initial heartbeat immediately.
+	writeHB()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			writeHB()
+		}
+	}
+}
+
+// checkForStaleWorkers uses the heartbeat monitor to detect workers that have
+// stopped reporting. Called during the exec phase to identify problems early.
+func (c *Coordinator) checkForStaleWorkers() []string {
+	c.mu.Lock()
+	workerIDs := make([]string, 0, len(c.workers))
+	for id := range c.workers {
+		workerIDs = append(workerIDs, id)
+	}
+	c.mu.Unlock()
+
+	var stale []string
+	for _, id := range workerIDs {
+		isStale, err := c.heartbeats.IsStale(c.teamName, id)
+		if err != nil {
+			c.logger.Warn("failed to check heartbeat staleness", "worker", id, "error", err)
+			continue
+		}
+		if isStale {
+			stale = append(stale, id)
+		}
+	}
+
+	if len(stale) > 0 {
+		c.emitEvent("workers_stale", map[string]interface{}{
+			"stale_workers": stale,
+			"count":         len(stale),
+		})
+	}
+
+	return stale
 }
 
 func (c *Coordinator) stopAllWorkers() {

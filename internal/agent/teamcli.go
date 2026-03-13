@@ -256,6 +256,10 @@ func (r *teamCLIRunner) Stop(proc *AgentProcess) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), r.startupTimeout)
 	defer cancel()
+
+	// Try graceful shutdown first, then force-stop.
+	r.gracefulShutdownWorkers(shutdownCtx, state.workspace, state.teamName)
+
 	if err := r.shutdownTeam(shutdownCtx, state.workspace, state.teamName); err != nil {
 		return fmt.Errorf("%w: %v", errTeamCLIStopFailed, err)
 	}
@@ -277,6 +281,7 @@ func (r *teamCLIRunner) Close() error {
 		proc.cancel()
 		proc.remove(r)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), r.startupTimeout)
+		r.gracefulShutdownWorkers(shutdownCtx, proc.workspace, proc.teamName)
 		err := r.shutdownTeam(shutdownCtx, proc.workspace, proc.teamName)
 		cancel()
 		if err != nil {
@@ -337,11 +342,13 @@ func (r *teamCLIRunner) monitorProcess(ctx context.Context, proc *teamCLIProcess
 		"runner":      r.name,
 	})
 
+	const healthCheckInterval = 5 // check health every N poll cycles
 	var (
 		lastPhase      string
 		lastTaskStatus string
 		seenStarted    bool
 		errorCount     int
+		pollCount      int
 	)
 
 	handleSnapshot := func(snapshot *teamSnapshot) (bool, error) {
@@ -439,6 +446,12 @@ func (r *teamCLIRunner) monitorProcess(ctx context.Context, proc *teamCLIProcess
 			if done, err := handleSnapshot(snapshot); done {
 				finish(err)
 				return
+			}
+
+			// Periodic health and stall checks using the new modules.
+			pollCount++
+			if pollCount%healthCheckInterval == 0 {
+				r.checkTeamHealthAndStall(ctx, proc, emit)
 			}
 		}
 	}
@@ -658,6 +671,73 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// checkTeamHealthAndStall runs health and stall detection during monitoring,
+// emitting events for dead or stalled workers so the operator can react.
+func (r *teamCLIRunner) checkTeamHealthAndStall(ctx context.Context, proc *teamCLIProcess, emit func(string, map[string]interface{})) {
+	const maxHeartbeatAge = 60 * time.Second
+
+	// Check stall state first (cheaper, single API call).
+	stallState, err := r.ReadStallState(ctx, proc.workspace, proc.teamName)
+	if err != nil {
+		r.logger.Warn("stall state check failed", "team", proc.teamName, "error", err)
+		return
+	}
+
+	if stallState.TeamStalled {
+		emit("team/stalled", map[string]interface{}{
+			"team_name":       proc.teamName,
+			"reasons":         stallState.Reasons,
+			"dead_workers":    stallState.DeadWorkers,
+			"stalled_workers": stallState.StalledWorkers,
+			"pending_tasks":   stallState.PendingTaskCount,
+		})
+
+		// Attempt to restart dead workers.
+		if len(stallState.DeadWorkers) > 0 {
+			results, restartErr := r.RestartDeadWorkers(ctx, proc.workspace, proc.teamName, maxHeartbeatAge)
+			if restartErr != nil {
+				r.logger.Warn("failed to restart dead workers", "team", proc.teamName, "error", restartErr)
+			} else {
+				for _, result := range results {
+					emit("worker/restarted", map[string]interface{}{
+						"team_name":       proc.teamName,
+						"worker":          result.WorkerName,
+						"success":         result.Success,
+						"reassigned_tasks": result.ReassignedTasks,
+					})
+				}
+			}
+		}
+	}
+}
+
+// gracefulShutdownWorkers sends shutdown requests to all known workers before
+// force-stopping the team. Called from Stop/Close for cleaner teardown.
+func (r *teamCLIRunner) gracefulShutdownWorkers(ctx context.Context, workspace, teamName string) {
+	snapshot, err := r.fetchSnapshot(ctx, workspace, teamName)
+	if err != nil {
+		return
+	}
+
+	for _, worker := range snapshot.Summary.Workers {
+		if worker.Alive {
+			if writeErr := r.writeShutdownRequest(ctx, workspace, teamName, worker.Name, "team-stop"); writeErr != nil {
+				r.logger.Warn("failed to send shutdown request",
+					"team", teamName,
+					"worker", worker.Name,
+					"error", writeErr,
+				)
+			}
+		}
+	}
+
+	// Brief grace period for workers to acknowledge.
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+	}
 }
 
 func formatCommandOutput(output []byte) string {

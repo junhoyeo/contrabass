@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/junhoyeo/contrabass/internal/types"
 )
 
-func TestMailboxMessageJSON(t *testing.T) {
+func TestCLIMailboxMessageConversion(t *testing.T) {
 	now := time.Now()
-	msg := &MailboxMessage{
+	cliMsg := &cliMailboxMessage{
 		MessageID:   "msg_123",
 		FromWorker:  "worker-1",
 		ToWorker:    "worker-2",
@@ -18,73 +20,88 @@ func TestMailboxMessageJSON(t *testing.T) {
 		DeliveredAt: now.Add(2 * time.Second),
 	}
 
+	msg := cliMsg.toMailboxMessage()
+
+	if msg.ID != cliMsg.MessageID {
+		t.Errorf("ID mismatch: got %s, want %s", msg.ID, cliMsg.MessageID)
+	}
+	if msg.From != cliMsg.FromWorker {
+		t.Errorf("From mismatch: got %s, want %s", msg.From, cliMsg.FromWorker)
+	}
+	if msg.To != cliMsg.ToWorker {
+		t.Errorf("To mismatch: got %s, want %s", msg.To, cliMsg.ToWorker)
+	}
+	if msg.Content != cliMsg.Body {
+		t.Errorf("Content mismatch: got %s, want %s", msg.Content, cliMsg.Body)
+	}
+	if msg.Status != types.MessageDelivered {
+		t.Errorf("Status should be delivered, got %s", msg.Status)
+	}
+}
+
+func TestMailboxMessageJSON(t *testing.T) {
+	msg := types.MailboxMessage{
+		ID:        "msg_123",
+		From:      "worker-1",
+		To:        "worker-2",
+		Content:   "Please review my changes",
+		Timestamp: time.Now(),
+		Status:    types.MessagePending,
+	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("Failed to marshal message: %v", err)
 	}
 
-	var decoded MailboxMessage
+	var decoded types.MailboxMessage
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("Failed to unmarshal message: %v", err)
 	}
 
-	if decoded.MessageID != msg.MessageID {
-		t.Errorf("MessageID mismatch: got %s, want %s", decoded.MessageID, msg.MessageID)
+	if decoded.ID != msg.ID {
+		t.Errorf("ID mismatch: got %s, want %s", decoded.ID, msg.ID)
 	}
-
-	if decoded.FromWorker != msg.FromWorker {
-		t.Errorf("FromWorker mismatch: got %s, want %s", decoded.FromWorker, msg.FromWorker)
+	if decoded.From != msg.From {
+		t.Errorf("From mismatch: got %s, want %s", decoded.From, msg.From)
 	}
-
-	if decoded.ToWorker != msg.ToWorker {
-		t.Errorf("ToWorker mismatch: got %s, want %s", decoded.ToWorker, msg.ToWorker)
-	}
-
-	if decoded.Body != msg.Body {
-		t.Errorf("Body mismatch: got %s, want %s", decoded.Body, msg.Body)
-	}
-
-	if !decoded.NotifiedAt.Equal(msg.NotifiedAt) {
-		t.Errorf("NotifiedAt mismatch: got %v, want %v", decoded.NotifiedAt, msg.NotifiedAt)
-	}
-
-	if !decoded.DeliveredAt.Equal(msg.DeliveredAt) {
-		t.Errorf("DeliveredAt mismatch: got %v, want %v", decoded.DeliveredAt, msg.DeliveredAt)
+	if decoded.To != msg.To {
+		t.Errorf("To mismatch: got %s, want %s", decoded.To, msg.To)
 	}
 }
 
 func TestUnreadMessageFiltering(t *testing.T) {
 	now := time.Now()
-	messages := []MailboxMessage{
+	messages := []types.MailboxMessage{
 		{
-			MessageID:   "msg_1",
-			FromWorker:  "worker-1",
-			ToWorker:    "worker-2",
-			Body:        "Message 1",
-			CreatedAt:   now,
-			DeliveredAt: now.Add(1 * time.Second), // Delivered
+			ID:        "msg_1",
+			From:      "worker-1",
+			To:        "worker-2",
+			Content:   "Message 1",
+			Timestamp: now,
+			Status:    types.MessageDelivered,
 		},
 		{
-			MessageID:  "msg_2",
-			FromWorker: "worker-1",
-			ToWorker:   "worker-2",
-			Body:       "Message 2",
-			CreatedAt:  now,
-			// Not delivered
+			ID:        "msg_2",
+			From:      "worker-1",
+			To:        "worker-2",
+			Content:   "Message 2",
+			Timestamp: now,
+			Status:    types.MessagePending,
 		},
 		{
-			MessageID:  "msg_3",
-			FromWorker: "worker-3",
-			ToWorker:   "worker-2",
-			Body:       "Message 3",
-			CreatedAt:  now,
-			// Not delivered
+			ID:        "msg_3",
+			From:      "worker-3",
+			To:        "worker-2",
+			Content:   "Message 3",
+			Timestamp: now,
+			Status:    types.MessagePending,
 		},
 	}
 
-	var unread []MailboxMessage
+	var unread []types.MailboxMessage
 	for _, msg := range messages {
-		if msg.DeliveredAt.IsZero() {
+		if msg.Status == types.MessagePending {
 			unread = append(unread, msg)
 		}
 	}
@@ -92,49 +109,24 @@ func TestUnreadMessageFiltering(t *testing.T) {
 	if len(unread) != 2 {
 		t.Errorf("Expected 2 unread messages, got %d", len(unread))
 	}
-
-	for _, msg := range unread {
-		if !msg.DeliveredAt.IsZero() {
-			t.Errorf("Unread message %s has DeliveredAt set", msg.MessageID)
-		}
-	}
 }
 
 func TestMessageNotificationFlow(t *testing.T) {
-	now := time.Now()
-	msg := &MailboxMessage{
-		MessageID:  "msg_123",
-		FromWorker: "worker-1",
-		ToWorker:   "worker-2",
-		Body:       "Test message",
-		CreatedAt:  now,
+	msg := types.MailboxMessage{
+		ID:        "msg_123",
+		From:      "worker-1",
+		To:        "worker-2",
+		Content:   "Test message",
+		Timestamp: time.Now(),
+		Status:    types.MessagePending,
 	}
 
-	// Initially, no notification or delivery timestamps
-	if !msg.NotifiedAt.IsZero() {
-		t.Error("NotifiedAt should be zero initially")
-	}
-	if !msg.DeliveredAt.IsZero() {
-		t.Error("DeliveredAt should be zero initially")
+	if msg.Status != types.MessagePending {
+		t.Error("Status should be pending initially")
 	}
 
-	// After notification
-	msg.NotifiedAt = now.Add(1 * time.Second)
-	if msg.NotifiedAt.IsZero() {
-		t.Error("NotifiedAt should be set after notification")
-	}
-	if !msg.DeliveredAt.IsZero() {
-		t.Error("DeliveredAt should still be zero after notification")
-	}
-
-	// After delivery
-	msg.DeliveredAt = now.Add(2 * time.Second)
-	if msg.DeliveredAt.IsZero() {
-		t.Error("DeliveredAt should be set after delivery")
-	}
-
-	// Delivery should be after notification
-	if msg.DeliveredAt.Before(msg.NotifiedAt) {
-		t.Error("DeliveredAt should be after NotifiedAt")
+	msg.Status = types.MessageDelivered
+	if msg.Status != types.MessageDelivered {
+		t.Error("Status should be delivered after delivery")
 	}
 }
