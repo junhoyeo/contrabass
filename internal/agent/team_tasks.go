@@ -56,9 +56,10 @@ func (t *cliTask) toTeamTask() types.TeamTask {
 	}
 	if t.Claim != nil {
 		task.Claim = &types.TaskClaim{
-			WorkerID: t.Claim.Owner,
-			Token:    t.Claim.Token,
-			LeasedAt: t.CreatedAt, // Use task CreatedAt as claim start; LeasedUntil is the expiration, not the start time.
+			WorkerID:    t.Claim.Owner,
+			Token:       t.Claim.Token,
+			LeasedAt:    t.CreatedAt,
+			LeasedUntil: t.Claim.LeasedUntil,
 		}
 	}
 	return task
@@ -127,13 +128,12 @@ func (r *teamCLIRunner) ReadTask(ctx context.Context, workspace, teamName, taskI
 
 // UpdateTask updates mutable fields of a task.
 func (r *teamCLIRunner) UpdateTask(ctx context.Context, workspace, teamName, taskID string, updates map[string]interface{}) (*types.TeamTask, error) {
-	input := map[string]interface{}{
-		"team_name": teamName,
-		"task_id":   taskID,
-	}
+	input := make(map[string]interface{}, len(updates)+2)
 	for k, v := range updates {
 		input[k] = v
 	}
+	input["team_name"] = teamName
+	input["task_id"] = taskID
 
 	var resp struct {
 		Task cliTask `json:"task"`

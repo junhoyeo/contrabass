@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/junhoyeo/contrabass/internal/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCLITaskConversion(t *testing.T) {
@@ -27,24 +29,12 @@ func TestCLITaskConversion(t *testing.T) {
 
 	task := ct.toTeamTask()
 
-	if task.ID != ct.ID {
-		t.Errorf("ID mismatch: got %s, want %s", task.ID, ct.ID)
-	}
-	if task.Subject != ct.Subject {
-		t.Errorf("Subject mismatch: got %s, want %s", task.Subject, ct.Subject)
-	}
-	if string(task.Status) != ct.Status {
-		t.Errorf("Status mismatch: got %s, want %s", task.Status, ct.Status)
-	}
-	if task.Claim == nil {
-		t.Fatal("Claim is nil")
-	}
-	if task.Claim.WorkerID != ct.Claim.Owner {
-		t.Errorf("Claim WorkerID mismatch: got %s, want %s", task.Claim.WorkerID, ct.Claim.Owner)
-	}
-	if task.Claim.Token != ct.Claim.Token {
-		t.Errorf("Claim Token mismatch: got %s, want %s", task.Claim.Token, ct.Claim.Token)
-	}
+	assert.Equal(t, ct.ID, task.ID)
+	assert.Equal(t, ct.Subject, task.Subject)
+	assert.Equal(t, ct.Status, string(task.Status))
+	require.NotNil(t, task.Claim)
+	assert.Equal(t, ct.Claim.Owner, task.Claim.WorkerID)
+	assert.Equal(t, ct.Claim.Token, task.Claim.Token)
 }
 
 func TestTeamTaskJSON(t *testing.T) {
@@ -64,27 +54,16 @@ func TestTeamTaskJSON(t *testing.T) {
 	}
 
 	data, err := json.Marshal(task)
-	if err != nil {
-		t.Fatalf("Failed to marshal task: %v", err)
-	}
+	require.NoError(t, err)
 
 	var decoded types.TeamTask
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Failed to unmarshal task: %v", err)
-	}
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
 
-	if decoded.ID != task.ID {
-		t.Errorf("ID mismatch: got %s, want %s", decoded.ID, task.ID)
-	}
-	if decoded.Version != task.Version {
-		t.Errorf("Version mismatch: got %d, want %d", decoded.Version, task.Version)
-	}
-	if decoded.Claim == nil {
-		t.Fatal("Claim is nil")
-	}
-	if decoded.Claim.WorkerID != task.Claim.WorkerID {
-		t.Errorf("Claim WorkerID mismatch: got %s, want %s", decoded.Claim.WorkerID, task.Claim.WorkerID)
-	}
+	assert.Equal(t, task.ID, decoded.ID)
+	assert.Equal(t, task.Version, decoded.Version)
+	require.NotNil(t, decoded.Claim)
+	assert.Equal(t, task.Claim.WorkerID, decoded.Claim.WorkerID)
 }
 
 func TestClaimTaskResultJSON(t *testing.T) {
@@ -94,21 +73,14 @@ func TestClaimTaskResultJSON(t *testing.T) {
 	}
 
 	data, err := json.Marshal(result)
-	if err != nil {
-		t.Fatalf("Failed to marshal claim result: %v", err)
-	}
+	require.NoError(t, err)
 
 	var decoded ClaimTaskResult
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Failed to unmarshal claim result: %v", err)
-	}
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
 
-	if decoded.OK != result.OK {
-		t.Errorf("OK mismatch: got %v, want %v", decoded.OK, result.OK)
-	}
-	if decoded.ClaimToken != result.ClaimToken {
-		t.Errorf("ClaimToken mismatch: got %s, want %s", decoded.ClaimToken, result.ClaimToken)
-	}
+	assert.Equal(t, result.OK, decoded.OK)
+	assert.Equal(t, result.ClaimToken, decoded.ClaimToken)
 }
 
 func TestTaskWithDependencies(t *testing.T) {
@@ -124,19 +96,12 @@ func TestTaskWithDependencies(t *testing.T) {
 	}
 
 	data, err := json.Marshal(task)
-	if err != nil {
-		t.Fatalf("Failed to marshal task: %v", err)
-	}
+	require.NoError(t, err)
 
 	var decoded types.TeamTask
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Failed to unmarshal task: %v", err)
-	}
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
 
-	if len(decoded.BlockedBy) != len(task.BlockedBy) {
-		t.Errorf("BlockedBy length mismatch: got %d, want %d", len(decoded.BlockedBy), len(task.BlockedBy))
-	}
-	if len(decoded.DependsOn) != len(task.DependsOn) {
-		t.Errorf("DependsOn length mismatch: got %d, want %d", len(decoded.DependsOn), len(task.DependsOn))
-	}
+	assert.Equal(t, len(task.BlockedBy), len(decoded.BlockedBy))
+	assert.Equal(t, len(task.DependsOn), len(decoded.DependsOn))
 }

@@ -389,8 +389,9 @@ func newFakeTeamCLIServer(t *testing.T, logPath string) *fakeTeamCLIServer {
 				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
 					"worker": "worker-1",
 					"status": map[string]interface{}{
-						"state":      "idle",
-						"updated_at": time.Now().UTC().Format(time.RFC3339),
+						"state":              "idle",
+						"consecutive_errors": 0,
+						"updated_at":         time.Now().UTC().Format(time.RFC3339),
 					},
 				}}
 				require.NoError(t, json.NewEncoder(w).Encode(resp))

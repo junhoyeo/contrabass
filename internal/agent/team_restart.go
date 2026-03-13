@@ -118,7 +118,7 @@ waitLoop:
 				} `json:"ack"`
 			}
 
-			if err := r.runTeamAPI(ctx, workspace, "read-shutdown-ack", map[string]string{
+			if err := r.runTeamAPI(shutdownCtx, workspace, "read-shutdown-ack", map[string]string{
 				"team_name": teamName,
 				"worker":    workerName,
 			}, &ackResp); err == nil && ackResp.Ack != nil {

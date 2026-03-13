@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/junhoyeo/contrabass/internal/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCLIMailboxMessageConversion(t *testing.T) {
@@ -22,21 +24,11 @@ func TestCLIMailboxMessageConversion(t *testing.T) {
 
 	msg := cliMsg.toMailboxMessage()
 
-	if msg.ID != cliMsg.MessageID {
-		t.Errorf("ID mismatch: got %s, want %s", msg.ID, cliMsg.MessageID)
-	}
-	if msg.From != cliMsg.FromWorker {
-		t.Errorf("From mismatch: got %s, want %s", msg.From, cliMsg.FromWorker)
-	}
-	if msg.To != cliMsg.ToWorker {
-		t.Errorf("To mismatch: got %s, want %s", msg.To, cliMsg.ToWorker)
-	}
-	if msg.Content != cliMsg.Body {
-		t.Errorf("Content mismatch: got %s, want %s", msg.Content, cliMsg.Body)
-	}
-	if msg.Status != types.MessageAcknowledged {
-		t.Errorf("Status should be acknowledged when notified_at is set, got %s", msg.Status)
-	}
+	assert.Equal(t, cliMsg.MessageID, msg.ID)
+	assert.Equal(t, cliMsg.FromWorker, msg.From)
+	assert.Equal(t, cliMsg.ToWorker, msg.To)
+	assert.Equal(t, cliMsg.Body, msg.Content)
+	assert.Equal(t, types.MessageAcknowledged, msg.Status)
 }
 
 func TestMailboxMessageJSON(t *testing.T) {
@@ -50,24 +42,15 @@ func TestMailboxMessageJSON(t *testing.T) {
 	}
 
 	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("Failed to marshal message: %v", err)
-	}
+	require.NoError(t, err)
 
 	var decoded types.MailboxMessage
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Failed to unmarshal message: %v", err)
-	}
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
 
-	if decoded.ID != msg.ID {
-		t.Errorf("ID mismatch: got %s, want %s", decoded.ID, msg.ID)
-	}
-	if decoded.From != msg.From {
-		t.Errorf("From mismatch: got %s, want %s", decoded.From, msg.From)
-	}
-	if decoded.To != msg.To {
-		t.Errorf("To mismatch: got %s, want %s", decoded.To, msg.To)
-	}
+	assert.Equal(t, msg.ID, decoded.ID)
+	assert.Equal(t, msg.From, decoded.From)
+	assert.Equal(t, msg.To, decoded.To)
 }
 
 func TestUnreadMessageFiltering(t *testing.T) {
@@ -106,9 +89,7 @@ func TestUnreadMessageFiltering(t *testing.T) {
 		}
 	}
 
-	if len(unread) != 2 {
-		t.Errorf("Expected 2 unread messages, got %d", len(unread))
-	}
+	assert.Len(t, unread, 2)
 }
 
 func TestMessageNotificationFlow(t *testing.T) {
@@ -121,12 +102,8 @@ func TestMessageNotificationFlow(t *testing.T) {
 		Status:    types.MessagePending,
 	}
 
-	if msg.Status != types.MessagePending {
-		t.Error("Status should be pending initially")
-	}
+	assert.Equal(t, types.MessagePending, msg.Status)
 
 	msg.Status = types.MessageDelivered
-	if msg.Status != types.MessageDelivered {
-		t.Error("Status should be delivered after delivery")
-	}
+	assert.Equal(t, types.MessageDelivered, msg.Status)
 }

@@ -51,10 +51,11 @@ func (r *teamCLIRunner) GetWorkerHealth(ctx context.Context, workspace, teamName
 	var statusResp struct {
 		Worker string `json:"worker"`
 		Status *struct {
-			State         string    `json:"state"`
-			CurrentTaskID string    `json:"current_task_id,omitempty"`
-			Reason        string    `json:"reason,omitempty"`
-			UpdatedAt     time.Time `json:"updated_at"`
+			State             string    `json:"state"`
+			CurrentTaskID     string    `json:"current_task_id,omitempty"`
+			Reason            string    `json:"reason,omitempty"`
+			ConsecutiveErrors int       `json:"consecutive_errors"`
+			UpdatedAt         time.Time `json:"updated_at"`
 		} `json:"status"`
 	}
 
@@ -89,6 +90,7 @@ func (r *teamCLIRunner) GetWorkerHealth(ctx context.Context, workspace, teamName
 	if statusResp.Status != nil {
 		report.Status = statusResp.Status.State
 		report.CurrentTaskID = statusResp.Status.CurrentTaskID
+		report.ConsecutiveErrors = statusResp.Status.ConsecutiveErrors
 	}
 
 	if !report.IsAlive {

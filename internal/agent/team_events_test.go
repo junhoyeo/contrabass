@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/junhoyeo/contrabass/internal/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCLIEventToTeamEvent(t *testing.T) {
@@ -25,24 +27,12 @@ func TestCLIEventToTeamEvent(t *testing.T) {
 
 	teamEvent := event.toTeamEvent()
 
-	if teamEvent.Type != event.Type {
-		t.Errorf("Type mismatch: got %s, want %s", teamEvent.Type, event.Type)
-	}
-	if teamEvent.TeamName != event.Team {
-		t.Errorf("TeamName mismatch: got %s, want %s", teamEvent.TeamName, event.Team)
-	}
-	if teamEvent.Data["worker"] != event.Worker {
-		t.Errorf("Worker mismatch: got %v, want %s", teamEvent.Data["worker"], event.Worker)
-	}
-	if teamEvent.Data["state"] != event.State {
-		t.Errorf("State mismatch: got %v, want %s", teamEvent.Data["state"], event.State)
-	}
-	if teamEvent.Data["prev_state"] != event.PrevState {
-		t.Errorf("PrevState mismatch: got %v, want %s", teamEvent.Data["prev_state"], event.PrevState)
-	}
-	if teamEvent.Data["event_id"] != event.EventID {
-		t.Errorf("EventID mismatch: got %v, want %s", teamEvent.Data["event_id"], event.EventID)
-	}
+	assert.Equal(t, event.Type, teamEvent.Type)
+	assert.Equal(t, event.Team, teamEvent.TeamName)
+	assert.Equal(t, event.Worker, teamEvent.Data["worker"])
+	assert.Equal(t, event.State, teamEvent.Data["state"])
+	assert.Equal(t, event.PrevState, teamEvent.Data["prev_state"])
+	assert.Equal(t, event.EventID, teamEvent.Data["event_id"])
 }
 
 func TestTeamEventJSON(t *testing.T) {
@@ -57,21 +47,14 @@ func TestTeamEventJSON(t *testing.T) {
 	}
 
 	data, err := json.Marshal(event)
-	if err != nil {
-		t.Fatalf("Failed to marshal event: %v", err)
-	}
+	require.NoError(t, err)
 
 	var decoded types.TeamEvent
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Failed to unmarshal event: %v", err)
-	}
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
 
-	if decoded.Type != event.Type {
-		t.Errorf("Type mismatch: got %s, want %s", decoded.Type, event.Type)
-	}
-	if decoded.TeamName != event.TeamName {
-		t.Errorf("TeamName mismatch: got %s, want %s", decoded.TeamName, event.TeamName)
-	}
+	assert.Equal(t, event.Type, decoded.Type)
+	assert.Equal(t, event.TeamName, decoded.TeamName)
 }
 
 func TestEventFilter(t *testing.T) {
@@ -82,15 +65,9 @@ func TestEventFilter(t *testing.T) {
 		WakeableOnly: true,
 	}
 
-	if filter.AfterEventID != "evt_100" {
-		t.Errorf("AfterEventID mismatch: got %s, want evt_100", filter.AfterEventID)
-	}
-	if filter.Type != "worker_state_changed" {
-		t.Errorf("Type mismatch: got %s, want worker_state_changed", filter.Type)
-	}
-	if !filter.WakeableOnly {
-		t.Error("WakeableOnly should be true")
-	}
+	assert.Equal(t, "evt_100", filter.AfterEventID)
+	assert.Equal(t, "worker_state_changed", filter.Type)
+	assert.True(t, filter.WakeableOnly)
 }
 
 func TestIdleStateJSON(t *testing.T) {
@@ -104,24 +81,15 @@ func TestIdleStateJSON(t *testing.T) {
 	}
 
 	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("Failed to marshal idle state: %v", err)
-	}
+	require.NoError(t, err)
 
 	var decoded IdleState
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Failed to unmarshal idle state: %v", err)
-	}
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
 
-	if decoded.TeamName != state.TeamName {
-		t.Errorf("TeamName mismatch: got %s, want %s", decoded.TeamName, state.TeamName)
-	}
-	if decoded.IdleWorkerCount != state.IdleWorkerCount {
-		t.Errorf("IdleWorkerCount mismatch: got %d, want %d", decoded.IdleWorkerCount, state.IdleWorkerCount)
-	}
-	if decoded.AllWorkersIdle != state.AllWorkersIdle {
-		t.Errorf("AllWorkersIdle mismatch: got %v, want %v", decoded.AllWorkersIdle, state.AllWorkersIdle)
-	}
+	assert.Equal(t, state.TeamName, decoded.TeamName)
+	assert.Equal(t, state.IdleWorkerCount, decoded.IdleWorkerCount)
+	assert.Equal(t, state.AllWorkersIdle, decoded.AllWorkersIdle)
 }
 
 func TestStallStateJSON(t *testing.T) {
@@ -138,22 +106,13 @@ func TestStallStateJSON(t *testing.T) {
 	}
 
 	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("Failed to marshal stall state: %v", err)
-	}
+	require.NoError(t, err)
 
 	var decoded StallState
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Failed to unmarshal stall state: %v", err)
-	}
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
 
-	if decoded.TeamStalled != state.TeamStalled {
-		t.Errorf("TeamStalled mismatch: got %v, want %v", decoded.TeamStalled, state.TeamStalled)
-	}
-	if len(decoded.Reasons) != len(state.Reasons) {
-		t.Errorf("Reasons length mismatch: got %d, want %d", len(decoded.Reasons), len(state.Reasons))
-	}
-	if decoded.PendingTaskCount != state.PendingTaskCount {
-		t.Errorf("PendingTaskCount mismatch: got %d, want %d", decoded.PendingTaskCount, state.PendingTaskCount)
-	}
+	assert.Equal(t, state.TeamStalled, decoded.TeamStalled)
+	assert.Equal(t, len(state.Reasons), len(decoded.Reasons))
+	assert.Equal(t, state.PendingTaskCount, decoded.PendingTaskCount)
 }

@@ -3,10 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetWorkerHealth(t *testing.T) {
@@ -25,9 +28,7 @@ func TestGetWorkerHealth(t *testing.T) {
 	// Mock the team API calls
 	// In a real test, we would use a mock server or dependency injection
 	_, err := runner.GetWorkerHealth(ctx, workspace, teamName, workerName, maxAge)
-	if err == nil {
-		t.Error("Expected error with echo binary, got nil")
-	}
+	assert.Error(t, err, "Expected error with echo binary, got nil")
 }
 
 func TestGetTeamHealth(t *testing.T) {
@@ -43,9 +44,7 @@ func TestGetTeamHealth(t *testing.T) {
 	maxAge := 30 * time.Second
 
 	_, err := runner.GetTeamHealth(ctx, workspace, teamName, maxAge)
-	if err == nil {
-		t.Error("Expected error with echo binary, got nil")
-	}
+	assert.Error(t, err, "Expected error with echo binary, got nil")
 }
 
 func TestCheckWorkerNeedsIntervention(t *testing.T) {
@@ -99,8 +98,24 @@ func TestCheckWorkerNeedsIntervention(t *testing.T) {
 	// In production, we would need proper mocking infrastructure
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// This test validates the logic structure
-			// Full integration tests would require a test harness
+			report := tt.report
+			var reason string
+			if !report.IsAlive {
+				ageStr := "unknown"
+				if report.HeartbeatAge != nil {
+					ageStr = fmt.Sprintf("%ds", *report.HeartbeatAge/1000)
+				}
+				reason = fmt.Sprintf("Worker is dead: heartbeat stale for %s", ageStr)
+			} else if report.Status == "quarantined" {
+				reason = fmt.Sprintf("Worker self-quarantined after %d consecutive errors", report.ConsecutiveErrors)
+			} else if report.ConsecutiveErrors >= 2 {
+				reason = fmt.Sprintf("Worker has %d consecutive errors — at risk of quarantine", report.ConsecutiveErrors)
+			}
+			if tt.want == "" {
+				assert.Empty(t, reason)
+			} else {
+				assert.Contains(t, reason, tt.want)
+			}
 		})
 	}
 }
@@ -133,24 +148,13 @@ func TestTeamHealthSummaryJSON(t *testing.T) {
 	}
 
 	data, err := json.Marshal(summary)
-	if err != nil {
-		t.Fatalf("Failed to marshal health summary: %v", err)
-	}
+	require.NoError(t, err, "Failed to marshal health summary")
 
 	var decoded TeamHealthSummary
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Failed to unmarshal health summary: %v", err)
-	}
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err, "Failed to unmarshal health summary")
 
-	if decoded.TeamName != summary.TeamName {
-		t.Errorf("TeamName mismatch: got %s, want %s", decoded.TeamName, summary.TeamName)
-	}
-
-	if decoded.TotalWorkers != summary.TotalWorkers {
-		t.Errorf("TotalWorkers mismatch: got %d, want %d", decoded.TotalWorkers, summary.TotalWorkers)
-	}
-
-	if len(decoded.WorkerReports) != len(summary.WorkerReports) {
-		t.Errorf("WorkerReports length mismatch: got %d, want %d", len(decoded.WorkerReports), len(summary.WorkerReports))
-	}
+	assert.Equal(t, summary.TeamName, decoded.TeamName, "TeamName mismatch")
+	assert.Equal(t, summary.TotalWorkers, decoded.TotalWorkers, "TotalWorkers mismatch")
+	assert.Equal(t, len(summary.WorkerReports), len(decoded.WorkerReports), "WorkerReports length mismatch")
 }
