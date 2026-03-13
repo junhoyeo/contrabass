@@ -93,10 +93,10 @@ func (r *teamCLIRunner) RestartWorker(ctx context.Context, workspace, teamName, 
 	shutdownCtx, cancel := context.WithTimeout(ctx, opts.GracePeriod)
 	defer cancel()
 
-	ackReceived := false
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
+waitLoop:
 	for {
 		select {
 		case <-shutdownCtx.Done():
@@ -106,7 +106,7 @@ func (r *teamCLIRunner) RestartWorker(ctx context.Context, workspace, teamName, 
 				"worker", workerName,
 				"grace_period", opts.GracePeriod,
 			)
-			break
+			break waitLoop
 		case <-ticker.C:
 			var ackResp struct {
 				Worker string `json:"worker"`
@@ -122,14 +122,9 @@ func (r *teamCLIRunner) RestartWorker(ctx context.Context, workspace, teamName, 
 				"worker":    workerName,
 			}, &ackResp); err == nil && ackResp.Ack != nil {
 				if ackResp.Ack.Status == "accept" {
-					ackReceived = true
-					break
+					break waitLoop
 				}
 			}
-		}
-
-		if ackReceived {
-			break
 		}
 	}
 
