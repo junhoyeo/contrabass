@@ -221,6 +221,48 @@ func newFakeTeamCLIServer(t *testing.T, logPath string) *fakeTeamCLIServer {
 				}
 				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{"tasks": []interface{}{task}}}
 				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "write-shutdown-request":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": json.RawMessage("{}")}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-shutdown-ack":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"worker": "worker-1",
+					"ack":    map[string]interface{}{"status": "accept", "reason": "restart"},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-stall-state":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"team_name":          teamName,
+					"team_stalled":       false,
+					"leader_stale":       false,
+					"stalled_workers":    []string{},
+					"dead_workers":       []string{},
+					"pending_task_count": 0,
+					"all_workers_idle":   false,
+					"idle_workers":       []string{},
+					"reasons":            []string{},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-worker-heartbeat":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"worker": "worker-1",
+					"heartbeat": map[string]interface{}{
+						"pid":          1234,
+						"last_turn_at": time.Now().UTC().Format(time.RFC3339),
+						"turn_count":   5,
+						"alive":        true,
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-worker-status":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"worker": "worker-1",
+					"status": map[string]interface{}{
+						"state":      "idle",
+						"updated_at": time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			default:
 				http.Error(w, "unknown op", http.StatusBadRequest)
 			}

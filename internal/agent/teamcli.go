@@ -254,13 +254,17 @@ func (r *teamCLIRunner) Stop(proc *AgentProcess) error {
 	state.cancel()
 	state.remove(r)
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), r.startupTimeout)
-	defer cancel()
+	// Try graceful shutdown first with a short budget, then force-stop
+	// with its own independent timeout so an expired grace period cannot
+	// starve the force-shutdown.
+	graceCtx, graceCancel := context.WithTimeout(context.Background(), r.startupTimeout/2)
+	r.gracefulShutdownWorkers(graceCtx, state.workspace, state.teamName)
+	graceCancel()
 
-	// Try graceful shutdown first, then force-stop.
-	r.gracefulShutdownWorkers(shutdownCtx, state.workspace, state.teamName)
+	forceCtx, forceCancel := context.WithTimeout(context.Background(), r.startupTimeout)
+	defer forceCancel()
 
-	if err := r.shutdownTeam(shutdownCtx, state.workspace, state.teamName); err != nil {
+	if err := r.shutdownTeam(forceCtx, state.workspace, state.teamName); err != nil {
 		return fmt.Errorf("%w: %v", errTeamCLIStopFailed, err)
 	}
 
@@ -280,10 +284,12 @@ func (r *teamCLIRunner) Close() error {
 	for _, proc := range states {
 		proc.cancel()
 		proc.remove(r)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), r.startupTimeout)
-		r.gracefulShutdownWorkers(shutdownCtx, proc.workspace, proc.teamName)
-		err := r.shutdownTeam(shutdownCtx, proc.workspace, proc.teamName)
-		cancel()
+		graceCtx, graceCancel := context.WithTimeout(context.Background(), r.startupTimeout/2)
+		r.gracefulShutdownWorkers(graceCtx, proc.workspace, proc.teamName)
+		graceCancel()
+		forceCtx, forceCancel := context.WithTimeout(context.Background(), r.startupTimeout)
+		err := r.shutdownTeam(forceCtx, proc.workspace, proc.teamName)
+		forceCancel()
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -702,9 +708,9 @@ func (r *teamCLIRunner) checkTeamHealthAndStall(ctx context.Context, proc *teamC
 			} else {
 				for _, result := range results {
 					emit("worker/restarted", map[string]interface{}{
-						"team_name":       proc.teamName,
-						"worker":          result.WorkerName,
-						"success":         result.Success,
+						"team_name":        proc.teamName,
+						"worker":           result.WorkerName,
+						"success":          result.Success,
 						"reassigned_tasks": result.ReassignedTasks,
 					})
 				}
