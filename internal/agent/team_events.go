@@ -154,13 +154,13 @@ func (r *teamCLIRunner) AppendEvent(ctx context.Context, workspace, teamName str
 
 // IdleState represents the idle state of the team
 type IdleState struct {
-	TeamName          string   `json:"team_name"`
-	WorkerCount       int      `json:"worker_count"`
-	IdleWorkerCount   int      `json:"idle_worker_count"`
-	IdleWorkers       []string `json:"idle_workers"`
-	NonIdleWorkers    []string `json:"non_idle_workers"`
-	AllWorkersIdle    bool     `json:"all_workers_idle"`
-	LastAllIdleEvent  *struct {
+	TeamName         string   `json:"team_name"`
+	WorkerCount      int      `json:"worker_count"`
+	IdleWorkerCount  int      `json:"idle_worker_count"`
+	IdleWorkers      []string `json:"idle_workers"`
+	NonIdleWorkers   []string `json:"non_idle_workers"`
+	AllWorkersIdle   bool     `json:"all_workers_idle"`
+	LastAllIdleEvent *struct {
 		EventID   string    `json:"event_id"`
 		Type      string    `json:"type"`
 		CreatedAt time.Time `json:"created_at"`

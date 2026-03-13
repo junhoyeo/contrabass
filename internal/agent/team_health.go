@@ -11,7 +11,7 @@ type WorkerHealthReport struct {
 	WorkerName        string    `json:"worker_name"`
 	IsAlive           bool      `json:"is_alive"`
 	HeartbeatAge      *int64    `json:"heartbeat_age_ms,omitempty"` // milliseconds since last heartbeat
-	Status            string    `json:"status"`                      // active, idle, dead, quarantined, unknown
+	Status            string    `json:"status"`                     // active, idle, dead, quarantined, unknown
 	CurrentTaskID     string    `json:"current_task_id,omitempty"`
 	TotalTurns        int       `json:"total_turns"`
 	ConsecutiveErrors int       `json:"consecutive_errors"`

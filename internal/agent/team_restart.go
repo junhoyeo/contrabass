@@ -8,10 +8,10 @@ import (
 
 // WorkerRestartOptions defines options for restarting a worker
 type WorkerRestartOptions struct {
-	GracePeriod     time.Duration
-	PreserveState   bool
-	ReassignTasks   bool
-	MaxRetries      int
+	GracePeriod   time.Duration
+	PreserveState bool
+	ReassignTasks bool
+	MaxRetries    int
 }
 
 // WorkerRestartResult represents the result of a worker restart

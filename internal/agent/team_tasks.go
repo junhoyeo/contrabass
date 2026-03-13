@@ -8,29 +8,29 @@ import (
 
 // TaskClaim represents a claim on a task by a worker
 type TaskClaim struct {
-	Owner        string    `json:"owner"`
-	Token        string    `json:"token"`
-	LeasedUntil  time.Time `json:"leased_until"`
-	ExpectedVersion int    `json:"expected_version,omitempty"`
+	Owner           string    `json:"owner"`
+	Token           string    `json:"token"`
+	LeasedUntil     time.Time `json:"leased_until"`
+	ExpectedVersion int       `json:"expected_version,omitempty"`
 }
 
 // TaskV2 represents a task with versioning support
 type TaskV2 struct {
-	ID                string     `json:"id"`
-	Subject           string     `json:"subject"`
-	Description       string     `json:"description"`
-	Status            string     `json:"status"`
-	RequiresCodeChange bool      `json:"requires_code_change,omitempty"`
-	Role              string     `json:"role,omitempty"`
-	Owner             string     `json:"owner,omitempty"`
-	Result            string     `json:"result,omitempty"`
-	Error             string     `json:"error,omitempty"`
-	BlockedBy         []string   `json:"blocked_by,omitempty"`
-	DependsOn         []string   `json:"depends_on,omitempty"`
-	Version           int        `json:"version"`
-	Claim             *TaskClaim `json:"claim,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	CompletedAt       time.Time  `json:"completed_at,omitempty"`
+	ID                 string     `json:"id"`
+	Subject            string     `json:"subject"`
+	Description        string     `json:"description"`
+	Status             string     `json:"status"`
+	RequiresCodeChange bool       `json:"requires_code_change,omitempty"`
+	Role               string     `json:"role,omitempty"`
+	Owner              string     `json:"owner,omitempty"`
+	Result             string     `json:"result,omitempty"`
+	Error              string     `json:"error,omitempty"`
+	BlockedBy          []string   `json:"blocked_by,omitempty"`
+	DependsOn          []string   `json:"depends_on,omitempty"`
+	Version            int        `json:"version"`
+	Claim              *TaskClaim `json:"claim,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	CompletedAt        time.Time  `json:"completed_at,omitempty"`
 }
 
 // ClaimTaskResult represents the result of claiming a task
