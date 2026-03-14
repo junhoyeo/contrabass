@@ -544,7 +544,11 @@ func (r *OpenCodeRunner) createSession(ctx context.Context, serverURL string) (s
 }
 
 func (r *OpenCodeRunner) submitPrompt(ctx context.Context, serverURL, sessionID, prompt string) error {
-	body := map[string]interface{}{"content": prompt}
+	body := map[string]interface{}{
+		"parts": []map[string]interface{}{
+			{"type": "text", "text": prompt},
+		},
+	}
 	resp, err := r.doRequest(ctx, http.MethodPost, serverURL+"/session/"+sessionID+"/prompt_async", body, nil)
 	if err != nil {
 		return err
