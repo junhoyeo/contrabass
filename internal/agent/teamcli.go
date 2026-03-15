@@ -871,6 +871,11 @@ func (r *teamCLIRunner) reconcileTaskStates(ctx context.Context, proc *teamCLIPr
 		if claimResult.OK {
 			if _, transErr := r.TransitionTaskStatus(ctx, proc.workspace, proc.teamName, task.ID, "pending", "in_progress", claimResult.ClaimToken, nil, nil); transErr != nil {
 				r.logger.Warn("failed to transition task to in_progress", "team", proc.teamName, "task", task.ID, "error", transErr)
+				// Release the claim so other workers can pick up the task.
+				if _, relErr := r.ReleaseTaskClaim(ctx, proc.workspace, proc.teamName, task.ID, claimResult.ClaimToken, worker); relErr != nil {
+					r.logger.Warn("failed to release claim after transition failure", "team", proc.teamName, "task", task.ID, "error", relErr)
+				}
+				continue
 			}
 
 			if _, sendErr := r.SendMessage(ctx, proc.workspace, proc.teamName, "coordinator", worker,

@@ -234,8 +234,6 @@ func (c *Coordinator) runWorkerPhase(ctx context.Context, next types.TeamPhase, 
 		"task":      task.Subject,
 	})
 
-	c.notifyTaskAssignment("coordinator", task)
-
 	if err := c.executeTask(ctx, task, token, "coordinator"); err != nil {
 		if failErr := c.tasks.FailTask(c.teamName, task.ID, token, err.Error()); failErr != nil {
 			c.logger.Warn("failed to mark task as failed", "team", c.teamName, "task", task.ID, "error", failErr)
