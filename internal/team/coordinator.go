@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -438,7 +439,7 @@ func (c *Coordinator) workerLoop(ctx context.Context, workerID string) error {
 
 		governanceRetries = 0
 
-		task, token, err := c.tasks.ClaimNextTask(c.teamName, workerID)
+		task, token, err := c.claimPendingTask(workerID)
 		if err != nil {
 			if errors.Is(err, ErrTaskNotClaimable) {
 				return nil
@@ -480,6 +481,86 @@ func (c *Coordinator) workerLoop(ctx context.Context, workerID string) error {
 			"task_id":   task.ID,
 		})
 	}
+}
+
+func (c *Coordinator) claimPendingTask(workerID string) (*types.TeamTask, string, error) {
+	tasks, err := c.tasks.ListTasks(c.teamName)
+	if err != nil {
+		return nil, "", err
+	}
+
+	workers := make([]AllocationWorkerInput, 0, c.cfg.TeamMaxWorkers())
+	for i := range c.cfg.TeamMaxWorkers() {
+		workers = append(workers, AllocationWorkerInput{
+			Name: fmt.Sprintf("worker-%d", i),
+			Role: c.cfg.AgentType(),
+		})
+	}
+
+	if len(workers) <= 1 {
+		return c.tasks.ClaimNextTask(c.teamName, workerID)
+	}
+
+	pendingTasks := make([]types.TeamTask, 0, len(tasks))
+	currentAssignments := make([]AllocationDecision, 0, len(tasks))
+	for i := range tasks {
+		task := tasks[i]
+		if task.Status == types.TaskInProgress && task.Claim != nil {
+			currentAssignments = append(currentAssignments, AllocationDecision{Owner: task.Claim.WorkerID})
+			continue
+		}
+		if task.Status != types.TaskPending {
+			continue
+		}
+
+		blocked, blockedErr := c.tasks.isBlocked(c.teamName, &task)
+		if blockedErr != nil {
+			return nil, "", blockedErr
+		}
+		if blocked {
+			continue
+		}
+
+		pendingTasks = append(pendingTasks, task)
+	}
+
+	if len(pendingTasks) <= 1 {
+		return c.tasks.ClaimNextTask(c.teamName, workerID)
+	}
+
+	sort.Slice(pendingTasks, func(i, j int) bool {
+		return pendingTasks[i].ID < pendingTasks[j].ID
+	})
+
+	for _, task := range pendingTasks {
+		decision := ChooseTaskOwner(AllocationTaskInput{
+			ID:          task.ID,
+			Subject:     task.Subject,
+			Description: task.Description,
+			BlockedBy:   task.BlockedBy,
+			DependsOn:   task.DependsOn,
+			Status:      string(task.Status),
+		}, workers, currentAssignments)
+		if decision.Owner != workerID {
+			continue
+		}
+
+		token, claimErr := c.tasks.ClaimTask(c.teamName, task.ID, workerID, task.Version)
+		if claimErr != nil {
+			if errors.Is(claimErr, ErrVersionConflict) || errors.Is(claimErr, ErrTaskNotClaimable) || errors.Is(claimErr, ErrTaskBlocked) {
+				continue
+			}
+			return nil, "", claimErr
+		}
+
+		claimedTask, getErr := c.tasks.GetTask(c.teamName, task.ID)
+		if getErr != nil {
+			return nil, "", getErr
+		}
+		return claimedTask, token, nil
+	}
+
+	return c.tasks.ClaimNextTask(c.teamName, workerID)
 }
 
 func (c *Coordinator) notifyTaskAssignment(workerID string, task *types.TeamTask) {
