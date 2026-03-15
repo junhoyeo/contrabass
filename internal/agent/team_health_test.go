@@ -158,3 +158,37 @@ func TestTeamHealthSummaryJSON(t *testing.T) {
 	assert.Equal(t, summary.TotalWorkers, decoded.TotalWorkers, "TotalWorkers mismatch")
 	assert.Equal(t, len(summary.WorkerReports), len(decoded.WorkerReports), "WorkerReports length mismatch")
 }
+
+func TestTeamCLIRunner_CheckWorkerNeedsIntervention(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	reason, err := runner.CheckWorkerNeedsIntervention(context.Background(), workspace, "test-team", "worker-1", -1*time.Millisecond)
+	require.NoError(t, err)
+	assert.Contains(t, reason, "Worker is dead")
+}
+
+func TestTeamCLIRunner_RestartWorker(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	result, err := runner.RestartWorker(context.Background(), workspace, "test-team", "worker-1", &WorkerRestartOptions{
+		GracePeriod:   300 * time.Millisecond,
+		PreserveState: true,
+		ReassignTasks: false,
+		MaxRetries:    1,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.Success)
+	assert.Equal(t, "worker-1", result.WorkerName)
+	assert.Equal(t, 1234, result.OldPID)
+}
+
+func TestTeamCLIRunner_RestartDeadWorkers(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	results, err := runner.RestartDeadWorkers(context.Background(), workspace, "test-team", -1*time.Millisecond)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "worker-1", results[0].WorkerName)
+	assert.True(t, results[0].Success)
+}

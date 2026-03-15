@@ -282,9 +282,17 @@ func newFakeTeamCLIServer(t *testing.T, logPath string) *fakeTeamCLIServer {
 				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			case "read-events":
 				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
-					"count":  0,
-					"cursor": "",
-					"events": []interface{}{},
+					"count":  1,
+					"cursor": "evt-read-1",
+					"events": []interface{}{map[string]interface{}{
+						"event_id":   "evt-read-1",
+						"team":       teamName,
+						"type":       "worker_state_changed",
+						"worker":     "worker-1",
+						"state":      "active",
+						"prev_state": "idle",
+						"created_at": time.Now().UTC().Format(time.RFC3339),
+					}},
 				}}
 				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			case "await-event":
@@ -313,6 +321,18 @@ func newFakeTeamCLIServer(t *testing.T, logPath string) *fakeTeamCLIServer {
 						"description": "test",
 						"status":      "pending",
 						"version":     1,
+						"created_at":  time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-task":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"task": map[string]interface{}{
+						"id":          "1",
+						"subject":     "Worker 1",
+						"description": "Do work",
+						"status":      "in_progress",
+						"version":     2,
 						"created_at":  time.Now().UTC().Format(time.RFC3339),
 					},
 				}}

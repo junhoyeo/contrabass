@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -106,4 +107,52 @@ func TestMessageNotificationFlow(t *testing.T) {
 
 	msg.Status = types.MessageDelivered
 	assert.Equal(t, types.MessageDelivered, msg.Status)
+}
+
+func TestTeamCLIRunner_SendMessage(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	msg, err := runner.SendMessage(context.Background(), workspace, "test-team", "worker-1", "worker-2", "hello")
+	require.NoError(t, err)
+
+	assert.Equal(t, "msg-001", msg.ID)
+	assert.Equal(t, "coordinator", msg.From)
+	assert.Equal(t, "worker-1", msg.To)
+	assert.Equal(t, types.MessagePending, msg.Status)
+}
+
+func TestTeamCLIRunner_ListMailbox(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	messages, err := runner.ListMailbox(context.Background(), workspace, "test-team", "worker-1", false)
+	require.NoError(t, err)
+	assert.Empty(t, messages)
+}
+
+func TestTeamCLIRunner_GetUnreadMessages(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	messages, err := runner.GetUnreadMessages(context.Background(), workspace, "test-team", "worker-1")
+	require.NoError(t, err)
+	assert.Empty(t, messages)
+}
+
+func TestTeamCLIRunner_MarkMessageDelivered(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	err := runner.MarkMessageDelivered(context.Background(), workspace, "test-team", "worker-1", "msg-001")
+	require.NoError(t, err)
+
+	err = runner.MarkMessageDelivered(context.Background(), workspace, "test-team", "", "msg-001")
+	require.Error(t, err)
+}
+
+func TestTeamCLIRunner_MarkMessageNotified(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	err := runner.MarkMessageNotified(context.Background(), workspace, "test-team", "worker-1", "msg-001")
+	require.NoError(t, err)
+
+	err = runner.MarkMessageNotified(context.Background(), workspace, "test-team", "worker-1", "")
+	require.Error(t, err)
 }

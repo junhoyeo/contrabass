@@ -1,14 +1,37 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/junhoyeo/contrabass/internal/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func setupTeamRunner(t *testing.T) (*teamCLIRunner, string) {
+	t.Helper()
+
+	workspace := t.TempDir()
+	logPath := filepath.Join(workspace, "team-api.log")
+	server := newFakeTeamCLIServer(t, logPath)
+	t.Cleanup(server.Close)
+
+	runner := newTeamCLIRunner(&teamCLIRunner{
+		name:           "omx",
+		binaryPath:     server.binaryPath,
+		pollInterval:   100 * time.Millisecond,
+		startupTimeout: 2 * time.Second,
+		logger:         log.New(io.Discard),
+	})
+
+	return runner, workspace
+}
 
 func TestCLIEventToTeamEvent(t *testing.T) {
 	event := &cliEvent{
@@ -115,4 +138,56 @@ func TestStallStateJSON(t *testing.T) {
 	assert.Equal(t, state.TeamStalled, decoded.TeamStalled)
 	assert.Equal(t, len(state.Reasons), len(decoded.Reasons))
 	assert.Equal(t, state.PendingTaskCount, decoded.PendingTaskCount)
+}
+
+func TestTeamCLIRunner_ReadEvents(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	events, err := runner.ReadEvents(context.Background(), workspace, "test-team", &EventFilter{Type: "worker_state_changed"})
+	require.NoError(t, err)
+
+	require.Len(t, events, 1)
+	assert.Equal(t, "worker_state_changed", events[0].Type)
+	assert.Equal(t, "test-team", events[0].TeamName)
+	assert.Equal(t, "worker-1", events[0].Data["worker"])
+	assert.Equal(t, "evt-read-1", events[0].Data["event_id"])
+}
+
+func TestTeamCLIRunner_ReadStallState(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	state, err := runner.ReadStallState(context.Background(), workspace, "test-team")
+	require.NoError(t, err)
+
+	assert.Equal(t, "test-team", state.TeamName)
+	assert.False(t, state.TeamStalled)
+	assert.Equal(t, 0, state.PendingTaskCount)
+}
+
+func TestTeamCLIRunner_ReadIdleState(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	state, err := runner.ReadIdleState(context.Background(), workspace, "test-team")
+	require.NoError(t, err)
+
+	assert.Equal(t, "test-team", state.TeamName)
+	assert.Equal(t, 1, state.WorkerCount)
+	assert.Equal(t, 0, state.IdleWorkerCount)
+	assert.False(t, state.AllWorkersIdle)
+}
+
+func TestTeamCLIRunner_QuarantineWorker(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	err := runner.QuarantineWorker(context.Background(), workspace, "test-team", "worker-1", "too many failures")
+	require.NoError(t, err)
+}
+
+func TestTeamCLIRunner_AwaitEventTimeout(t *testing.T) {
+	runner, workspace := setupTeamRunner(t)
+
+	event, err := runner.AwaitEvent(context.Background(), workspace, "test-team", nil, 50*time.Millisecond)
+	require.Error(t, err)
+	assert.Nil(t, event)
+	assert.Contains(t, err.Error(), "timeout waiting for event")
 }
