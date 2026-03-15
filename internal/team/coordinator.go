@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -269,7 +270,30 @@ func (c *Coordinator) runExecPhase(ctx context.Context) error {
 		})
 	}
 
-	if err := g.Wait(); err != nil {
+	// Periodic stale worker detection during exec phase (non-blocking).
+	monitorCtx, monitorCancel := context.WithCancel(gCtx)
+	go func() {
+		defer monitorCancel()
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-monitorCtx.Done():
+				return
+			case <-ticker.C:
+				stale := c.checkForStaleWorkers()
+				for _, workerID := range stale {
+					c.logger.Warn("stale worker detected during exec phase",
+						"team", c.teamName, "worker", workerID)
+				}
+			}
+		}
+	}()
+
+	err := g.Wait()
+	monitorCancel() // Stop the monitor goroutine.
+
+	if err != nil {
 		// If the parent context was cancelled (e.g., signal), propagate immediately.
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -415,7 +439,7 @@ func (c *Coordinator) workerLoop(ctx context.Context, workerID string) error {
 
 		governanceRetries = 0
 
-		task, token, err := c.tasks.ClaimNextTask(c.teamName, workerID)
+		task, token, err := c.claimPendingTask(workerID)
 		if err != nil {
 			if errors.Is(err, ErrTaskNotClaimable) {
 				return nil
@@ -428,6 +452,8 @@ func (c *Coordinator) workerLoop(ctx context.Context, workerID string) error {
 			"task_id":   task.ID,
 			"task":      task.Subject,
 		})
+
+		c.notifyTaskAssignment(workerID, task)
 
 		err = c.executeTask(ctx, task, token, workerID)
 		if releaseErr := c.ownership.ReleaseTask(c.teamName, task.ID); releaseErr != nil {
@@ -454,6 +480,94 @@ func (c *Coordinator) workerLoop(ctx context.Context, workerID string) error {
 			"worker_id": workerID,
 			"task_id":   task.ID,
 		})
+	}
+}
+
+func (c *Coordinator) claimPendingTask(workerID string) (*types.TeamTask, string, error) {
+	tasks, err := c.tasks.ListTasks(c.teamName)
+	if err != nil {
+		return nil, "", err
+	}
+
+	workers := make([]AllocationWorkerInput, 0, c.cfg.TeamMaxWorkers())
+	for i := range c.cfg.TeamMaxWorkers() {
+		workers = append(workers, AllocationWorkerInput{
+			Name: fmt.Sprintf("worker-%d", i),
+			Role: c.cfg.AgentType(),
+		})
+	}
+
+	if len(workers) <= 1 {
+		return c.tasks.ClaimNextTask(c.teamName, workerID)
+	}
+
+	pendingTasks := make([]types.TeamTask, 0, len(tasks))
+	currentAssignments := make([]AllocationDecision, 0, len(tasks))
+	for i := range tasks {
+		task := tasks[i]
+		if task.Status == types.TaskInProgress && task.Claim != nil {
+			currentAssignments = append(currentAssignments, AllocationDecision{Owner: task.Claim.WorkerID})
+			continue
+		}
+		if task.Status != types.TaskPending {
+			continue
+		}
+
+		blocked, blockedErr := c.tasks.isBlocked(c.teamName, &task)
+		if blockedErr != nil {
+			return nil, "", blockedErr
+		}
+		if blocked {
+			continue
+		}
+
+		pendingTasks = append(pendingTasks, task)
+	}
+
+	if len(pendingTasks) <= 1 {
+		return c.tasks.ClaimNextTask(c.teamName, workerID)
+	}
+
+	sort.Slice(pendingTasks, func(i, j int) bool {
+		return pendingTasks[i].ID < pendingTasks[j].ID
+	})
+
+	for _, task := range pendingTasks {
+		decision := ChooseTaskOwner(AllocationTaskInput{
+			ID:          task.ID,
+			Subject:     task.Subject,
+			Description: task.Description,
+			BlockedBy:   task.BlockedBy,
+			DependsOn:   task.DependsOn,
+			Status:      string(task.Status),
+		}, workers, currentAssignments)
+		if decision.Owner != workerID {
+			continue
+		}
+
+		token, claimErr := c.tasks.ClaimTask(c.teamName, task.ID, workerID, task.Version)
+		if claimErr != nil {
+			if errors.Is(claimErr, ErrVersionConflict) || errors.Is(claimErr, ErrTaskNotClaimable) || errors.Is(claimErr, ErrTaskBlocked) {
+				continue
+			}
+			return nil, "", claimErr
+		}
+
+		claimedTask, getErr := c.tasks.GetTask(c.teamName, task.ID)
+		if getErr != nil {
+			return nil, "", getErr
+		}
+		return claimedTask, token, nil
+	}
+
+	return c.tasks.ClaimNextTask(c.teamName, workerID)
+}
+
+func (c *Coordinator) notifyTaskAssignment(workerID string, task *types.TeamTask) {
+	body := fmt.Sprintf("Task %s assigned to you: %s", task.ID, task.Subject)
+	if err := c.mailbox.Send(c.teamName, "coordinator", workerID, body); err != nil {
+		c.logger.Warn("failed to send task assignment notification",
+			"worker", workerID, "task", task.ID, "error", err)
 	}
 }
 
@@ -559,6 +673,9 @@ func (c *Coordinator) executeTask(ctx context.Context, task *types.TeamTask, tok
 	defer leaseCancel()
 	go c.renewLeaseLoop(leaseCtx, task.ID, token)
 
+	// Write heartbeats so the health monitor can detect stale workers.
+	go c.heartbeatLoop(leaseCtx, workerID, proc.PID)
+
 	select {
 	case err := <-proc.Done:
 		if err != nil {
@@ -598,6 +715,76 @@ func (c *Coordinator) renewLeaseLoop(ctx context.Context, taskID, token string) 
 			}
 		}
 	}
+}
+
+// heartbeatLoop periodically writes heartbeats for a worker so stale-worker
+// detection works correctly during long-running tasks.
+func (c *Coordinator) heartbeatLoop(ctx context.Context, workerID string, pid int) {
+	// Use lease seconds / 3 as interval, similar to renewLeaseLoop.
+	leaseSeconds := c.cfg.TeamClaimLeaseSeconds()
+	interval := time.Duration(leaseSeconds/3) * time.Second
+	if interval < 1*time.Second {
+		interval = 1 * time.Second
+	}
+
+	writeHB := func() {
+		hb := Heartbeat{
+			WorkerID:  workerID,
+			PID:       pid,
+			Status:    "working",
+			Timestamp: time.Now(),
+		}
+		if err := c.heartbeats.Write(c.teamName, hb); err != nil {
+			c.logger.Warn("heartbeat write failed", "worker", workerID, "error", err)
+		}
+	}
+
+	// Write an initial heartbeat immediately.
+	writeHB()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			writeHB()
+		}
+	}
+}
+
+// checkForStaleWorkers uses the heartbeat monitor to detect workers that have
+// stopped reporting. Called during the exec phase to identify problems early.
+func (c *Coordinator) checkForStaleWorkers() []string {
+	c.mu.Lock()
+	workerIDs := make([]string, 0, len(c.workers))
+	for id := range c.workers {
+		workerIDs = append(workerIDs, id)
+	}
+	c.mu.Unlock()
+
+	var stale []string
+	for _, id := range workerIDs {
+		isStale, err := c.heartbeats.IsStale(c.teamName, id)
+		if err != nil {
+			c.logger.Warn("failed to check heartbeat staleness", "worker", id, "error", err)
+			continue
+		}
+		if isStale {
+			stale = append(stale, id)
+		}
+	}
+
+	if len(stale) > 0 {
+		c.emitEvent("workers_stale", map[string]interface{}{
+			"stale_workers": stale,
+			"count":         len(stale),
+		})
+	}
+
+	return stale
 }
 
 func (c *Coordinator) stopAllWorkers() {

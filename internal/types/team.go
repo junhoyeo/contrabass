@@ -66,9 +66,10 @@ const (
 )
 
 type TaskClaim struct {
-	WorkerID string    `json:"worker_id"`
-	Token    string    `json:"token"`
-	LeasedAt time.Time `json:"leased_at"`
+	WorkerID    string    `json:"worker_id"`
+	Token       string    `json:"token"`
+	LeasedAt    time.Time `json:"leased_at"`
+	LeasedUntil time.Time `json:"leased_until,omitempty"`
 }
 
 type TeamTask struct {
