@@ -93,7 +93,7 @@ func (r *teamCLIRunner) GetWorkerHealth(ctx context.Context, workspace, teamName
 		report.ConsecutiveErrors = statusResp.Status.ConsecutiveErrors
 	}
 
-	if !report.IsAlive {
+	if !report.IsAlive && report.Status != "quarantined" {
 		report.Status = "dead"
 	}
 
