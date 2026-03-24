@@ -318,6 +318,8 @@ func (c *GitHubClient) normalizeIssue(item githubIssue) types.Issue {
 
 	numberString := strconv.Itoa(item.Number)
 
+	blockedBy := parseDependencies(item.Body)
+
 	return types.Issue{
 		ID:          numberString,
 		Identifier:  fmt.Sprintf("%s/%s#%d", c.owner, c.repo, item.Number),
@@ -328,7 +330,7 @@ func (c *GitHubClient) normalizeIssue(item githubIssue) types.Issue {
 		Labels:      labels,
 		URL:         item.HTMLURL,
 		BranchName:  "symphony/" + strings.ToLower(fmt.Sprintf("%s-%d", c.repo, item.Number)),
-		BlockedBy:   []string{},
+		BlockedBy:   blockedBy,
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 		TrackerMeta: map[string]interface{}{

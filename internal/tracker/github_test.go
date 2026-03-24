@@ -111,6 +111,42 @@ func TestGitHubFetchIssues_ParsesResponse(t *testing.T) {
 	assert.Equal(t, []string{"enhancement"}, issues[1].Labels)
 }
 
+func TestGitHubFetchIssues_ParsesDependencies(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondGitHubJSON(w, http.StatusOK, []interface{}{
+			map[string]interface{}{
+				"number": 10,
+				"title":  "Setup DB",
+				"body":   "Initial database setup",
+				"state":  "open",
+			},
+			map[string]interface{}{
+				"number": 11,
+				"title":  "Add API",
+				"body":   "Blocked by: #10\nImplement REST API",
+				"state":  "open",
+			},
+			map[string]interface{}{
+				"number": 12,
+				"title":  "Add UI",
+				"body":   "Depends on: #10, #11\nRequires: #9",
+				"state":  "open",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testGitHubClient(t, server.URL)
+	issues, err := client.FetchIssues(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, issues, 3)
+
+	assert.Equal(t, []string{}, issues[0].BlockedBy)
+	assert.Equal(t, []string{"10"}, issues[1].BlockedBy)
+	assert.Equal(t, []string{"10", "11", "9"}, issues[2].BlockedBy)
+}
+
 func TestGitHubFetchIssues_FiltersPullRequests(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		respondGitHubJSON(w, http.StatusOK, []interface{}{
