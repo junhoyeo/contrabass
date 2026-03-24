@@ -460,19 +460,21 @@ func normalizeIssue(node map[string]interface{}) types.Issue {
 	if identifier != "" {
 		branchName = "symphony/" + strings.ToLower(identifier)
 	}
+	description := getString(node, "description")
 	return types.Issue{
-		ID:          getString(node, "id"),
-		Identifier:  identifier,
-		Title:       getString(node, "title"),
-		Description: getString(node, "description"),
-		State:       types.Unclaimed, // All fetched issues start as unclaimed
-		Priority:    priority,
-		Labels:      extractLabels(node),
-		URL:         getString(node, "url"),
-		BranchName:  branchName,
-		BlockedBy:   []string{},
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
+		ID:            getString(node, "id"),
+		Identifier:    identifier,
+		Title:         getString(node, "title"),
+		Description:   description,
+		State:         types.Unclaimed, // All fetched issues start as unclaimed
+		Priority:      priority,
+		Labels:        extractLabels(node),
+		URL:           getString(node, "url"),
+		BranchName:    branchName,
+		BlockedBy:     []string{},
+		ModelOverride: ParseModelOverride(description),
+		CreatedAt:     createdAt,
+		UpdatedAt:     updatedAt,
 		TrackerMeta: map[string]interface{}{
 			"linear_state": linearState,
 		},

@@ -91,10 +91,11 @@ type Issue struct {
 	Labels      []string               `json:"labels"`
 	URL         string                 `json:"url"`
 	BranchName  string                 `json:"branch_name"`
-	BlockedBy   []string               `json:"blocked_by"`
-	CreatedAt   time.Time              `json:"created_at"`
-	UpdatedAt   time.Time              `json:"updated_at"`
-	TrackerMeta map[string]interface{} `json:"tracker_meta"`
+	BlockedBy     []string               `json:"blocked_by"`
+	ModelOverride string                 `json:"model_override,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
+	UpdatedAt     time.Time              `json:"updated_at"`
+	TrackerMeta   map[string]interface{} `json:"tracker_meta"`
 }
 
 // RunAttempt represents one execution attempt for one issue.
