@@ -331,7 +331,6 @@ func (c *GitHubClient) normalizeIssue(item githubIssue) types.Issue {
 		URL:           item.HTMLURL,
 		BranchName:    "symphony/" + strings.ToLower(fmt.Sprintf("%s-%d", c.repo, item.Number)),
 		BlockedBy:     blockedBy,
-		ModelOverride: ParseModelOverride(item.Body),
 		CreatedAt:     createdAt,
 		UpdatedAt:     updatedAt,
 		TrackerMeta: map[string]interface{}{
