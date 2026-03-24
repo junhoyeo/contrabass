@@ -318,19 +318,22 @@ func (c *GitHubClient) normalizeIssue(item githubIssue) types.Issue {
 
 	numberString := strconv.Itoa(item.Number)
 
+	blockedBy := parseDependencies(item.Body)
+
 	return types.Issue{
-		ID:          numberString,
-		Identifier:  fmt.Sprintf("%s/%s#%d", c.owner, c.repo, item.Number),
-		Title:       item.Title,
-		Description: item.Body,
-		State:       types.Unclaimed,
-		Priority:    0,
-		Labels:      labels,
-		URL:         item.HTMLURL,
-		BranchName:  "symphony/" + strings.ToLower(fmt.Sprintf("%s-%d", c.repo, item.Number)),
-		BlockedBy:   []string{},
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
+		ID:            numberString,
+		Identifier:    fmt.Sprintf("%s/%s#%d", c.owner, c.repo, item.Number),
+		Title:         item.Title,
+		Description:   item.Body,
+		State:         types.Unclaimed,
+		Priority:      0,
+		Labels:        labels,
+		URL:           item.HTMLURL,
+		BranchName:    "symphony/" + strings.ToLower(fmt.Sprintf("%s-%d", c.repo, item.Number)),
+		BlockedBy:     blockedBy,
+		ModelOverride: ParseModelOverride(item.Body),
+		CreatedAt:     createdAt,
+		UpdatedAt:     updatedAt,
 		TrackerMeta: map[string]interface{}{
 			"github_node_id": item.NodeID,
 			"github_state":   item.State,
