@@ -719,18 +719,19 @@ func (i LocalBoardIssue) toIssue() types.Issue {
 	}
 
 	return types.Issue{
-		ID:          i.ID,
-		Identifier:  i.Identifier,
-		Title:       i.Title,
-		Description: i.Description,
-		State:       i.State.IssueState(),
-		Labels:      slices.Clone(i.Labels),
-		URL:         i.URL,
-		BranchName:  i.BranchName,
-		BlockedBy:   slices.Clone(i.BlockedBy),
-		CreatedAt:   i.CreatedAt,
-		UpdatedAt:   i.UpdatedAt,
-		TrackerMeta: trackerMeta,
+		ID:            i.ID,
+		Identifier:    i.Identifier,
+		Title:         i.Title,
+		Description:   i.Description,
+		State:         i.State.IssueState(),
+		Labels:        slices.Clone(i.Labels),
+		URL:           i.URL,
+		BranchName:    i.BranchName,
+		BlockedBy:     slices.Clone(i.BlockedBy),
+		ModelOverride: ParseModelOverride(i.Description),
+		CreatedAt:     i.CreatedAt,
+		UpdatedAt:     i.UpdatedAt,
+		TrackerMeta:   trackerMeta,
 	}
 }
 
