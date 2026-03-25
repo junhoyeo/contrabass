@@ -272,7 +272,10 @@ func (c *Coordinator) runExecPhase(ctx context.Context) error {
 
 	// Periodic stale worker detection during exec phase (non-blocking).
 	monitorCtx, monitorCancel := context.WithCancel(gCtx)
+	var monitorWG sync.WaitGroup
+	monitorWG.Add(1)
 	go func() {
+		defer monitorWG.Done()
 		defer monitorCancel()
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -291,7 +294,8 @@ func (c *Coordinator) runExecPhase(ctx context.Context) error {
 	}()
 
 	err := g.Wait()
-	monitorCancel() // Stop the monitor goroutine.
+	monitorCancel()  // Signal the monitor goroutine to stop.
+	monitorWG.Wait() // Wait for it to exit before returning.
 
 	if err != nil {
 		// If the parent context was cancelled (e.g., signal), propagate immediately.
