@@ -221,6 +221,200 @@ func newFakeTeamCLIServer(t *testing.T, logPath string) *fakeTeamCLIServer {
 				}
 				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{"tasks": []interface{}{task}}}
 				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "send-message":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"message": map[string]interface{}{
+						"message_id":  "msg-001",
+						"from_worker": "coordinator",
+						"to_worker":   "worker-1",
+						"body":        "test",
+						"created_at":  time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "broadcast":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"count":    1,
+					"messages": []interface{}{},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "mailbox-list":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"worker":   "worker-1",
+					"count":    0,
+					"messages": []interface{}{},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "mailbox-mark-delivered", "mailbox-mark-notified":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": json.RawMessage("{}")}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "write-shutdown-request":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": json.RawMessage("{}")}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-shutdown-ack":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"worker": "worker-1",
+					"ack":    map[string]interface{}{"status": "accept", "reason": "restart"},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-stall-state":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"team_name":          teamName,
+					"team_stalled":       false,
+					"leader_stale":       false,
+					"stalled_workers":    []string{},
+					"dead_workers":       []string{},
+					"pending_task_count": 0,
+					"all_workers_idle":   false,
+					"idle_workers":       []string{},
+					"reasons":            []string{},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-idle-state":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"team_name":         teamName,
+					"worker_count":      1,
+					"idle_worker_count": 0,
+					"idle_workers":      []string{},
+					"non_idle_workers":  []string{"worker-1"},
+					"all_workers_idle":  false,
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-events":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"count":  1,
+					"cursor": "evt-read-1",
+					"events": []interface{}{map[string]interface{}{
+						"event_id":   "evt-read-1",
+						"team":       teamName,
+						"type":       "worker_state_changed",
+						"worker":     "worker-1",
+						"state":      "active",
+						"prev_state": "idle",
+						"created_at": time.Now().UTC().Format(time.RFC3339),
+					}},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "await-event":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"status": "timeout",
+					"cursor": "",
+					"event":  nil,
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "append-event":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"event": map[string]interface{}{
+						"event_id":   "evt-001",
+						"team":       teamName,
+						"type":       "worker_state_changed",
+						"worker":     "worker-1",
+						"created_at": time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "create-task":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"task": map[string]interface{}{
+						"id":          "new-task-1",
+						"subject":     "created task",
+						"description": "test",
+						"status":      "pending",
+						"version":     1,
+						"created_at":  time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-task":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"task": map[string]interface{}{
+						"id":          "1",
+						"subject":     "Worker 1",
+						"description": "Do work",
+						"status":      "in_progress",
+						"version":     2,
+						"created_at":  time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "update-task":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"task": map[string]interface{}{
+						"id":          "1",
+						"subject":     "updated task",
+						"description": "test",
+						"status":      "pending",
+						"version":     2,
+						"created_at":  time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "claim-task":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"ok":         true,
+					"claimToken": "token-001",
+					"task": map[string]interface{}{
+						"id":          "1",
+						"subject":     "claimed task",
+						"description": "test",
+						"status":      "in_progress",
+						"version":     2,
+						"created_at":  time.Now().UTC().Format(time.RFC3339),
+						"claim": map[string]interface{}{
+							"owner":        "worker-1",
+							"token":        "token-001",
+							"leased_until": time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
+						},
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "transition-task-status":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"ok": true,
+					"task": map[string]interface{}{
+						"id":          "1",
+						"subject":     "transitioned task",
+						"description": "test",
+						"status":      "in_progress",
+						"version":     3,
+						"created_at":  time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "release-task-claim":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"ok": true,
+					"task": map[string]interface{}{
+						"id":          "1",
+						"subject":     "released task",
+						"description": "test",
+						"status":      "pending",
+						"version":     4,
+						"created_at":  time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-worker-heartbeat":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"worker": "worker-1",
+					"heartbeat": map[string]interface{}{
+						"pid":          1234,
+						"last_turn_at": time.Now().UTC().Format(time.RFC3339),
+						"turn_count":   5,
+						"alive":        true,
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			case "read-worker-status":
+				resp := map[string]interface{}{"ok": true, "operation": op, "data": map[string]interface{}{
+					"worker": "worker-1",
+					"status": map[string]interface{}{
+						"state":              "idle",
+						"consecutive_errors": 0,
+						"updated_at":         time.Now().UTC().Format(time.RFC3339),
+					},
+				}}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			default:
 				http.Error(w, "unknown op", http.StatusBadRequest)
 			}
