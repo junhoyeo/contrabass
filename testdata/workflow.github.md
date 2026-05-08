@@ -6,12 +6,12 @@ agent_timeout_ms: 600000
 stall_timeout_ms: 120000
 tracker:
   type: github
-  owner: example-org
-  repo: example-repo
+  owner: $GITHUB_OWNER
+  repo: $GITHUB_REPO
   labels:
     - bug
     - agent
-  assignee: bot-user
+  assignee: $GITHUB_ASSIGNEE
   token: $GITHUB_TOKEN
   endpoint: https://api.github.com
 agent:

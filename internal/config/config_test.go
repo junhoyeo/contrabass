@@ -686,7 +686,14 @@ func TestWorkflowConfig_LocalTrackerDefaults(t *testing.T) {
 }
 
 func TestParseWorkflow_GitHubConfig(t *testing.T) {
-	t.Parallel()
+	const (
+		wantOwner    = "test-org"
+		wantRepo     = "test-repo"
+		wantAssignee = "test-bot"
+	)
+	t.Setenv("GITHUB_OWNER", wantOwner)
+	t.Setenv("GITHUB_REPO", wantRepo)
+	t.Setenv("GITHUB_ASSIGNEE", wantAssignee)
 
 	path := "../../testdata/workflow.github.md"
 
@@ -699,9 +706,9 @@ func TestParseWorkflow_GitHubConfig(t *testing.T) {
 	assert.Equal(t, "opencode", cfg.AgentType())
 
 	// Verify GitHub tracker config
-	assert.Equal(t, "example-org", cfg.GitHubOwner())
-	assert.Equal(t, "example-repo", cfg.GitHubRepo())
-	assert.Equal(t, "bot-user", cfg.GitHubAssignee())
+	assert.Equal(t, wantOwner, cfg.GitHubOwner())
+	assert.Equal(t, wantRepo, cfg.GitHubRepo())
+	assert.Equal(t, wantAssignee, cfg.GitHubAssignee())
 	assert.Equal(t, []string{"bug", "agent"}, cfg.GitHubLabels())
 	assert.Equal(t, "https://api.github.com", cfg.GitHubEndpoint())
 
@@ -854,6 +861,9 @@ func TestWorkflowConfig_OhMyOpenCodeDefaults(t *testing.T) {
 func TestParseWorkflow_OhMyOpenCodeConfig(t *testing.T) {
 	const wantAPIKey = "sk-test-key"
 	t.Setenv("OPENCODE_PROVIDER_API_KEY", wantAPIKey)
+	t.Setenv("GITHUB_OWNER", "test-org")
+	t.Setenv("GITHUB_REPO", "test-repo")
+	t.Setenv("GITHUB_ASSIGNEE", "test-bot")
 
 	cfg, err := ParseWorkflow("../../testdata/workflow.ohmyopencode.md")
 	require.NoError(t, err)
