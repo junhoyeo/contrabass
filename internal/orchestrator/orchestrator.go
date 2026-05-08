@@ -90,6 +90,10 @@ type Orchestrator struct {
 	recoveredSet map[string]struct{}
 
 	buildInfo BuildInfo
+
+	// grepFn is used to find commits on mainRef matching an issue identifier.
+	// Non-nil only in tests; production code uses grepMainForIdentifier.
+	grepFn func(ctx context.Context, mainRef, identifier string) (sha, subject string, found, unresolvable bool, err error)
 }
 
 func (o *Orchestrator) SetWorkflowTimeline(store *timeline.Store, suppressLinearLegacyComments bool) {
@@ -305,6 +309,9 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 	supervisor *errgroup.Group,
 	runSignals chan<- runSignal,
 ) {
+	mainRef := cfg.TrackerMainRef()
+	mainRefUnresolvableWarnedThisCycle := false
+
 	for _, issue := range issues {
 		if issue.State != types.Unclaimed {
 			continue
@@ -315,6 +322,48 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 				"blockers", strings.Join(unresolved, ","))
 			continue
 		}
+
+		// Gate: skip dispatch if the issue is already implemented on mainRef.
+		grepFn := o.grepFn
+		if grepFn == nil {
+			grepFn = grepMainForIdentifier
+		}
+		if sha, subject, found, unresolvable, grepErr := grepFn(ctx, mainRef, issue.Identifier); grepErr != nil {
+			logging.LogIssueEvent(o.logger, issue.ID, "grep_main_error", "err", grepErr)
+		} else if unresolvable {
+			if !mainRefUnresolvableWarnedThisCycle {
+				mainRefUnresolvableWarnedThisCycle = true
+				logging.LogOrchestratorEvent(o.logger, "claim_main_ref_unresolvable", "main_ref", mainRef)
+				o.emitEvent(OrchestratorEvent{
+					Type:    EventClaimMainRefUnresolvable,
+					IssueID: issue.ID,
+					Data:    ClaimMainRefUnresolvable{MainRef: mainRef},
+				})
+			}
+			// Fail open: fall through to dispatch.
+		} else if found {
+			logging.LogIssueEvent(o.logger, issue.ID,
+				"dispatch_skipped_already_implemented",
+				"main_ref", mainRef,
+				"commit_sha", sha,
+				"commit_subject", subject)
+			o.emitEvent(OrchestratorEvent{
+				Type:    EventClaimSkippedAlreadyImplemented,
+				IssueID: issue.ID,
+				Data: ClaimSkippedAlreadyImplemented{
+					IssueIdentifier: issue.Identifier,
+					CommitSHA:       sha,
+					CommitSubject:   subject,
+					MainRef:         mainRef,
+				},
+			})
+
+			if cfg.TrackerAutoCloseAlreadyImplemented() {
+				o.autoCloseAlreadyImplemented(ctx, issue, sha, subject)
+			}
+			continue
+		}
+
 		if !o.canDispatch(cfg.MaxConcurrency()) {
 			return
 		}
@@ -324,6 +373,32 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 
 		o.dispatchIssue(ctx, watchCtx, cfg, issue, 1, supervisor, runSignals)
 	}
+}
+
+// autoCloseAlreadyImplemented transitions issue to Done and posts a comment
+// when auto_close_already_implemented is enabled. Errors are logged but do not
+// block the caller; this is a best-effort operation.
+func (o *Orchestrator) autoCloseAlreadyImplemented(ctx context.Context, issue types.Issue, sha, subject string) {
+	lc, ok := o.tracker.(linearAutoCloser)
+	if !ok {
+		logging.LogIssueEvent(o.logger, issue.ID, "auto_close_skipped_unsupported_tracker")
+		return
+	}
+	commentBody := fmt.Sprintf(
+		"Contrabass: skipping claim — commit `%s` on `%s` already addresses this issue.\n\n> %s",
+		sha, o.currentConfig().TrackerMainRef(), subject,
+	)
+	if err := lc.TransitionToDone(ctx, issue.ID, commentBody); err != nil {
+		logging.LogIssueEvent(o.logger, issue.ID, "auto_close_failed", "err", err)
+	} else {
+		logging.LogIssueEvent(o.logger, issue.ID, "auto_closed_already_implemented", "commit_sha", sha)
+	}
+}
+
+// linearAutoCloser is an optional tracker capability to transition an issue to
+// Done and post a comment in a single operation.
+type linearAutoCloser interface {
+	TransitionToDone(ctx context.Context, issueID, commentBody string) error
 }
 
 // recoverOrphanedClaims overrides the state of any issue that is Claimed in

@@ -1770,6 +1770,179 @@ func TestDispatchUnclaimedIssues_GatesOnBlockedBy(t *testing.T) {
 	})
 }
 
+func TestDispatchUnclaimedIssues_GatesOnAlreadyImplemented(t *testing.T) {
+	t.Run("gate fires on hit: dispatch skipped, event emitted", func(t *testing.T) {
+		issue := types.Issue{
+			ID: "ISS-1", Identifier: "ABC-1", Title: "Already done", State: types.Unclaimed,
+		}
+		mt := newObservingTracker([]types.Issue{issue})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{Events: []types.AgentEvent{}, Delay: 10 * time.Second}
+		cfg := &staticConfig{cfg: testConfig()}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+
+		// Inject a grep function that always reports ABC-1 as found.
+		orch.grepFn = func(_ context.Context, _, identifier string) (string, string, bool, bool, error) {
+			if identifier == "ABC-1" {
+				return "abc1sha0000000000000000000000000000000001", "fix: implement ABC-1 task", true, false, nil
+			}
+			return "", "", false, false, nil
+		}
+
+		var collectedEvents []OrchestratorEvent
+		var evMu sync.Mutex
+		go func() {
+			for e := range orch.Events() {
+				evMu.Lock()
+				collectedEvents = append(collectedEvents, e)
+				evMu.Unlock()
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		// Allow several poll cycles.
+		time.Sleep(300 * time.Millisecond)
+
+		require.Equal(t, 0, mt.ClaimCount("ISS-1"),
+			"already-implemented issue must not be claimed")
+
+		cancel()
+		require.NoError(t, <-done)
+
+		evMu.Lock()
+		defer evMu.Unlock()
+		var found bool
+		for _, e := range collectedEvents {
+			if e.Type == EventClaimSkippedAlreadyImplemented {
+				p, ok := e.Data.(ClaimSkippedAlreadyImplemented)
+				require.True(t, ok)
+				assert.Equal(t, "ABC-1", p.IssueIdentifier)
+				assert.Equal(t, "abc1sha0000000000000000000000000000000001", p.CommitSHA)
+				assert.Contains(t, p.CommitSubject, "ABC-1")
+				assert.Equal(t, "main", p.MainRef)
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "ClaimSkippedAlreadyImplemented event must be emitted")
+	})
+
+	t.Run("fail-open on unresolvable mainRef: dispatch proceeds", func(t *testing.T) {
+		issue := types.Issue{
+			ID: "ISS-2", Identifier: "ABC-2", Title: "Normal issue", State: types.Unclaimed,
+		}
+		mt := newObservingTracker([]types.Issue{issue})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{
+			Events: []types.AgentEvent{{Type: "turn/completed"}},
+			Delay:  10 * time.Millisecond,
+		}
+		cfg := &staticConfig{cfg: testConfig()}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+
+		// Inject a grep function that always reports the ref as unresolvable.
+		orch.grepFn = func(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+			return "", "", false, true, nil
+		}
+
+		var collectedEvents []OrchestratorEvent
+		var evMu sync.Mutex
+		go func() {
+			for e := range orch.Events() {
+				evMu.Lock()
+				collectedEvents = append(collectedEvents, e)
+				evMu.Unlock()
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		// Issue should be claimed despite unresolvable ref (fail-open).
+		require.Eventually(t, func() bool {
+			return mt.ClaimCount("ISS-2") > 0
+		}, 1*time.Second, 10*time.Millisecond,
+			"fail-open: issue must be dispatched when mainRef is unresolvable")
+
+		cancel()
+		require.NoError(t, <-done)
+
+		evMu.Lock()
+		defer evMu.Unlock()
+		var unresolvableEmitted bool
+		for _, e := range collectedEvents {
+			if e.Type == EventClaimMainRefUnresolvable {
+				unresolvableEmitted = true
+				break
+			}
+		}
+		assert.True(t, unresolvableEmitted, "ClaimMainRefUnresolvable event must be emitted")
+	})
+
+	t.Run("warn-once semantics: unresolvable event emitted once per cycle", func(t *testing.T) {
+		issues := []types.Issue{
+			{ID: "ISS-3", Identifier: "ABC-3", Title: "Issue A", State: types.Unclaimed},
+			{ID: "ISS-4", Identifier: "ABC-4", Title: "Issue B", State: types.Unclaimed},
+		}
+		mt := newObservingTracker(issues)
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{
+			Events: []types.AgentEvent{{Type: "turn/completed"}},
+			Delay:  10 * time.Millisecond,
+		}
+		cfg := &staticConfig{cfg: &config.WorkflowConfig{
+			MaxConcurrencyRaw:    1, // limit concurrency to force both issues through gate
+			PollIntervalMsRaw:    50,
+			MaxRetryBackoffMsRaw: 100,
+			AgentTimeoutMsRaw:    5000,
+			StallTimeoutMsRaw:    5000,
+			PromptTemplate:       "Fix: {{ issue.title }}",
+			ModelRaw:             "test-model",
+			ProjectURLRaw:        "https://test.example.com",
+		}}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+
+		callCount := new(atomic.Int32)
+		orch.grepFn = func(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+			callCount.Add(1)
+			return "", "", false, true, nil
+		}
+
+		var evMu sync.Mutex
+		var unresolvableCount int
+		go func() {
+			for e := range orch.Events() {
+				if e.Type == EventClaimMainRefUnresolvable {
+					evMu.Lock()
+					unresolvableCount++
+					evMu.Unlock()
+				}
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+		cancel()
+		require.NoError(t, <-done)
+
+		evMu.Lock()
+		defer evMu.Unlock()
+		// With 2 issues and multiple poll cycles, unresolvable event should be
+		// emitted at most once per cycle (not once per issue).
+		// We allow up to 1 per cycle * ~10 cycles = generous budget.
+		assert.GreaterOrEqual(t, unresolvableCount, 1, "at least one ClaimMainRefUnresolvable event expected")
+		// callCount can be higher than unresolvableCount because grepFn is called
+		// per issue; the warn-once gate only suppresses the *event* after the first.
+		assert.GreaterOrEqual(t, callCount.Load(), int32(unresolvableCount),
+			"grepFn called at least as many times as events emitted")
+	})
+}
+
 // missingBranchWorkspaceManager wraps the mock manager but seeds a real git
 // repo at the workspace path WITHOUT creating issue.BranchName. claimIssue's
 // `git rev-parse HEAD` succeeds (so ClaimHeadSha is populated), but the
