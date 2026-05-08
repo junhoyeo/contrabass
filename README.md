@@ -317,6 +317,22 @@ team:
 - [`testdata/workflow.omc.md`](testdata/workflow.omc.md) — OMC workflow
 - [`testdata/workflow.md`](testdata/workflow.md) — realistic Linear fixture
 
+### Tunables
+
+Fine-grained runtime knobs you can set in your workflow YAML front matter.
+All values are in milliseconds unless noted. Omitting a key uses the default.
+
+| YAML key | Default (ms) | Why you'd change it |
+|---|---|---|
+| `web.sse_keepalive_interval_ms` | `15000` | Increase if your reverse proxy has a shorter idle-timeout than 15 s |
+| `codex.handshake_timeout_ms` | `30000` | Increase on slow networks where `codex app-server` takes longer to start |
+| `codex.overload_retry_cap_ms` | `4000` | Raise the backoff ceiling if your codex tier is heavily rate-limited |
+| `codex.overload_start_delay_ms` | `100` | Tune the first-retry delay for overload (-32001) responses |
+| `team.restart_grace_period_ms` | `5000` | Time allowed for a worker to shut down cleanly before forced restart |
+| `team.governance_retry_delay_ms` | `500` | Pause between governance-check retries in the worker loop |
+| `team.heartbeat_interval_ms` | `10000` | How often the coordinator scans for stale workers |
+| `tracker.http_timeout_ms` | `30000` | HTTP timeout for Linear / GitHub API calls |
+
 ## Supported integrations
 
 | Surface | Current support |
