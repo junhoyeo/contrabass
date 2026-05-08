@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -16,7 +17,11 @@ import (
 	"github.com/junhoyeo/contrabass/internal/tracker"
 )
 
-const defaultListenAddr = "localhost:8080"
+const (
+	defaultListenHost = "localhost"
+	defaultListenPort = 8080
+	defaultListenAddr = defaultListenHost + ":8080"
+)
 
 type SnapshotProvider interface {
 	Snapshot() orchestrator.StateSnapshot
@@ -55,12 +60,13 @@ type Server struct {
 }
 
 func NewServer(
-	addr string,
+	host string,
+	port int,
 	provider SnapshotProvider,
 	hub *hub.Hub[WebEvent],
 	dashboardFS fs.FS,
 ) *Server {
-	listenAddr := normalizeListenAddr(addr)
+	listenAddr := buildListenAddr(host, port)
 
 	return &Server{
 		hub:              hub,
@@ -70,6 +76,22 @@ func NewServer(
 	}
 }
 
+// buildListenAddr constructs a listen address from a host and port.
+// If host is empty, defaultListenHost is used. If port is zero or negative,
+// defaultListenPort is used.
+func buildListenAddr(host string, port int) string {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		h = defaultListenHost
+	}
+	p := port
+	if p <= 0 {
+		p = defaultListenPort
+	}
+	return fmt.Sprintf("%s:%d", h, p)
+}
+
+// normalizeListenAddr is kept for backward-compat with existing tests.
 func normalizeListenAddr(addr string) string {
 	trimmed := strings.TrimSpace(addr)
 	if trimmed == "" {
@@ -77,7 +99,7 @@ func normalizeListenAddr(addr string) string {
 	}
 
 	if strings.HasPrefix(trimmed, ":") {
-		return "localhost" + trimmed
+		return defaultListenHost + trimmed
 	}
 
 	return trimmed
