@@ -119,7 +119,7 @@ Prompt.
 	})
 
 	called := false
-	startTeamWebServer = func(_ context.Context, _ *log.Logger, port int) (chan<- web.WebEvent, error) {
+	startTeamWebServer = func(_ context.Context, _ *log.Logger, port int, _ *config.WorkflowConfig) (chan<- web.WebEvent, error) {
 		called = true
 		assert.Equal(t, 43111, port)
 		return make(chan<- web.WebEvent, 1), nil
