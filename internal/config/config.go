@@ -121,7 +121,9 @@ type TrackerConfig struct {
 	Assignee        string `yaml:"assignee"`
 	Token           string `yaml:"token"`
 	Endpoint        string `yaml:"endpoint"`
-	HTTPTimeoutMsRaw int   `yaml:"http_timeout_ms"`
+	HTTPTimeoutMsRaw                int    `yaml:"http_timeout_ms"`
+	MainRefRaw                      string `yaml:"main_ref"`
+	AutoCloseAlreadyImplementedRaw  bool   `yaml:"auto_close_already_implemented"`
 }
 
 // WebConfig holds HTTP/SSE server tunables.
@@ -839,6 +841,24 @@ func (c *WorkflowConfig) TrackerHTTPTimeout() time.Duration {
 		return time.Duration(defaultTrackerHTTPTimeoutMs) * time.Millisecond
 	}
 	return time.Duration(c.Tracker.HTTPTimeoutMsRaw) * time.Millisecond
+}
+
+// TrackerMainRef returns the git ref used for the "already implemented" gate.
+// Defaults to "main" when unset.
+func (c *WorkflowConfig) TrackerMainRef() string {
+	if c == nil || strings.TrimSpace(c.Tracker.MainRefRaw) == "" {
+		return "main"
+	}
+	return strings.TrimSpace(c.Tracker.MainRefRaw)
+}
+
+// TrackerAutoCloseAlreadyImplemented reports whether issues found to be already
+// implemented should be automatically transitioned to Done. Defaults to false.
+func (c *WorkflowConfig) TrackerAutoCloseAlreadyImplemented() bool {
+	if c == nil {
+		return false
+	}
+	return c.Tracker.AutoCloseAlreadyImplementedRaw
 }
 
 func (c *WorkflowConfig) Model() (string, error) {

@@ -1065,3 +1065,84 @@ func TestWorkflowConfig_TunableDefaults(t *testing.T) {
 	assert.Equal(t, 20_000*time.Millisecond, custom.TeamHeartbeatInterval())
 	assert.Equal(t, 60_000*time.Millisecond, custom.TrackerHTTPTimeout())
 }
+
+func TestTrackerMainRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *WorkflowConfig
+		want string
+	}{
+		{
+			name: "nil config defaults to main",
+			cfg:  nil,
+			want: "main",
+		},
+		{
+			name: "empty string defaults to main",
+			cfg:  &WorkflowConfig{Tracker: TrackerConfig{MainRefRaw: ""}},
+			want: "main",
+		},
+		{
+			name: "whitespace-only defaults to main",
+			cfg:  &WorkflowConfig{Tracker: TrackerConfig{MainRefRaw: "   "}},
+			want: "main",
+		},
+		{
+			name: "explicit ref returned",
+			cfg:  &WorkflowConfig{Tracker: TrackerConfig{MainRefRaw: "origin/main"}},
+			want: "origin/main",
+		},
+		{
+			name: "trimmed value returned",
+			cfg:  &WorkflowConfig{Tracker: TrackerConfig{MainRefRaw: "  develop  "}},
+			want: "develop",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.cfg.TrackerMainRef())
+		})
+	}
+}
+
+func TestTrackerAutoCloseAlreadyImplemented(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *WorkflowConfig
+		want bool
+	}{
+		{
+			name: "nil config defaults to false",
+			cfg:  nil,
+			want: false,
+		},
+		{
+			name: "unset defaults to false",
+			cfg:  &WorkflowConfig{},
+			want: false,
+		},
+		{
+			name: "explicit false",
+			cfg:  &WorkflowConfig{Tracker: TrackerConfig{AutoCloseAlreadyImplementedRaw: false}},
+			want: false,
+		},
+		{
+			name: "explicit true",
+			cfg:  &WorkflowConfig{Tracker: TrackerConfig{AutoCloseAlreadyImplementedRaw: true}},
+			want: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.cfg.TrackerAutoCloseAlreadyImplemented())
+		})
+	}
+}
