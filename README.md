@@ -87,6 +87,19 @@ cp .env.example .env
 set -a && source .env && set +a
 ```
 
+### Per-workflow required environment variables
+
+| Workflow file | Required environment variables |
+|---|---|
+| `workflow.demo.md` | `CONTRABASS_PROJECT_URL`, `LINEAR_ASSIGNEE_ID`, `LINEAR_API_KEY`, `CONTRABASS_MODEL` |
+| `workflow.hardening.md` | `CONTRABASS_PROJECT_URL`, `LINEAR_ASSIGNEE_ID`, `LINEAR_API_KEY`, `CONTRABASS_MODEL` |
+| `workflow.omx.md` | `CONTRABASS_PROJECT_URL`, `LINEAR_API_KEY`, `CONTRABASS_MODEL` |
+| `workflow.omc.md` | `CONTRABASS_PROJECT_URL`, `LINEAR_API_KEY`, `CONTRABASS_MODEL` |
+| `workflow.github.md` | `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_ASSIGNEE`, `GITHUB_TOKEN`, `CONTRABASS_MODEL` |
+| `workflow.ohmyopencode.md` | `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_ASSIGNEE`, `GITHUB_TOKEN`, `CONTRABASS_MODEL`, `OPENCODE_PROVIDER_API_KEY` |
+| `workflow.local.md` | _(none — uses internal board, model is hardcoded)_ |
+| `workflow.mock.md` | _(none — test fixture)_ |
+
 ## Quick start
 
 ### Run with the demo workflow
