@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1001,4 +1002,55 @@ func TestParseWorkflow_OMCConfig(t *testing.T) {
 	assert.Equal(t, 1200, cfg.OMCPollIntervalMs())
 	assert.Equal(t, 21000, cfg.OMCStartupTimeoutMs())
 	assert.Contains(t, cfg.PromptTemplate, "OMC")
+}
+
+func TestWorkflowConfig_TunableDefaults(t *testing.T) {
+	t.Parallel()
+
+	var nilCfg *WorkflowConfig
+
+	// All nil-config calls must return hardcoded defaults.
+	assert.Equal(t, 15_000*time.Millisecond, nilCfg.WebSSEKeepaliveInterval())
+	assert.Equal(t, 30_000*time.Millisecond, nilCfg.CodexHandshakeTimeout())
+	assert.Equal(t, 4_000*time.Millisecond, nilCfg.CodexOverloadRetryCap())
+	assert.Equal(t, 100*time.Millisecond, nilCfg.CodexOverloadStartDelay())
+	assert.Equal(t, 5_000*time.Millisecond, nilCfg.TeamRestartGracePeriod())
+	assert.Equal(t, 500*time.Millisecond, nilCfg.TeamGovernanceRetryDelay())
+	assert.Equal(t, 10_000*time.Millisecond, nilCfg.TeamHeartbeatInterval())
+	assert.Equal(t, 30_000*time.Millisecond, nilCfg.TrackerHTTPTimeout())
+
+	// Zero/negative values also return defaults.
+	zeroCfg := &WorkflowConfig{}
+	assert.Equal(t, 15_000*time.Millisecond, zeroCfg.WebSSEKeepaliveInterval())
+	assert.Equal(t, 30_000*time.Millisecond, zeroCfg.CodexHandshakeTimeout())
+	assert.Equal(t, 4_000*time.Millisecond, zeroCfg.CodexOverloadRetryCap())
+	assert.Equal(t, 100*time.Millisecond, zeroCfg.CodexOverloadStartDelay())
+	assert.Equal(t, 5_000*time.Millisecond, zeroCfg.TeamRestartGracePeriod())
+	assert.Equal(t, 500*time.Millisecond, zeroCfg.TeamGovernanceRetryDelay())
+	assert.Equal(t, 10_000*time.Millisecond, zeroCfg.TeamHeartbeatInterval())
+	assert.Equal(t, 30_000*time.Millisecond, zeroCfg.TrackerHTTPTimeout())
+
+	// Explicit values are honoured.
+	custom := &WorkflowConfig{
+		Web: WebConfig{SSEKeepaliveIntervalMsRaw: 5_000},
+		Codex: CodexConfig{
+			HandshakeTimeoutMsRaw:   60_000,
+			OverloadRetryCapMsRaw:   8_000,
+			OverloadStartDelayMsRaw: 200,
+		},
+		Team: TeamSectionConfig{
+			RestartGracePeriodMsRaw:   10_000,
+			GovernanceRetryDelayMsRaw: 1_000,
+			HeartbeatIntervalMsRaw:    20_000,
+		},
+		Tracker: TrackerConfig{HTTPTimeoutMsRaw: 60_000},
+	}
+	assert.Equal(t, 5_000*time.Millisecond, custom.WebSSEKeepaliveInterval())
+	assert.Equal(t, 60_000*time.Millisecond, custom.CodexHandshakeTimeout())
+	assert.Equal(t, 8_000*time.Millisecond, custom.CodexOverloadRetryCap())
+	assert.Equal(t, 200*time.Millisecond, custom.CodexOverloadStartDelay())
+	assert.Equal(t, 10_000*time.Millisecond, custom.TeamRestartGracePeriod())
+	assert.Equal(t, 1_000*time.Millisecond, custom.TeamGovernanceRetryDelay())
+	assert.Equal(t, 20_000*time.Millisecond, custom.TeamHeartbeatInterval())
+	assert.Equal(t, 60_000*time.Millisecond, custom.TrackerHTTPTimeout())
 }
