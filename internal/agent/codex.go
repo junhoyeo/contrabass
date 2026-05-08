@@ -139,6 +139,19 @@ func (r *CodexRunner) WithStreamReadTimeout(d time.Duration) *CodexRunner {
 	return r
 }
 
+// WithOverloadParams sets the exponential-backoff cap and start delay used when
+// the codex app-server responds with -32001 (overloaded). Returns the receiver
+// for chaining. Zero or negative values are ignored (defaults are preserved).
+func (r *CodexRunner) WithOverloadParams(retryCap, startDelay time.Duration) *CodexRunner {
+	if retryCap > 0 {
+		r.overloadRetryCap = retryCap
+	}
+	if startDelay > 0 {
+		r.overloadStartDelay = startDelay
+	}
+	return r
+}
+
 // ConfigureCodex attaches workflow-driven codex config that the runner will
 // forward as `-c key=value` overrides each time it spawns the agent process.
 // Returns the receiver to allow chaining. Empty fields are skipped.
