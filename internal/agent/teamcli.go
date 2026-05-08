@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/junhoyeo/contrabass/internal/config"
 	"github.com/junhoyeo/contrabass/internal/types"
 )
 
@@ -49,6 +50,11 @@ type teamCLIRunner struct {
 	shutdownArgs   func(teamName string) []string
 	teamName       func(taskSeed string) string
 	logger         *log.Logger
+
+	// workflowCfg holds the parsed workflow config so runtime tunables such as
+	// restart_grace_period_ms can be read without threading extra parameters
+	// through every method call.
+	workflowCfg *config.WorkflowConfig
 
 	// selfHealing skips contrabass-driven RestartDeadWorkers and intervention
 	// escalation when the underlying team CLI already runs its own

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 )
 
 const (
@@ -52,6 +53,16 @@ const (
 	defaultTeamExecutionMode     = TeamExecutionModeTeam
 	defaultTeamWorkerMode        = "tmux"
 	defaultWorkflowTimelineDir   = ".contrabass/state/workflow-timeline"
+
+	// New tunables exposed to workflow YAML.
+	defaultWebSSEKeepaliveIntervalMs  = 15_000
+	defaultCodexHandshakeTimeoutMs    = 30_000
+	defaultCodexOverloadRetryCapMs    = 4_000
+	defaultCodexOverloadStartDelayMs  = 100
+	defaultTeamRestartGracePeriodMs   = 5_000
+	defaultTeamGovernanceRetryDelayMs = 500
+	defaultTeamHeartbeatIntervalMs    = 10_000
+	defaultTrackerHTTPTimeoutMs       = 30_000
 )
 
 const (
@@ -93,22 +104,29 @@ type WorkflowConfig struct {
 	OhMyOpenCode         OhMyOpenCodeConfig  `yaml:"oh_my_opencode"`
 	Team                 TeamSectionConfig   `yaml:"team"`
 	Timeline             TimelineConfig      `yaml:"timeline"`
+	Web                  WebConfig           `yaml:"web"`
 	PromptTemplate       string              `yaml:"-"`
 }
 
 type TrackerConfig struct {
-	Type        string   `yaml:"type"`
-	ProjectURL  string   `yaml:"project_url"`
-	TeamID      string   `yaml:"team_id"`
-	AssigneeID  string   `yaml:"assignee_id"`
-	BoardDir    string   `yaml:"board_dir"`
-	IssuePrefix string   `yaml:"issue_prefix"`
-	Owner       string   `yaml:"owner"`
-	Repo        string   `yaml:"repo"`
-	Labels      []string `yaml:"labels"`
-	Assignee    string   `yaml:"assignee"`
-	Token       string   `yaml:"token"`
-	Endpoint    string   `yaml:"endpoint"`
+	Type            string `yaml:"type"`
+	ProjectURL      string `yaml:"project_url"`
+	TeamID          string `yaml:"team_id"`
+	AssigneeID      string `yaml:"assignee_id"`
+	BoardDir        string `yaml:"board_dir"`
+	IssuePrefix     string `yaml:"issue_prefix"`
+	Owner           string `yaml:"owner"`
+	Repo            string `yaml:"repo"`
+	Labels          []string `yaml:"labels"`
+	Assignee        string `yaml:"assignee"`
+	Token           string `yaml:"token"`
+	Endpoint        string `yaml:"endpoint"`
+	HTTPTimeoutMsRaw int   `yaml:"http_timeout_ms"`
+}
+
+// WebConfig holds HTTP/SSE server tunables.
+type WebConfig struct {
+	SSEKeepaliveIntervalMsRaw int `yaml:"sse_keepalive_interval_ms"`
 }
 
 type TimelineConfig struct {
@@ -134,10 +152,13 @@ type HooksConfig struct {
 }
 
 type CodexConfig struct {
-	BinaryPath     string `yaml:"binary_path"`
-	Model          string `yaml:"model"`
-	ApprovalPolicy string `yaml:"approval_policy"`
-	Sandbox        string `yaml:"sandbox"`
+	BinaryPath              string `yaml:"binary_path"`
+	Model                   string `yaml:"model"`
+	ApprovalPolicy          string `yaml:"approval_policy"`
+	Sandbox                 string `yaml:"sandbox"`
+	HandshakeTimeoutMsRaw   int    `yaml:"handshake_timeout_ms"`
+	OverloadRetryCapMsRaw   int    `yaml:"overload_retry_cap_ms"`
+	OverloadStartDelayMsRaw int    `yaml:"overload_start_delay_ms"`
 }
 
 type AgentConfig struct {
@@ -189,12 +210,15 @@ type LinearSyncCommentsConfig struct {
 
 // TeamSectionConfig holds settings for multi-agent team coordination.
 type TeamSectionConfig struct {
-	MaxWorkers        int    `yaml:"max_workers"`
-	MaxFixLoops       int    `yaml:"max_fix_loops"`
-	ClaimLeaseSeconds int    `yaml:"claim_lease_seconds"`
-	StateDir          string `yaml:"state_dir"`
-	ExecutionMode     string `yaml:"execution_mode"`
-	WorkerMode        string `yaml:"worker_mode"`
+	MaxWorkers                 int    `yaml:"max_workers"`
+	MaxFixLoops                int    `yaml:"max_fix_loops"`
+	ClaimLeaseSeconds          int    `yaml:"claim_lease_seconds"`
+	StateDir                   string `yaml:"state_dir"`
+	ExecutionMode              string `yaml:"execution_mode"`
+	WorkerMode                 string `yaml:"worker_mode"`
+	RestartGracePeriodMsRaw    int    `yaml:"restart_grace_period_ms"`
+	GovernanceRetryDelayMsRaw  int    `yaml:"governance_retry_delay_ms"`
+	HeartbeatIntervalMsRaw     int    `yaml:"heartbeat_interval_ms"`
 }
 
 // OhMyOpenCodeConfig holds settings for the oh-my-opencode agent runner which
@@ -759,6 +783,62 @@ func (c *WorkflowConfig) StallTimeoutMs() int {
 		return defaultStallTimeoutMs
 	}
 	return c.StallTimeoutMsRaw
+}
+
+func (c *WorkflowConfig) WebSSEKeepaliveInterval() time.Duration {
+	if c == nil || c.Web.SSEKeepaliveIntervalMsRaw <= 0 {
+		return time.Duration(defaultWebSSEKeepaliveIntervalMs) * time.Millisecond
+	}
+	return time.Duration(c.Web.SSEKeepaliveIntervalMsRaw) * time.Millisecond
+}
+
+func (c *WorkflowConfig) CodexHandshakeTimeout() time.Duration {
+	if c == nil || c.Codex.HandshakeTimeoutMsRaw <= 0 {
+		return time.Duration(defaultCodexHandshakeTimeoutMs) * time.Millisecond
+	}
+	return time.Duration(c.Codex.HandshakeTimeoutMsRaw) * time.Millisecond
+}
+
+func (c *WorkflowConfig) CodexOverloadRetryCap() time.Duration {
+	if c == nil || c.Codex.OverloadRetryCapMsRaw <= 0 {
+		return time.Duration(defaultCodexOverloadRetryCapMs) * time.Millisecond
+	}
+	return time.Duration(c.Codex.OverloadRetryCapMsRaw) * time.Millisecond
+}
+
+func (c *WorkflowConfig) CodexOverloadStartDelay() time.Duration {
+	if c == nil || c.Codex.OverloadStartDelayMsRaw <= 0 {
+		return time.Duration(defaultCodexOverloadStartDelayMs) * time.Millisecond
+	}
+	return time.Duration(c.Codex.OverloadStartDelayMsRaw) * time.Millisecond
+}
+
+func (c *WorkflowConfig) TeamRestartGracePeriod() time.Duration {
+	if c == nil || c.Team.RestartGracePeriodMsRaw <= 0 {
+		return time.Duration(defaultTeamRestartGracePeriodMs) * time.Millisecond
+	}
+	return time.Duration(c.Team.RestartGracePeriodMsRaw) * time.Millisecond
+}
+
+func (c *WorkflowConfig) TeamGovernanceRetryDelay() time.Duration {
+	if c == nil || c.Team.GovernanceRetryDelayMsRaw <= 0 {
+		return time.Duration(defaultTeamGovernanceRetryDelayMs) * time.Millisecond
+	}
+	return time.Duration(c.Team.GovernanceRetryDelayMsRaw) * time.Millisecond
+}
+
+func (c *WorkflowConfig) TeamHeartbeatInterval() time.Duration {
+	if c == nil || c.Team.HeartbeatIntervalMsRaw <= 0 {
+		return time.Duration(defaultTeamHeartbeatIntervalMs) * time.Millisecond
+	}
+	return time.Duration(c.Team.HeartbeatIntervalMsRaw) * time.Millisecond
+}
+
+func (c *WorkflowConfig) TrackerHTTPTimeout() time.Duration {
+	if c == nil || c.Tracker.HTTPTimeoutMsRaw <= 0 {
+		return time.Duration(defaultTrackerHTTPTimeoutMs) * time.Millisecond
+	}
+	return time.Duration(c.Tracker.HTTPTimeoutMsRaw) * time.Millisecond
 }
 
 func (c *WorkflowConfig) Model() (string, error) {

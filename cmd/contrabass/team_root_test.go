@@ -119,7 +119,7 @@ Prompt.
 	})
 
 	called := false
-	startTeamWebServer = func(_ context.Context, _ *log.Logger, port int, host string) (chan<- web.WebEvent, error) {
+	startTeamWebServer = func(_ context.Context, _ *log.Logger, port int, host string, _ *config.WorkflowConfig) (chan<- web.WebEvent, error) {
 		called = true
 		assert.Equal(t, 43111, port)
 		assert.Equal(t, "localhost", host)

@@ -258,6 +258,6 @@ func TestWorkerLoopExitsAfterGovernanceRetryLimit(t *testing.T) {
 	elapsed := time.Since(start)
 
 	assert.NoError(t, err)
-	assert.GreaterOrEqual(t, elapsed, governanceRetryDelay*time.Duration(governanceRetryLimit-1))
+	assert.GreaterOrEqual(t, elapsed, cfg.TeamGovernanceRetryDelay()*time.Duration(governanceRetryLimit-1))
 	assert.Equal(t, 10, governanceRetryLimit)
 }

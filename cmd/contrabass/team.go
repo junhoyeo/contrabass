@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -168,7 +168,8 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 		if codexBin == "" {
 			codexBin = cfg.CodexBinaryPath()
 		}
-		runner := agent.NewCodexRunner(codexBin, 30*time.Second)
+		runner := agent.NewCodexRunner(codexBin, cfg.CodexHandshakeTimeout())
+		runner.WithOverloadParams(cfg.CodexOverloadRetryCap(), cfg.CodexOverloadStartDelay())
 		if stallTimeoutMs := cfg.StallTimeoutMs(); stallTimeoutMs > 0 {
 			runner.WithStreamReadTimeout(time.Duration(stallTimeoutMs) * time.Millisecond)
 		}

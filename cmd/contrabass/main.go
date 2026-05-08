@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -208,6 +209,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 			APIKey:      os.Getenv("LINEAR_API_KEY"),
 			ProjectSlug: projectSlug(cfg),
 			AssigneeID:  assigneeID,
+			HTTPClient:  &http.Client{Timeout: cfg.TrackerHTTPTimeout()},
 		})
 		if linearErr != nil {
 			return fmt.Errorf("creating linear tracker client: %w", linearErr)
@@ -238,12 +240,13 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 			repo = cfg.GitHubRepo()
 		}
 		githubClient, githubErr := tracker.NewGitHubClient(tracker.GitHubConfig{
-			APIToken: token,
-			Owner:    owner,
-			Repo:     repo,
-			Labels:   cfg.GitHubLabels(),
-			Assignee: cfg.GitHubAssignee(),
-			Endpoint: cfg.GitHubEndpoint(),
+			APIToken:   token,
+			Owner:      owner,
+			Repo:       repo,
+			Labels:     cfg.GitHubLabels(),
+			Assignee:   cfg.GitHubAssignee(),
+			Endpoint:   cfg.GitHubEndpoint(),
+			HTTPClient: &http.Client{Timeout: cfg.TrackerHTTPTimeout()},
 		})
 		if githubErr != nil {
 			return fmt.Errorf("creating github tracker client: %w", githubErr)

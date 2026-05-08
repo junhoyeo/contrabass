@@ -49,7 +49,7 @@ func runTeamExecutionApp(
 	var webSink chan<- web.WebEvent
 	if port > 0 {
 		var err error
-		webSink, err = startTeamWebServer(ctx, logger, port, host)
+		webSink, err = startTeamWebServer(ctx, logger, port, host, watcher.GetConfig())
 		if err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ func runTeamExecutionApp(
 	})
 }
 
-func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int, host string) (chan<- web.WebEvent, error) {
+func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int, host string, cfg *config.WorkflowConfig) (chan<- web.WebEvent, error) {
 	webEvents := make(chan web.WebEvent, 256)
 	h := hub.NewHub(webEvents)
 	go h.Run(ctx)
@@ -98,6 +98,7 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 
 	provider := web.NewTeamSnapshotProvider()
 	srv := web.NewServer(host, port, provider, h, dashboardFS)
+	srv.SetSSEKeepaliveInterval(cfg.WebSSEKeepaliveInterval())
 
 	listenHost := host
 	if listenHost == "" {

@@ -23,6 +23,7 @@ func NewOMCRunner(cfg *config.WorkflowConfig, timeout time.Duration) *OMCRunner 
 		teamSpec:       cfg.OMCTeamSpec(),
 		pollInterval:   pollInterval,
 		startupTimeout: startupTimeout,
+		workflowCfg:    cfg,
 		startArgs: func(teamSpec, task string) []string {
 			return []string{"team", teamSpec, task}
 		},

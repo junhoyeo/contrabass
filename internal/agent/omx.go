@@ -23,6 +23,7 @@ func NewOMXRunner(cfg *config.WorkflowConfig, timeout time.Duration) *OMXRunner 
 		teamSpec:       cfg.OMXTeamSpec(),
 		pollInterval:   pollInterval,
 		startupTimeout: startupTimeout,
+		workflowCfg:    cfg,
 		// omx v0.16+ runs its own worker supervisor (heartbeat, restart,
 		// quarantine), so contrabass should only observe — driving its own
 		// restart/quarantine on top of omx kills healthy codex turns.

@@ -47,16 +47,17 @@ type TimelineProvider interface {
 }
 
 type Server struct {
-	httpServer       *http.Server
-	hub              *hub.Hub[WebEvent]
-	webEvents        chan<- WebEvent
-	dashboardFS      fs.FS
-	listenAddr       string
-	snapshotProvider SnapshotProvider
-	agentStopper     AgentStopper
-	boardProvider    BoardProvider
-	detailProvider   tracker.IssueDetailProvider
-	timelineProvider TimelineProvider
+	httpServer            *http.Server
+	hub                   *hub.Hub[WebEvent]
+	webEvents             chan<- WebEvent
+	dashboardFS           fs.FS
+	listenAddr            string
+	snapshotProvider      SnapshotProvider
+	agentStopper          AgentStopper
+	boardProvider         BoardProvider
+	detailProvider        tracker.IssueDetailProvider
+	timelineProvider      TimelineProvider
+	sseKeepaliveInterval  time.Duration
 }
 
 func NewServer(
@@ -123,6 +124,10 @@ func (s *Server) SetAgentStopper(stopper AgentStopper) {
 
 func (s *Server) SetEventSink(sink chan<- WebEvent) {
 	s.webEvents = sink
+}
+
+func (s *Server) SetSSEKeepaliveInterval(d time.Duration) {
+	s.sseKeepaliveInterval = d
 }
 
 func (s *Server) publishEvent(event WebEvent) {
