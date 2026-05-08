@@ -30,8 +30,9 @@ type WorkerRestartResult struct {
 // request via the CLI API and reassigning its in-progress tasks.
 func (r *teamCLIRunner) RestartWorker(ctx context.Context, workspace, teamName, workerName string, opts *WorkerRestartOptions) (*WorkerRestartResult, error) {
 	if opts == nil {
+		gracePeriod := r.workflowCfg.TeamRestartGracePeriod()
 		opts = &WorkerRestartOptions{
-			GracePeriod:   5 * time.Second,
+			GracePeriod:   gracePeriod,
 			PreserveState: true,
 			ReassignTasks: true,
 			MaxRetries:    3,

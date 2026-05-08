@@ -19,7 +19,6 @@ import (
 
 const (
 	governanceRetryLimit = 10
-	governanceRetryDelay = 500 * time.Millisecond
 )
 
 // Coordinator manages a team of workers executing a staged pipeline.
@@ -277,7 +276,7 @@ func (c *Coordinator) runExecPhase(ctx context.Context) error {
 	go func() {
 		defer monitorWG.Done()
 		defer monitorCancel()
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(c.cfg.TeamHeartbeatInterval())
 		defer ticker.Stop()
 		for {
 			select {
@@ -436,7 +435,7 @@ func (c *Coordinator) workerLoop(ctx context.Context, workerID string) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(governanceRetryDelay):
+			case <-time.After(c.cfg.TeamGovernanceRetryDelay()):
 			}
 			continue
 		}
