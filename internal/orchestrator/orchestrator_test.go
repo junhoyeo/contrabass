@@ -1947,9 +1947,9 @@ func TestDispatchUnclaimedIssues_GatesOnAlreadyImplemented(t *testing.T) {
 type autoCloseTracker struct {
 	*tracker.MockTracker
 
-	mu               sync.Mutex
-	transitionCalls  []string // issueIDs that were transitioned
-	transitionErr    error
+	mu              sync.Mutex
+	transitionCalls []string // issueIDs that were transitioned
+	transitionErr   error
 }
 
 func newAutoCloseTracker(issues []types.Issue) *autoCloseTracker {
@@ -2009,7 +2009,10 @@ func TestDispatchUnclaimedIssues_AutoCloseAlreadyImplemented(t *testing.T) {
 			return "", "", false, false, nil
 		}
 
-		go func() { for range orch.Events() {} }()
+		go func() {
+			for range orch.Events() {
+			}
+		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -2037,7 +2040,10 @@ func TestDispatchUnclaimedIssues_AutoCloseAlreadyImplemented(t *testing.T) {
 			return "sha1sha2sha3sha4sha5sha6sha7sha8sha9sha0", "fix: done", true, false, nil
 		}
 
-		go func() { for range orch.Events() {} }()
+		go func() {
+			for range orch.Events() {
+			}
+		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()

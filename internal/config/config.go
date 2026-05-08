@@ -109,21 +109,21 @@ type WorkflowConfig struct {
 }
 
 type TrackerConfig struct {
-	Type            string `yaml:"type"`
-	ProjectURL      string `yaml:"project_url"`
-	TeamID          string `yaml:"team_id"`
-	AssigneeID      string `yaml:"assignee_id"`
-	BoardDir        string `yaml:"board_dir"`
-	IssuePrefix     string `yaml:"issue_prefix"`
-	Owner           string `yaml:"owner"`
-	Repo            string `yaml:"repo"`
-	Labels          []string `yaml:"labels"`
-	Assignee        string `yaml:"assignee"`
-	Token           string `yaml:"token"`
-	Endpoint        string `yaml:"endpoint"`
-	HTTPTimeoutMsRaw                int    `yaml:"http_timeout_ms"`
-	MainRefRaw                      string `yaml:"main_ref"`
-	AutoCloseAlreadyImplementedRaw  bool   `yaml:"auto_close_already_implemented"`
+	Type                           string   `yaml:"type"`
+	ProjectURL                     string   `yaml:"project_url"`
+	TeamID                         string   `yaml:"team_id"`
+	AssigneeID                     string   `yaml:"assignee_id"`
+	BoardDir                       string   `yaml:"board_dir"`
+	IssuePrefix                    string   `yaml:"issue_prefix"`
+	Owner                          string   `yaml:"owner"`
+	Repo                           string   `yaml:"repo"`
+	Labels                         []string `yaml:"labels"`
+	Assignee                       string   `yaml:"assignee"`
+	Token                          string   `yaml:"token"`
+	Endpoint                       string   `yaml:"endpoint"`
+	HTTPTimeoutMsRaw               int      `yaml:"http_timeout_ms"`
+	MainRefRaw                     string   `yaml:"main_ref"`
+	AutoCloseAlreadyImplementedRaw bool     `yaml:"auto_close_already_implemented"`
 }
 
 // WebConfig holds HTTP/SSE server tunables.
@@ -212,15 +212,15 @@ type LinearSyncCommentsConfig struct {
 
 // TeamSectionConfig holds settings for multi-agent team coordination.
 type TeamSectionConfig struct {
-	MaxWorkers                 int    `yaml:"max_workers"`
-	MaxFixLoops                int    `yaml:"max_fix_loops"`
-	ClaimLeaseSeconds          int    `yaml:"claim_lease_seconds"`
-	StateDir                   string `yaml:"state_dir"`
-	ExecutionMode              string `yaml:"execution_mode"`
-	WorkerMode                 string `yaml:"worker_mode"`
-	RestartGracePeriodMsRaw    int    `yaml:"restart_grace_period_ms"`
-	GovernanceRetryDelayMsRaw  int    `yaml:"governance_retry_delay_ms"`
-	HeartbeatIntervalMsRaw     int    `yaml:"heartbeat_interval_ms"`
+	MaxWorkers                int    `yaml:"max_workers"`
+	MaxFixLoops               int    `yaml:"max_fix_loops"`
+	ClaimLeaseSeconds         int    `yaml:"claim_lease_seconds"`
+	StateDir                  string `yaml:"state_dir"`
+	ExecutionMode             string `yaml:"execution_mode"`
+	WorkerMode                string `yaml:"worker_mode"`
+	RestartGracePeriodMsRaw   int    `yaml:"restart_grace_period_ms"`
+	GovernanceRetryDelayMsRaw int    `yaml:"governance_retry_delay_ms"`
+	HeartbeatIntervalMsRaw    int    `yaml:"heartbeat_interval_ms"`
 }
 
 // OhMyOpenCodeConfig holds settings for the oh-my-opencode agent runner which
