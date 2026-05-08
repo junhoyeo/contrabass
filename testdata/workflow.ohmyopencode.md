@@ -7,11 +7,11 @@ stall_timeout_ms: 120000
 project_url: $CONTRABASS_PROJECT_URL
 tracker:
   type: github
-  owner: example-org
-  repo: example-repo
+  owner: $GITHUB_OWNER
+  repo: $GITHUB_REPO
   labels:
     - agent
-  assignee: bot-user
+  assignee: $GITHUB_ASSIGNEE
   endpoint: https://api.github.com
 agent:
   type: oh-my-opencode
