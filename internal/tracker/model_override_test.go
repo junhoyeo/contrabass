@@ -26,11 +26,15 @@ func TestParseModelOverride(t *testing.T) {
 		{name: "extra spaces", body: "<!--  model:  opus  -->", want: "opus"},
 		{name: "no override", body: "Just a regular issue body", want: ""},
 		{name: "empty body", body: "", want: ""},
-		{name: "unknown model", body: "<!-- model: gpt-4 -->", want: ""},
+		// The whitelist was removed: arbitrary model names are now passed through
+		// so users can reference new providers/models without a release.
+		{name: "non-claude model accepted", body: "<!-- model: gpt-4 -->", want: "gpt-4"},
+		{name: "current crs default model", body: "<!-- model: gpt-5.5 -->", want: "gpt-5.5"},
+		{name: "openai prefixed model", body: "<!-- model: openai/gpt-5-codex -->", want: "openai/gpt-5-codex"},
 		{name: "malformed comment", body: "<!-- model: -->", want: ""},
 		{name: "embedded in text", body: "Please use\n<!-- model: opus -->\nfor this task", want: "opus"},
-		{name: "multiple valid overrides uses first", body: "<!-- model: opus -->\n<!-- model: sonnet -->", want: "opus"},
-		{name: "invalid override before valid uses first valid", body: "<!-- model: gpt-4 -->\n<!-- model: sonnet -->", want: "sonnet"},
+		{name: "multiple overrides uses first", body: "<!-- model: opus -->\n<!-- model: sonnet -->", want: "opus"},
+		{name: "first override wins regardless of vendor", body: "<!-- model: gpt-4 -->\n<!-- model: sonnet -->", want: "gpt-4"},
 	}
 
 	for _, tt := range tests {

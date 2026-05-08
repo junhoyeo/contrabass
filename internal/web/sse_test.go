@@ -89,6 +89,87 @@ func TestHandleSSEStreamsHubEvents(t *testing.T) {
 	assert.Equal(t, orchEvent.IssueID, payload["IssueID"])
 }
 
+func TestHandleSSEFiltersHeartbeatsAndRoutesQueueEvents(t *testing.T) {
+	provider := fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{Issues: map[string]types.Issue{}}}
+	s, source, _, cleanup := newSSETestServer(t, provider)
+	defer cleanup()
+
+	resp, reader := mustOpenSSE(t, s.newMux())
+	defer resp.Body.Close()
+
+	_ = readSSEFrame(t, reader)
+
+	source <- WebEvent{
+		Kind:      WebEventTeam,
+		Type:      "team/stalled",
+		Payload:   types.TeamEvent{Type: "team/stalled"},
+		Timestamp: time.Now().UTC(),
+	}
+	source <- WebEvent{
+		Kind:      WebEventTeam,
+		Type:      "tool_call",
+		Payload:   types.TeamEvent{Type: "tool_call"},
+		Timestamp: time.Now().UTC(),
+	}
+
+	frame := readSSEFrame(t, reader)
+	frameText := strings.Join(frame, "\n")
+	assert.NotContains(t, frameText, "team/stalled")
+	assert.Contains(t, frameText, "event: tool_call")
+
+	source <- WebEvent{
+		Kind: WebEventOrchestrator,
+		Type: "dispatch_skipped_blocked_by",
+		Payload: map[string]string{
+			"issue_id":   "ISS-BLOCKED",
+			"identifier": "ZII-50",
+			"blockers":   "ZII-49",
+		},
+		Timestamp: time.Now().UTC(),
+	}
+
+	frame = readSSEFrame(t, reader)
+	frameText = strings.Join(frame, "\n")
+	assert.Contains(t, frameText, "event: queue")
+	assert.Contains(t, frameText, "dispatch_skipped_blocked_by")
+	assert.Contains(t, frameText, "ZII-49")
+}
+
+func TestSSE_FiltersHeartbeats(t *testing.T) {
+	tests := []struct {
+		name        string
+		event       WebEvent
+		wantChannel string
+		wantWrite   bool
+	}{
+		{
+			name:      "heartbeat dropped",
+			event:     WebEvent{Kind: WebEventTeam, Type: "team/stalled"},
+			wantWrite: false,
+		},
+		{
+			name:        "queue routed",
+			event:       WebEvent{Kind: WebEventOrchestrator, Type: "dispatch_skipped_blocked_by"},
+			wantChannel: "queue",
+			wantWrite:   true,
+		},
+		{
+			name:        "tool call preserved",
+			event:       WebEvent{Kind: WebEventTeam, Type: "tool_call"},
+			wantChannel: "tool_call",
+			wantWrite:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channel, ok := sseEventChannel(tt.event)
+			assert.Equal(t, tt.wantWrite, ok)
+			assert.Equal(t, tt.wantChannel, channel)
+		})
+	}
+}
+
 func TestHandleSSESkipsStaleBufferedEventsAfterSnapshot(t *testing.T) {
 	now := time.Now().UTC()
 	provider := fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{
@@ -215,7 +296,7 @@ func newSSETestServer(
 ) (*Server, chan WebEvent, *hub.Hub[WebEvent], func()) {
 	t.Helper()
 
-	source := make(chan WebEvent, 1)
+	source := make(chan WebEvent, 4)
 	h := hub.NewHub(source)
 	ctx, cancel := context.WithCancel(context.Background())
 	go h.Run(ctx)

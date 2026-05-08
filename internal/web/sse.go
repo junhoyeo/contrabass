@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/junhoyeo/contrabass/internal/agent"
 )
 
 const sseKeepAliveInterval = 15 * time.Second
@@ -58,13 +60,28 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			if err := writeSSEEvent(w, webEvt.Type, webEvt, id); err != nil {
+			eventType, ok := sseEventChannel(webEvt)
+			if !ok {
+				continue
+			}
+
+			if err := writeSSEEvent(w, eventType, webEvt, id); err != nil {
 				return
 			}
 			flusher.Flush()
 			id++
 		}
 	}
+}
+
+func sseEventChannel(event WebEvent) (string, bool) {
+	if agent.IsHeartbeatEvent(event.Type) {
+		return "", false
+	}
+	if event.Type == "dispatch_skipped_blocked_by" {
+		return "queue", true
+	}
+	return event.Type, true
 }
 
 func shouldSkipStaleEvent(snapshotGeneratedAt, eventTimestamp time.Time) bool {

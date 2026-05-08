@@ -65,6 +65,7 @@ type LinearClient struct {
 
 // Compile-time interface satisfaction check.
 var _ Tracker = (*LinearClient)(nil)
+var _ LinearCommentWriter = (*LinearClient)(nil)
 
 // NewLinearClient creates a new LinearClient with the given configuration.
 func NewLinearClient(cfg LinearConfig) (*LinearClient, error) {
@@ -107,11 +108,17 @@ const fetchIssuesQuery = `query FetchIssues($projectSlug: String!, $first: Int!,
 			title
 			description
 			priority
-			state { name }
+			state { name type }
 			url
 			labels { nodes { name } }
 			createdAt
 			updatedAt
+			inverseRelations {
+				nodes {
+					type
+					issue { identifier }
+				}
+			}
 		}
 		pageInfo {
 			hasNextPage
@@ -148,9 +155,28 @@ const updateIssueStateMutation = `mutation UpdateIssueState($issueId: String!, $
 	}
 }`
 
-const postCommentMutation = `mutation PostComment($issueId: String!, $body: String!) {
+// Linear's GraphQL schema exposes commentCreate for top-level comments with
+// comment { id url } return fields. Threaded replies use CommentCreateInput's
+// parentId field; commentUpdate updates an existing comment body when enabled
+// in the workspace schema.
+const createRootCommentMutation = `mutation CreateRootComment($issueId: String!, $body: String!) {
 	commentCreate(input: {issueId: $issueId, body: $body}) {
 		success
+		comment { id url }
+	}
+}`
+
+const createReplyCommentMutation = `mutation CreateReplyComment($issueId: String!, $parentId: String!, $body: String!) {
+	commentCreate(input: {issueId: $issueId, parentId: $parentId, body: $body}) {
+		success
+		comment { id url }
+	}
+}`
+
+const updateCommentMutation = `mutation UpdateComment($commentId: String!, $body: String!) {
+	commentUpdate(id: $commentId, input: {body: $body}) {
+		success
+		comment { id url }
 	}
 }`
 
@@ -189,7 +215,13 @@ func (c *LinearClient) FetchIssues(ctx context.Context) ([]types.Issue, error) {
 			return nil, err
 		}
 
-		allIssues = append(allIssues, issues...)
+		for _, iss := range issues {
+			stateType, _ := iss.TrackerMeta["linear_state_type"].(string)
+			if !isClaimableLinearStateType(stateType) {
+				continue
+			}
+			allIssues = append(allIssues, iss)
+		}
 
 		hasNextPage, _ := pageInfo["hasNextPage"].(bool)
 		endCursor, _ := pageInfo["endCursor"].(string)
@@ -263,19 +295,62 @@ func (c *LinearClient) UpdateIssueState(ctx context.Context, issueID string, sta
 	return checkMutationSuccess(data, "issueUpdate")
 }
 
-// PostComment creates a comment on the issue.
-func (c *LinearClient) PostComment(ctx context.Context, issueID string, body string) error {
+// IsLinearTracker identifies this tracker as Linear-backed.
+func (c *LinearClient) IsLinearTracker() bool { return true }
+
+// CreateRootComment creates a top-level comment on the issue and returns its
+// Linear ID/URL for idempotent follow-up sync.
+func (c *LinearClient) CreateRootComment(ctx context.Context, input RootCommentInput) (CommentRef, error) {
 	variables := map[string]interface{}{
-		"issueId": issueID,
-		"body":    body,
+		"issueId": input.IssueID,
+		"body":    input.Body,
 	}
 
-	data, err := c.doGraphQL(ctx, postCommentMutation, variables)
+	data, err := c.doGraphQL(ctx, createRootCommentMutation, variables)
 	if err != nil {
-		return err
+		return CommentRef{}, err
 	}
 
-	return checkMutationSuccess(data, "commentCreate")
+	return decodeCommentRef(data, "commentCreate")
+}
+
+// CreateReplyComment creates a threaded Linear reply when the schema supports
+// CommentCreateInput.parentId.
+func (c *LinearClient) CreateReplyComment(ctx context.Context, input ReplyCommentInput) (CommentRef, error) {
+	variables := map[string]interface{}{
+		"issueId":  input.IssueID,
+		"parentId": input.ParentID,
+		"body":     input.Body,
+	}
+
+	data, err := c.doGraphQL(ctx, createReplyCommentMutation, variables)
+	if err != nil {
+		return CommentRef{}, err
+	}
+
+	return decodeCommentRef(data, "commentCreate")
+}
+
+// UpdateComment updates an existing Linear comment body and returns the updated
+// comment reference.
+func (c *LinearClient) UpdateComment(ctx context.Context, commentID string, body string) (CommentRef, error) {
+	variables := map[string]interface{}{
+		"commentId": commentID,
+		"body":      body,
+	}
+
+	data, err := c.doGraphQL(ctx, updateCommentMutation, variables)
+	if err != nil {
+		return CommentRef{}, err
+	}
+
+	return decodeCommentRef(data, "commentUpdate")
+}
+
+// PostComment creates a legacy top-level comment on the issue.
+func (c *LinearClient) PostComment(ctx context.Context, issueID string, body string) error {
+	_, err := c.CreateRootComment(ctx, RootCommentInput{IssueID: issueID, Body: body})
+	return err
 }
 
 // FetchViewerID returns the authenticated user's Linear ID.
@@ -447,8 +522,10 @@ func decodeIssuesResponse(data map[string]interface{}) ([]types.Issue, map[strin
 // normalizeIssue converts a Linear API issue node into a types.Issue.
 func normalizeIssue(node map[string]interface{}) types.Issue {
 	linearState := ""
+	linearStateType := ""
 	if state, ok := node["state"].(map[string]interface{}); ok {
 		linearState, _ = state["name"].(string)
+		linearStateType, _ = state["type"].(string)
 	}
 
 	identifier := getString(node, "identifier")
@@ -466,18 +543,58 @@ func normalizeIssue(node map[string]interface{}) types.Issue {
 		Identifier:    identifier,
 		Title:         getString(node, "title"),
 		Description:   description,
-		State:         types.Unclaimed, // All fetched issues start as unclaimed
+		State:         issueStateFromLinearStateType(linearStateType),
 		Priority:      priority,
 		Labels:        extractLabels(node),
 		URL:           getString(node, "url"),
 		BranchName:    branchName,
-		BlockedBy:     []string{},
+		BlockedBy:     extractBlockedBy(node),
 		ModelOverride: ParseModelOverride(description),
 		CreatedAt:     createdAt,
 		UpdatedAt:     updatedAt,
 		TrackerMeta: map[string]interface{}{
-			"linear_state": linearState,
+			"linear_state":      linearState,
+			"linear_state_type": linearStateType,
 		},
+	}
+}
+
+// terminalLinearStateTypes lists Linear state.type values for issues that the
+// orchestrator must NOT consider claimable. Without this filter, an issue that
+// was just successfully released (state=Done, type=completed) would reappear in
+// the next poll as Unclaimed and be picked up again, producing a re-claim loop.
+//
+// "completed" and "canceled" cover Linear's terminal types. "backlog" is also
+// excluded so triage-stage issues don't get picked up before a human moves them
+// to Todo / In Progress.
+var terminalLinearStateTypes = map[string]struct{}{
+	"completed": {},
+	"canceled":  {},
+	"backlog":   {},
+}
+
+// isClaimableLinearStateType reports whether an issue with this Linear state
+// type should be returned to the orchestrator. An empty string is treated as
+// claimable so existing test fixtures (which omit the type field) keep working.
+func isClaimableLinearStateType(linearStateType string) bool {
+	stateType := strings.ToLower(strings.TrimSpace(linearStateType))
+	if stateType == "" {
+		return true
+	}
+	_, terminal := terminalLinearStateTypes[stateType]
+	return !terminal
+}
+
+// issueStateFromLinearStateType preserves Linear's active workflow state so an
+// issue already in progress does not look freshly unclaimed after a restart.
+func issueStateFromLinearStateType(linearStateType string) types.IssueState {
+	switch strings.ToLower(strings.TrimSpace(linearStateType)) {
+	case "", "unstarted":
+		return types.Unclaimed
+	case "started":
+		return types.Claimed
+	default:
+		return types.Claimed
 	}
 }
 
@@ -508,6 +625,46 @@ func extractLabels(node map[string]interface{}) []string {
 	return labels
 }
 
+// extractBlockedBy returns the identifiers of issues whose inverseRelations
+// of type "blocks" point at this issue. Linear's IssueRelation reads as
+// "issue blocks relatedIssue", so the blockers of THIS issue are the
+// `issue.identifier` values reached through `inverseRelations`. Missing
+// or malformed nodes are skipped; the result is always a non-nil slice.
+func extractBlockedBy(node map[string]interface{}) []string {
+	relationsData, ok := node["inverseRelations"].(map[string]interface{})
+	if !ok {
+		return []string{}
+	}
+
+	relationNodes, ok := relationsData["nodes"].([]interface{})
+	if !ok {
+		return []string{}
+	}
+
+	blockers := make([]string, 0, len(relationNodes))
+	for _, rn := range relationNodes {
+		relMap, ok := rn.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		relType, _ := relMap["type"].(string)
+		if relType != "blocks" {
+			continue
+		}
+		blockerIssue, _ := relMap["issue"].(map[string]interface{})
+		if blockerIssue == nil {
+			continue
+		}
+		identifier, _ := blockerIssue["identifier"].(string)
+		if identifier == "" {
+			continue
+		}
+		blockers = append(blockers, identifier)
+	}
+
+	return blockers
+}
+
 // checkMutationSuccess checks if a mutation response indicates success.
 func checkMutationSuccess(data map[string]interface{}, mutationKey string) error {
 	mutation, ok := data[mutationKey].(map[string]interface{})
@@ -521,6 +678,25 @@ func checkMutationSuccess(data map[string]interface{}, mutationKey string) error
 	}
 
 	return nil
+}
+
+func decodeCommentRef(data map[string]interface{}, mutationKey string) (CommentRef, error) {
+	if err := checkMutationSuccess(data, mutationKey); err != nil {
+		return CommentRef{}, err
+	}
+
+	mutation, _ := data[mutationKey].(map[string]interface{})
+	comment, ok := mutation["comment"].(map[string]interface{})
+	if !ok {
+		return CommentRef{}, fmt.Errorf("%s response missing comment", mutationKey)
+	}
+
+	id, _ := comment["id"].(string)
+	if id == "" {
+		return CommentRef{}, fmt.Errorf("%s response missing comment id", mutationKey)
+	}
+	url, _ := comment["url"].(string)
+	return CommentRef{ID: id, URL: url}, nil
 }
 
 // getString safely extracts a string value from a map.

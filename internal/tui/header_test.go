@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"image"
 	"image/color"
 	_ "image/png"
@@ -12,6 +15,41 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHeaderExportedTypesHaveGodoc(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "header.go", nil, parser.ParseComments)
+	require.NoError(t, err)
+
+	for _, typeName := range []string{"HeaderData", "Header"} {
+		t.Run(typeName, func(t *testing.T) {
+			doc := findTypeDoc(t, file, typeName)
+			require.NotNil(t, doc, "%s should have a doc comment", typeName)
+			assert.True(t, strings.HasPrefix(doc.Text(), typeName+" "), "%s doc comment should start with type name", typeName)
+		})
+	}
+}
+
+func findTypeDoc(t *testing.T, file *ast.File, typeName string) *ast.CommentGroup {
+	t.Helper()
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if ok && typeSpec.Name.Name == typeName {
+				if typeSpec.Doc != nil {
+					return typeSpec.Doc
+				}
+				return genDecl.Doc
+			}
+		}
+	}
+	t.Fatalf("type %s not found", typeName)
+	return nil
+}
 
 func TestHeaderViewRenders(t *testing.T) {
 	h := NewHeader()

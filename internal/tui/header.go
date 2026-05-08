@@ -44,6 +44,7 @@ var (
 	nativeImageEscape string // raw escape sequence for native image rendering
 )
 
+// HeaderData is the data payload shown by the TUI header.
 type HeaderData struct {
 	RunningAgents  int
 	MaxAgents      int
@@ -59,6 +60,7 @@ type HeaderData struct {
 	RefreshIn      int
 }
 
+// Header is the rendered TUI header component with data and render cache state.
 type Header struct {
 	width int
 	data  HeaderData

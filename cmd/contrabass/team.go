@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"os/signal"
 	"syscall"
 	"time"
@@ -116,7 +117,15 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 		return nil, fmt.Errorf("invalid worker mode configuration: %w", err)
 	}
 
-	if cfg.WorkerMode() == "tmux" {
+	// Codex speaks JSONL over stdin/stdout and needs its own runner for the
+	// initialize → thread/start → turn/start protocol. TmuxRunner cannot
+	// drive this interaction, so codex always uses CodexRunner regardless of
+	// worker_mode. Other agents (opencode, omx, omc, oh-my-opencode) can run
+	// inside tmux panes because they are long-running servers or CLI tools
+	// that accept a file/arg prompt.
+	if cfg.AgentType() == "codex" || cfg.WorkerMode() != "tmux" {
+		// Fall through to the per-agent-type switch below.
+	} else if cfg.WorkerMode() == "tmux" {
 		if !tmux.IsTmuxAvailable(context.Background(), nil) {
 			return nil, errors.New("tmux worker mode requested, but tmux is not available in PATH")
 		}
@@ -130,10 +139,19 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 		eventLogger := team.NewEventLogger(paths)
 		dispatchQueue := team.NewDispatchQueue(store, paths, time.Duration(cfg.TeamClaimLeaseSeconds())*time.Second)
 
+		// For tmux mode the CLIRegistry already knows the subcommand (e.g.
+		// "app-server" for codex). If the user wrote "codex app-server" in
+		// workflow.codex.binary_path we must extract just "codex" so the
+		// registry's BuildArgs don't duplicate the subcommand.
+		binaryPath := binaryPathForAgent(cfg)
+		if fields := strings.Fields(binaryPath); len(fields) > 1 {
+			binaryPath = fields[0]
+		}
+
 		return agent.NewTmuxRunner(agent.TmuxRunnerConfig{
 			TeamName:         teamName,
 			AgentType:        cfg.AgentType(),
-			BinaryPath:       binaryPathForAgent(cfg),
+			BinaryPath:       binaryPath,
 			Session:          session,
 			Registry:         registry,
 			HeartbeatMonitor: heartbeat,
@@ -150,7 +168,20 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 		if codexBin == "" {
 			codexBin = cfg.CodexBinaryPath()
 		}
-		return agent.NewCodexRunner(codexBin, 30*time.Second), nil
+		runner := agent.NewCodexRunner(codexBin, 30*time.Second)
+		if stallTimeoutMs := cfg.StallTimeoutMs(); stallTimeoutMs > 0 {
+			runner.WithStreamReadTimeout(time.Duration(stallTimeoutMs) * time.Millisecond)
+		}
+		// Forward workflow-driven codex config so the spawned `codex app-server`
+		// uses the workflow's model/approval_policy/sandbox instead of silently
+		// inheriting whatever is in ~/.codex/config.toml. Empty fields are not
+		// injected — codex falls back to its own defaults.
+		runner.ConfigureCodex(agent.CodexRunnerOptions{
+			Model:          cfg.Codex.Model,
+			ApprovalPolicy: cfg.Codex.ApprovalPolicy,
+			Sandbox:        cfg.Codex.Sandbox,
+		})
+		return runner, nil
 	case "opencode":
 		opencodeBin := os.Getenv("OPENCODE_BINARY")
 		if opencodeBin == "" {

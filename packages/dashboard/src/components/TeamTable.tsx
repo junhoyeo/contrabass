@@ -1,36 +1,14 @@
 import type { TeamSnapshot, TeamTask } from '../types'
+import { formatElapsedSince, formatTeamPhase } from '../i18n/format'
+import { zhCN } from '../i18n/messages'
 import './TeamTable.css'
 
 interface TeamTableProps {
   snapshot: TeamSnapshot | null
 }
 
-const PHASE_LABELS: Record<string, string> = {
-  'team-plan': 'Plan',
-  'team-prd': 'PRD',
-  'team-exec': 'Exec',
-  'team-verify': 'Verify',
-  'team-fix': 'Fix',
-  complete: 'Done',
-  failed: 'Failed',
-  cancelled: 'Cancel',
-}
-
 function formatAge(createdAt: string): string {
-  const created = Date.parse(createdAt)
-  if (Number.isNaN(created)) {
-    return '-'
-  }
-
-  const elapsedMs = Math.max(0, Date.now() - created)
-  const totalSeconds = Math.floor(elapsedMs / 1000)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}m ${seconds}s`
-}
-
-function getPhaseLabel(phase: string): string {
-  return PHASE_LABELS[phase] ?? phase
+  return formatElapsedSince(createdAt)
 }
 
 function getPhaseBadgeClass(phase: string): string {
@@ -65,7 +43,7 @@ function isTaskFailed(task: TeamTask): boolean {
 
 export function TeamTable({ snapshot }: TeamTableProps) {
   if (snapshot === null) {
-    return <div className="team-table__empty">No team running</div>
+    return <div className="team-table__empty">{zhCN.team.empty}</div>
   }
 
   const activeWorkers = snapshot.workers.filter((worker) => worker.status.toLowerCase() === 'busy').length
@@ -73,31 +51,34 @@ export function TeamTable({ snapshot }: TeamTableProps) {
   const failedTasks = snapshot.tasks.filter(isTaskFailed).length
 
   return (
-    <section className="team-table__section" aria-label="Team status">
+    <section className="team-table__section" aria-label={zhCN.team.ariaLabel}>
       <header className="team-table__header">
         <h3 className="team-table__name">{snapshot.name}</h3>
         <p className="team-table__config">
-          Agent {snapshot.config.agent_type} · Workers {snapshot.config.max_workers} · Max fix loops{' '}
-          {snapshot.config.max_fix_loops}
+          {zhCN.team.config(
+            snapshot.config.agent_type,
+            snapshot.config.max_workers,
+            snapshot.config.max_fix_loops,
+          )}
         </p>
       </header>
 
       <div className="team-table__wrapper">
-        <table className="team-table" aria-label="Team status table">
+        <table className="team-table" aria-label={zhCN.team.tableAriaLabel}>
           <thead>
             <tr>
-              <th>Phase</th>
-              <th>Workers</th>
-              <th>Tasks</th>
-              <th>Fix Loops</th>
-              <th>Age</th>
+              <th>{zhCN.team.headers.phase}</th>
+              <th>{zhCN.team.headers.workers}</th>
+              <th>{zhCN.team.headers.tasks}</th>
+              <th>{zhCN.team.headers.fixLoops}</th>
+              <th>{zhCN.team.headers.age}</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>
                 <span className={`team-table__phase-badge ${getPhaseBadgeClass(snapshot.phase.phase)}`}>
-                  {getPhaseLabel(snapshot.phase.phase)}
+                  {formatTeamPhase(snapshot.phase.phase)}
                 </span>
               </td>
               <td className="team-table__mono">

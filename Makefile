@@ -1,7 +1,7 @@
 # Contrabass — Build Tooling
 # Build order: dashboard SPA must build before Go binary (embed.FS requires dist/)
 
-.PHONY: build-dashboard build-landing build dev-dashboard dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
+.PHONY: build-dashboard build-landing build dev-dashboard dev-dashboard-stack dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
 
 # Build the React dashboard SPA to packages/dashboard/dist/
 build-dashboard:
@@ -18,6 +18,10 @@ build: build-dashboard
 # Start Vite dev server for dashboard development (with hot reload)
 dev-dashboard:
 	cd packages/dashboard && bun run dev
+
+# Start the dashboard frontend and a local internal-board backend together
+dev-dashboard-stack:
+	./scripts/dev-dashboard.sh
 
 # Start Astro dev server for landing page development
 dev-landing:

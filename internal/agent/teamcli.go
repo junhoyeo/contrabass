@@ -22,7 +22,22 @@ import (
 var (
 	errTeamCLIAlreadyStopped = errors.New("team CLI process already stopped")
 	errTeamCLIStopFailed     = errors.New("team CLI stop failed")
+	errTeamMissing           = errors.New("team CLI team missing")
 )
+
+var heartbeatEventTypes = map[string]struct{}{
+	"team/stalled": {},
+}
+
+func isHeartbeatEvent(t string) bool {
+	_, ok := heartbeatEventTypes[t]
+	return ok
+}
+
+// IsHeartbeatEvent reports whether an agent event is a liveness heartbeat.
+func IsHeartbeatEvent(t string) bool {
+	return isHeartbeatEvent(t)
+}
 
 type teamCLIRunner struct {
 	name           string
@@ -35,10 +50,29 @@ type teamCLIRunner struct {
 	teamName       func(taskSeed string) string
 	logger         *log.Logger
 
+	// selfHealing skips contrabass-driven RestartDeadWorkers and intervention
+	// escalation when the underlying team CLI already runs its own
+	// supervisor loop (omx v0.16+). With selfHealing=true contrabass only
+	// surfaces stall/intervention signals as events; with false it actively
+	// restarts workers, which is the older opencode/omc behavior.
+	selfHealing bool
+
 	pidSeq atomic.Int64
 
 	mu    sync.Mutex
 	procs map[int]*teamCLIProcess
+}
+
+// OmxMetrics mirrors the cumulative session token / quota counters that
+// omx writes to <workspace>/.omx/metrics.json after every codex turn.
+// Fields are intentionally lenient (omx may add or rename keys); JSON
+// tags use snake_case to match omx's notify-hook output.
+type OmxMetrics struct {
+	SessionInputTokens  int64   `json:"session_input_tokens"`
+	SessionOutputTokens int64   `json:"session_output_tokens"`
+	SessionTotalTokens  int64   `json:"session_total_tokens"`
+	FiveHourLimitPct    float64 `json:"five_hour_limit_pct"`
+	WeeklyLimitPct      float64 `json:"weekly_limit_pct"`
 }
 
 type teamCLIProcess struct {
@@ -50,13 +84,22 @@ type teamCLIProcess struct {
 	done       chan error
 	finished   chan struct{}
 	cancel     context.CancelFunc
+	missing    atomic.Bool
 	finishOnce sync.Once
 	removeOnce sync.Once
+
+	lastUsage struct {
+		input  int64
+		output int64
+		total  int64
+		seen   bool
+	}
 }
 
 type teamCLIEnvelope struct {
 	OK        bool            `json:"ok"`
 	Operation string          `json:"operation"`
+	Status    string          `json:"status"`
 	Data      json.RawMessage `json:"data"`
 	Error     *teamCLIError   `json:"error"`
 }
@@ -186,17 +229,30 @@ func (r *teamCLIRunner) Start(ctx context.Context, issue types.Issue, workspace 
 	}
 
 	launchTask := buildLaunchTask(taskSeed, relPromptPath)
-	teamName := r.teamName(launchTask)
+	predictedTeamName := r.teamName(launchTask)
 	startCtx, cancel := context.WithTimeout(ctx, r.startupTimeout)
 	defer cancel()
 
-	if output, err := r.runCommand(startCtx, workspace, r.startArgs(r.teamSpec, launchTask)...); err != nil {
-		return nil, fmt.Errorf("start %s team %q: %w%s", r.name, teamName, err, formatCommandOutput(output))
+	output, err := r.runCommand(startCtx, workspace, r.startArgs(r.teamSpec, launchTask)...)
+	if err != nil {
+		return nil, fmt.Errorf("start %s team %q: %w%s", r.name, predictedTeamName, err, formatCommandOutput(output))
+	}
+
+	// omx v0.16+ generates team names with a hash suffix (e.g.
+	// "add-godoc-comments-fo-d3d7562b") and prints them as `Team started: <name>`
+	// on stdout. Parse the actual name so subsequent `team status`/`team await`
+	// calls hit the right team. Fall back to the predicted slug for older
+	// CLIs that did not emit this line.
+	teamName := parseTeamNameFromOutput(output)
+	if teamName == "" {
+		teamName = predictedTeamName
 	}
 
 	initialSnapshot, err := r.waitForTeamReady(startCtx, workspace, teamName)
 	if err != nil {
-		_ = r.shutdownTeam(context.Background(), workspace, teamName)
+		if !errors.Is(err, errTeamMissing) {
+			_ = r.shutdownTeam(context.Background(), workspace, teamName)
+		}
 		return nil, fmt.Errorf("wait for %s team %q readiness: %w", r.name, teamName, err)
 	}
 
@@ -253,6 +309,10 @@ func (r *teamCLIRunner) Stop(proc *AgentProcess) error {
 
 	state.cancel()
 	state.remove(r)
+
+	if state.missing.Load() {
+		return nil
+	}
 
 	// Try graceful shutdown first with a short budget, then force-stop
 	// with its own independent timeout so an expired grace period cannot
@@ -343,6 +403,10 @@ func (r *teamCLIRunner) monitorProcess(ctx context.Context, proc *teamCLIProcess
 		}
 		proc.finish(err)
 	}
+	finishMissing := func(err error) {
+		proc.missing.Store(true)
+		proc.finish(err)
+	}
 
 	emit("turn/started", map[string]interface{}{
 		"team_name":   proc.teamName,
@@ -351,11 +415,25 @@ func (r *teamCLIRunner) monitorProcess(ctx context.Context, proc *teamCLIProcess
 	})
 
 	const healthCheckInterval = 5 // check health every N poll cycles
+
+	// omx v0.16+ teams take ~30s to fully spin up codex workers. omx's
+	// `read-stall-state` API may report `team_stalled=true` while workers
+	// are still in their initial codex bootstrap, which used to trigger an
+	// immediate restart loop. Suppress stall handling until the team has had
+	// time to produce real progress signals.
+	startupGrace := 60 * time.Second
+	if r.startupTimeout > startupGrace {
+		startupGrace = r.startupTimeout
+	}
+	monitorStart := time.Now()
+
 	var (
 		lastPhase      string
 		lastTaskStatus string
 		seenStarted    bool
 		errorCount     int
+		missingCount   int
+		missingEmitted bool
 		pollCount      int
 	)
 
@@ -448,6 +526,22 @@ func (r *teamCLIRunner) monitorProcess(ctx context.Context, proc *teamCLIProcess
 		case <-ticker.C:
 			snapshot, err := r.fetchSnapshot(ctx, proc.workspace, proc.teamName)
 			if err != nil {
+				if isTeamMissingError(err) {
+					missingCount++
+					if missingCount >= 2 {
+						if !missingEmitted {
+							emit("team/missing", map[string]interface{}{
+								"team_name": proc.teamName,
+								"error":     errTeamMissing.Error(),
+							})
+							missingEmitted = true
+						}
+						finishMissing(errTeamMissing)
+						return
+					}
+					continue
+				}
+				missingCount = 0
 				errorCount++
 				emit("protocol/error", map[string]interface{}{
 					"team_name": proc.teamName,
@@ -459,15 +553,44 @@ func (r *teamCLIRunner) monitorProcess(ctx context.Context, proc *teamCLIProcess
 				}
 				continue
 			}
+			missingCount = 0
 			errorCount = 0
 			if done, err := handleSnapshot(snapshot); done {
 				finish(err)
 				return
 			}
 
+			if metrics, err := readOmxMetrics(proc.workspace); err == nil && metrics != nil {
+				changed := !proc.lastUsage.seen ||
+					metrics.SessionInputTokens > proc.lastUsage.input ||
+					metrics.SessionOutputTokens > proc.lastUsage.output ||
+					metrics.SessionTotalTokens > proc.lastUsage.total
+				if changed {
+					emit("session.usage", map[string]interface{}{
+						"team_name": proc.teamName,
+						"usage": map[string]interface{}{
+							"input_tokens":  metrics.SessionInputTokens,
+							"output_tokens": metrics.SessionOutputTokens,
+							"total_tokens":  metrics.SessionTotalTokens,
+						},
+					})
+					proc.lastUsage.input = metrics.SessionInputTokens
+					proc.lastUsage.output = metrics.SessionOutputTokens
+					proc.lastUsage.total = metrics.SessionTotalTokens
+					proc.lastUsage.seen = true
+				}
+			}
+
 			pollCount++
 			if pollCount%healthCheckInterval == 0 {
-				r.checkTeamHealthAndStall(ctx, proc, emit)
+				// During the startup grace window, only run health checks
+				// after a worker has visibly begun a task. omx reports a
+				// transient "team stalled" state during codex bootstrap; if
+				// we react to that we shut the team down before it can do
+				// real work.
+				if seenStarted || time.Since(monitorStart) >= startupGrace {
+					r.checkTeamHealthAndStall(ctx, proc, emit)
+				}
 				r.awaitNextEvent(ctx, proc, &lastEventID, emit)
 			}
 		}
@@ -514,6 +637,9 @@ func (r *teamCLIRunner) runTeamAPI(ctx context.Context, workspace, operation str
 	if err := json.Unmarshal(output, &envelope); err != nil {
 		return fmt.Errorf("decode %s team api %s response: %w", r.name, operation, err)
 	}
+	if envelope.Status == "missing" {
+		return errTeamMissing
+	}
 	if !envelope.OK {
 		if envelope.Error != nil {
 			return envelope.Error
@@ -538,6 +664,17 @@ func (r *teamCLIRunner) runCommand(ctx context.Context, workspace string, args .
 	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], args...)...)
 	cmd.Dir = workspace
 	return cmd.CombinedOutput()
+}
+
+func isTeamMissingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errTeamMissing) {
+		return true
+	}
+	var apiErr *teamCLIError
+	return errors.As(err, &apiErr) && apiErr.Code == "team_not_found"
 }
 
 func buildTeamTaskSeed(issue types.Issue, prompt string) string {
@@ -706,6 +843,19 @@ func (r *teamCLIRunner) checkTeamHealthAndStall(ctx context.Context, proc *teamC
 		return
 	}
 
+	// In self-healing mode (omx v0.16+), the underlying CLI runs its own
+	// scheduler, nudge protocol, and worker recovery. Surface the stall
+	// signal as an event so the operator/UI can see it, but skip the
+	// nudge-broadcast / claim-release / worker-restart actions — those
+	// fight against omx's own loop and consistently kill in-flight codex
+	// turns.
+	if r.selfHealing {
+		if stallState.TeamStalled {
+			r.handleStalledTeam(ctx, proc, stallState, maxHeartbeatAge, emit)
+		}
+		return
+	}
+
 	r.nudgeIdleWorkers(ctx, proc, stallState, emit)
 	r.checkIdleState(ctx, proc, emit)
 	r.processUnreadMessages(ctx, proc, emit)
@@ -779,6 +929,14 @@ func (r *teamCLIRunner) handleStalledTeam(ctx context.Context, proc *teamCLIProc
 	}
 	emit("team/stalled", stallData)
 
+	// In self-healing mode (omx v0.16+) the underlying CLI runs its own
+	// worker supervisor; contrabass restarting a "dead" worker just kills
+	// the codex subprocess that was actually doing real work, producing the
+	// stall→restart→stall loop. Surface the event but don't act.
+	if r.selfHealing {
+		return
+	}
+
 	if len(stallState.DeadWorkers) > 0 {
 		results, restartErr := r.RestartDeadWorkers(ctx, proc.workspace, proc.teamName, maxHeartbeatAge)
 		if restartErr != nil {
@@ -826,6 +984,12 @@ func (r *teamCLIRunner) checkWorkerInterventions(ctx context.Context, proc *team
 			"reason":    reason,
 		})
 
+		// Self-healing CLIs handle their own quarantine/restart. Surface
+		// the signal, but don't pile contrabass-driven actions on top.
+		if r.selfHealing {
+			continue
+		}
+
 		if report.ConsecutiveErrors >= 3 {
 			if qErr := r.QuarantineWorker(ctx, proc.workspace, proc.teamName, report.WorkerName, reason); qErr != nil {
 				r.logger.Warn("failed to quarantine worker", "team", proc.teamName, "worker", report.WorkerName, "error", qErr)
@@ -841,6 +1005,13 @@ func (r *teamCLIRunner) checkWorkerInterventions(ctx context.Context, proc *team
 }
 
 func (r *teamCLIRunner) reconcileTaskStates(ctx context.Context, proc *teamCLIProcess, emit func(string, map[string]interface{})) {
+	// Self-healing CLIs run their own task scheduler; contrabass-driven
+	// claim/release here destroys in-flight codex turns when omx briefly
+	// reports the worker as not-yet-alive during bootstrap.
+	if r.selfHealing {
+		return
+	}
+
 	pendingTasks, err := r.GetTasksByStatus(ctx, proc.workspace, proc.teamName, "pending")
 	if err != nil {
 		r.logger.Warn("failed to list pending tasks", "team", proc.teamName, "error", err)
@@ -1037,10 +1208,50 @@ func (r *teamCLIRunner) awaitNextEvent(ctx context.Context, proc *teamCLIProcess
 	})
 }
 
+// readOmxMetrics reads <workspace>/.omx/metrics.json and returns the
+// parsed OmxMetrics. Missing file returns (nil, nil) so callers can
+// poll without log spam; partial / unparseable JSON returns (nil, err)
+// and the caller should skip the cycle.
+func readOmxMetrics(workspace string) (*OmxMetrics, error) {
+	path := filepath.Join(workspace, ".omx", "metrics.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var m OmxMetrics
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 func formatCommandOutput(output []byte) string {
 	trimmed := strings.TrimSpace(string(output))
 	if trimmed == "" {
 		return ""
 	}
 	return ": " + trimmed
+}
+
+// parseTeamNameFromOutput extracts the actual team name printed by team CLIs.
+// omx v0.16+ writes `Team started: <name>` on stdout after launching a
+// detached team; the name includes a hash suffix that contrabass cannot
+// reproduce locally, so polling has to use the printed value verbatim.
+// Returns empty string when no such line is present.
+func parseTeamNameFromOutput(output []byte) string {
+	for _, line := range strings.Split(string(output), "\n") {
+		trimmed := strings.TrimSpace(line)
+		const prefix = "Team started:"
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		if name != "" {
+			return name
+		}
+	}
+	return ""
 }

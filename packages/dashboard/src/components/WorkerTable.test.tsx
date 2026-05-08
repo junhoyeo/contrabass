@@ -15,7 +15,7 @@ afterEach(() => {
 describe('WorkerTable', () => {
   it('renders empty state when there are no workers', () => {
     render(<WorkerTable workers={[]} />)
-    expectInDocument(screen.getByText('No workers'))
+    expectInDocument(screen.getByText('暂无工作器'))
   })
 
   it('renders workers sorted by status with busy first', () => {
@@ -41,11 +41,13 @@ describe('WorkerTable', () => {
 
     render(<WorkerTable workers={workers} />)
 
-    const table = screen.getByRole('table', { name: 'Worker status' })
+    const table = screen.getByRole('table', { name: '工作器状态' })
     const rows = within(table).getAllByRole('row')
 
     expect((rows[1].textContent ?? '').includes('busy-worker')).toBeTrue()
     expect((rows[2].textContent ?? '').includes('idle-worker')).toBeTrue()
+    expectInDocument(screen.getByText('忙碌'))
+    expectInDocument(screen.getByText('空闲'))
   })
 
   it('truncates long IDs and current task text', () => {

@@ -4,11 +4,16 @@ import '@testing-library/jest-dom'
 import type { AgentLogEvent } from '../types'
 import { AgentLogs } from './AgentLogs'
 
+type LogWithMeta = AgentLogEvent & {
+  channel?: string
+  type?: string
+}
+
 function expectInDocument(value: unknown) {
   ;(expect(value) as any).toBeInTheDocument()
 }
 
-function createLog(overrides: Partial<AgentLogEvent> = {}): AgentLogEvent {
+function createLog(overrides: Partial<LogWithMeta> = {}): LogWithMeta {
   return {
     worker_id: 'worker-a',
     line: 'hello world',
@@ -26,7 +31,7 @@ describe('AgentLogs', () => {
   it('renders empty state', () => {
     render(<AgentLogs logs={[]} />)
 
-    expectInDocument(screen.getByText('No agent logs'))
+    expectInDocument(screen.getByText('暂无代理日志'))
   })
 
   it('renders log lines with timestamp, worker, and message', () => {
@@ -66,7 +71,7 @@ describe('AgentLogs', () => {
       />,
     )
 
-    const filter = screen.getByLabelText('Worker') as HTMLSelectElement
+    const filter = screen.getByLabelText('工作器') as HTMLSelectElement
     const optionValues = Array.from(filter.options).map((option) => option.value)
     expect(optionValues).toEqual(['all', 'worker-a', 'worker-z'])
 
@@ -90,5 +95,25 @@ describe('AgentLogs', () => {
     expect(container.querySelectorAll('.agent-logs__line')).toHaveLength(500)
     expect(screen.queryByText('line-1')).toBeNull()
     expectInDocument(screen.getByText('line-520'))
+  })
+
+  it('hides heartbeat events', () => {
+    render(<AgentLogs logs={[createLog({ type: 'team/stalled', line: 'heartbeat' })]} />)
+
+    expect(screen.queryByText('heartbeat')).toBeNull()
+    expectInDocument(screen.getByText('暂无代理日志'))
+  })
+
+  it('hides queue-channel events', () => {
+    render(<AgentLogs logs={[createLog({ channel: 'queue', line: 'blocked queue event' })]} />)
+
+    expect(screen.queryByText('blocked queue event')).toBeNull()
+    expectInDocument(screen.getByText('暂无代理日志'))
+  })
+
+  it('keeps tool call events', () => {
+    render(<AgentLogs logs={[createLog({ type: 'tool_call', line: 'tool call emitted' })]} />)
+
+    expectInDocument(screen.getByText('tool call emitted'))
   })
 })

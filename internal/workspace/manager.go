@@ -50,21 +50,60 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 		}
 	}
 
+	// If the path already exists, only reuse it when it is a registered git
+	// worktree. A bare directory left behind by a previous crashed run
+	// (containing only `.omx/` or `.contrabass/` subdirs) must be torn down
+	// before `git worktree add` can succeed; otherwise omx launches in what
+	// looks like the parent repo's working tree and fails the
+	// `leader_workspace_dirty` check.
 	if info, err := os.Stat(workspacePath); err == nil && info.IsDir() {
-		m.mu.Lock()
-		m.active[issue.ID] = workspacePath
-		m.mu.Unlock()
-		return workspacePath, nil
+		if m.isRegisteredWorktree(ctx, workspacePath) {
+			m.mu.Lock()
+			m.active[issue.ID] = workspacePath
+			m.mu.Unlock()
+			return workspacePath, nil
+		}
+		if err := os.RemoveAll(workspacePath); err != nil {
+			return "", fmt.Errorf("clean stale workspace dir for issue %s: %w", issue.ID, err)
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o755); err != nil {
 		return "", fmt.Errorf("create workspace parent directory: %w", err)
 	}
 
-	if _, err := m.runGit(ctx, "worktree", "add", workspacePath, "-b", issue.ID); err != nil {
-		if _, fallbackErr := m.runGit(ctx, "worktree", "add", workspacePath, issue.ID); fallbackErr != nil {
-			return "", fmt.Errorf("create git worktree for issue %s: primary add with -b failed: %v; fallback add failed: %w", issue.ID, err, fallbackErr)
+	// Choose the branch the agent will commit on. Issue.BranchName is the
+	// canonical per-issue branch (e.g. "symphony/zii-65") that downstream
+	// verify-success-with-diff and dashboard rendering both reference. Fall
+	// back to issue.ID for trackers that don't populate BranchName.
+	branchName := strings.TrimSpace(issue.BranchName)
+	if branchName == "" {
+		branchName = issue.ID
+	}
+
+	// Primary: create-and-checkout a brand-new branch.
+	// Fallback 1: branch already exists (-B re-creates and points at HEAD).
+	// Fallback 2: branch exists and we want to attach existing branch as-is.
+	primaryOut, primaryErr := m.runGit(ctx, "worktree", "add", "-b", branchName, workspacePath)
+	if primaryErr != nil {
+		_, recreateErr := m.runGit(ctx, "worktree", "add", "-B", branchName, workspacePath)
+		if recreateErr != nil {
+			_, attachErr := m.runGit(ctx, "worktree", "add", workspacePath, branchName)
+			if attachErr != nil {
+				return "", fmt.Errorf(
+					"create git worktree for issue %s on branch %s: primary -b failed: %v (output=%s); -B retry failed: %v; attach existing branch failed: %w",
+					issue.ID, branchName, primaryErr, primaryOut, recreateErr, attachErr,
+				)
+			}
 		}
+	}
+
+	// Verify the worktree actually registered before declaring success.
+	if !m.isRegisteredWorktree(ctx, workspacePath) {
+		return "", fmt.Errorf(
+			"git worktree add for issue %s reported success but path %s is not a registered worktree",
+			issue.ID, workspacePath,
+		)
 	}
 
 	m.mu.Lock()
@@ -159,6 +198,47 @@ func (m *Manager) lockIssue(issueID string) func() {
 	mu := issueLock.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
+}
+
+// isRegisteredWorktree returns true when path appears in `git worktree list`.
+// Used to distinguish real worktrees from bare directories left by crashed
+// runs so Create knows which paths are safe to reuse vs. tear down.
+//
+// macOS aliases `/tmp` → `/private/tmp` and `/var` → `/private/var`, so the
+// path Go reports via `filepath.Abs` may differ from what git prints in
+// `worktree list --porcelain`. Symlink-resolve both sides before comparing
+// so test temp dirs and production paths match correctly.
+func (m *Manager) isRegisteredWorktree(ctx context.Context, path string) bool {
+	output, err := m.runGit(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false
+	}
+	abs := resolvedAbs(path)
+	for _, line := range strings.Split(output, "\n") {
+		rest, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		entry := resolvedAbs(strings.TrimSpace(rest))
+		if entry == abs {
+			return true
+		}
+	}
+	return false
+}
+
+// resolvedAbs returns the absolute, symlink-resolved form of path. Falls back
+// to the un-resolved absolute path (or the input verbatim) on any error so
+// callers always get a usable string.
+func resolvedAbs(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
 }
 
 func (m *Manager) runGit(ctx context.Context, args ...string) (string, error) {

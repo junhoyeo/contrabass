@@ -21,7 +21,7 @@ function makeIssue(partial: Partial<BoardIssue>): BoardIssue {
     id: partial.id ?? 'issue-1',
     identifier: partial.identifier ?? 'BOARD-1',
     title: partial.title ?? 'Initial issue',
-    description: partial.description ?? 'Issue description',
+    description: partial.description ?? '议题描述',
     state: partial.state ?? 'open',
     assignee: partial.assignee,
     created_at: partial.created_at ?? '2026-03-05T10:00:00.000Z',
@@ -37,9 +37,9 @@ describe('BoardView', () => {
   it('renders empty issues list', () => {
     render(<BoardView issues={[]} />)
 
-    expectInDocument(screen.getByText('No board issues'))
-    expectInDocument(screen.getByLabelText('Issue title'))
-    expectInDocument(screen.getByLabelText('Issue description'))
+    expectInDocument(screen.getByText('暂无看板议题'))
+    expectInDocument(screen.getByLabelText('议题标题'))
+    expectInDocument(screen.getByLabelText('议题描述'))
   })
 
   it('renders issues with correct columns', () => {
@@ -50,12 +50,12 @@ describe('BoardView', () => {
 
     render(<BoardView issues={issues} />)
 
-    const table = screen.getByRole('table', { name: 'Board issues table' })
-    expectInDocument(within(table).getByText('Identifier'))
-    expectInDocument(within(table).getByText('Title'))
-    expectInDocument(within(table).getByText('State'))
-    expectInDocument(within(table).getByText('Assignee'))
-    expectInDocument(within(table).getByText('Updated'))
+    const table = screen.getByRole('table', { name: '看板议题表格' })
+    expectInDocument(within(table).getByText('编号'))
+    expectInDocument(within(table).getByText('标题'))
+    expectInDocument(within(table).getByText('状态'))
+    expectInDocument(within(table).getByText('负责人'))
+    expectInDocument(within(table).getByText('更新时间'))
     expectInDocument(within(table).getByText('BOARD-12'))
     expectInDocument(within(table).getByText('BOARD-13'))
   })
@@ -85,9 +85,9 @@ describe('BoardView', () => {
 
     render(<BoardView issues={[]} />)
 
-    fireEvent.change(screen.getByLabelText('Issue title'), { target: { value: 'New issue' } })
-    fireEvent.change(screen.getByLabelText('Issue description'), { target: { value: 'From create form' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    fireEvent.change(screen.getByLabelText('议题标题'), { target: { value: 'New issue' } })
+    fireEvent.change(screen.getByLabelText('议题描述'), { target: { value: 'From create form' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建' }))
 
     await waitFor(() => {
       expect(requests).toHaveLength(1)
@@ -100,8 +100,8 @@ describe('BoardView', () => {
     expect(first.init?.body).toBe(JSON.stringify({ title: 'New issue', description: 'From create form' }))
 
     await waitFor(() => {
-      expectValue(screen.getByLabelText('Issue title'), '')
-      expectValue(screen.getByLabelText('Issue description'), '')
+      expectValue(screen.getByLabelText('议题标题'), '')
+      expectValue(screen.getByLabelText('议题描述'), '')
     })
 
     globalThis.fetch = originalFetch
@@ -116,13 +116,13 @@ describe('BoardView', () => {
 
     render(<BoardView issues={issues} />)
 
-    expectInDocument(screen.getByText('Open'))
-    expectInDocument(screen.getByText('In Progress'))
-    expectInDocument(screen.getByText('Done'))
+    expectInDocument(screen.getByText('待处理'))
+    expectInDocument(screen.getByText('进行中'))
+    expectInDocument(screen.getByText('已完成'))
 
-    expectClass(screen.getByText('Open'), 'board-view__state-badge--open')
-    expectClass(screen.getByText('In Progress'), 'board-view__state-badge--in-progress')
-    expectClass(screen.getByText('Done'), 'board-view__state-badge--done')
+    expectClass(screen.getByText('待处理'), 'board-view__state-badge--open')
+    expectClass(screen.getByText('进行中'), 'board-view__state-badge--in-progress')
+    expectClass(screen.getByText('已完成'), 'board-view__state-badge--done')
   })
 
   it('sorts issues by updated_at descending', () => {
@@ -133,7 +133,7 @@ describe('BoardView', () => {
 
     render(<BoardView issues={issues} />)
 
-    const rows = within(screen.getByRole('table', { name: 'Board issues table' })).getAllByRole('row')
+    const rows = within(screen.getByRole('table', { name: '看板议题表格' })).getAllByRole('row')
     expect(rows).toHaveLength(3)
 
     const firstDataRow = rows[1]

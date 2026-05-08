@@ -80,6 +80,28 @@ func (p RunPhase) String() string {
 	}
 }
 
+// Label returns the dashboard-facing label for a run phase.
+func (p RunPhase) Label() string {
+	switch p {
+	case PreparingWorkspace, BuildingPrompt:
+		return "PreparingWorkspace"
+	case LaunchingAgentProcess, InitializingSession:
+		return "RunningAgent"
+	case StreamingTurn:
+		return "AgentRunning"
+	case Finishing:
+		return "Releasing"
+	case Succeeded:
+		return "Done"
+	case Failed, TimedOut, Stalled:
+		return "Failed"
+	case CanceledByReconciliation:
+		return "Canceled"
+	default:
+		return ""
+	}
+}
+
 // Issue represents a normalized issue record from the tracker.
 type Issue struct {
 	ID            string                 `json:"id"`
@@ -112,6 +134,7 @@ type RunAttempt struct {
 	LastEvent       string    `json:"last_event"`
 	Error           string    `json:"error"`
 	WorkspacePath   string    `json:"workspace_path"`
+	ClaimHeadSha    string    `json:"claim_head_sha,omitempty"`
 }
 
 // BackoffEntry represents a scheduled retry state for an issue.

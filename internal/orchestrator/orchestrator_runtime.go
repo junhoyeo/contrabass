@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/junhoyeo/contrabass/internal/agent"
 	"github.com/junhoyeo/contrabass/internal/config"
 	"github.com/junhoyeo/contrabass/internal/logging"
 	"github.com/junhoyeo/contrabass/internal/types"
@@ -36,7 +37,12 @@ func (o *Orchestrator) handleAgentEvent(issueID string, event types.AgentEvent) 
 	}
 
 	entry.lastEventAt = event.Timestamp
+	entry.lastHeartbeatAt = event.Timestamp
 	entry.attempt.LastEvent = event.Type
+	if !agent.IsHeartbeatEvent(event.Type) {
+		entry.lastActivityAt = event.Timestamp
+		entry.lastActivityKind = event.Type
+	}
 
 	if entry.attempt.Phase == types.InitializingSession {
 		if err := TransitionRunPhase(entry.attempt.Phase, types.StreamingTurn); err == nil {
@@ -82,9 +88,6 @@ func (o *Orchestrator) completeRun(ctx context.Context, issueID string, doneErr 
 	o.mu.Unlock()
 
 	defer entry.cancel()
-	if err := o.workspace.Cleanup(ctx, issueID); err != nil {
-		logging.LogIssueEvent(o.logger, issueID, "workspace_cleanup_failed", "stage", "complete_run", "err", err)
-	}
 
 	finalAttempt := entry.attempt
 	successSignal := completionSignalFromEvent(finalAttempt.LastEvent)
@@ -110,6 +113,64 @@ func (o *Orchestrator) completeRun(ctx context.Context, issueID string, doneErr 
 		},
 	})
 
+	if finalAttempt.Phase == types.Succeeded {
+		advanced, reason, err := verifyBranchAdvanced(
+			ctx, finalAttempt.WorkspacePath, entry.issue.BranchName, finalAttempt.ClaimHeadSha)
+		switch {
+		case advanced && reason == "":
+		case !advanced && reason == "branch_unchanged":
+			logging.LogIssueEvent(o.logger, issueID,
+				"success_unverified_branch_unchanged",
+				"attempt", finalAttempt.Attempt,
+				"branch", entry.issue.BranchName,
+				"head", finalAttempt.ClaimHeadSha,
+			)
+			o.pauseUnverifiedSuccess(ctx, entry, finalAttempt,
+				"success_unverified_branch_unchanged", nil)
+			return
+		case advanced && reason == "git_error":
+			// Persistent git failure (e.g. workspace was never a real
+			// worktree) — fail close to prevent rubber-stamped runs.
+			// See harden-verify-success-gate Decision 1.
+			errText := ""
+			if err != nil {
+				errText = err.Error()
+			}
+			logging.LogIssueEvent(o.logger, issueID,
+				"success_unverified_workspace_invalid",
+				"attempt", finalAttempt.Attempt,
+				"branch", entry.issue.BranchName,
+				"head", finalAttempt.ClaimHeadSha,
+				"err", errText,
+			)
+			o.pauseUnverifiedSuccess(ctx, entry, finalAttempt,
+				"success_unverified_workspace_invalid", err)
+			return
+		case advanced && reason == "no_claim_head":
+			// Empty ClaimHeadSha — claim-time SHA capture failed.
+			// Keep fail-open to preserve retry recovery after restarts.
+			o.logger.Warn("verifier_skipped",
+				"issue_id", issueID, "reason", reason)
+		default:
+			// Unknown future reason — keep fail-open with explicit warn.
+			if err != nil {
+				o.logger.Warn("verifier_skipped",
+					"issue_id", issueID, "reason", reason, "err", err)
+			} else {
+				o.logger.Warn("verifier_skipped",
+					"issue_id", issueID, "reason", reason)
+			}
+		}
+	}
+
+	nodeSuffix, nodeStatus, nodeTitle := timelineStatusForPhase(finalAttempt.Phase)
+	o.recordTimelineNode(ctx, entry.issue, finalAttempt,
+		nodeSuffix, nodeStatus, nodeTitle, "Agent process reached a durable terminal state.", finalAttempt.Error, true)
+
+	if err := o.workspace.Cleanup(ctx, issueID); err != nil {
+		logging.LogIssueEvent(o.logger, issueID, "workspace_cleanup_failed", "stage", "complete_run", "err", err)
+	}
+
 	// Post completion comment (best-effort)
 	commentBody := fmt.Sprintf(
 		"Agent run completed: phase=%s attempt=%d tokens_in=%d tokens_out=%d",
@@ -121,7 +182,9 @@ func (o *Orchestrator) completeRun(ctx context.Context, issueID string, doneErr 
 	if finalAttempt.Error != "" {
 		commentBody += fmt.Sprintf(" error=%q", finalAttempt.Error)
 	}
-	if err := o.tracker.PostComment(ctx, issueID, commentBody); err != nil {
+	if o.shouldSuppressLegacyComment() {
+		logging.LogIssueEvent(o.logger, issueID, "legacy_comment_suppressed", "reason", "linear_sync_enabled")
+	} else if err := o.tracker.PostComment(ctx, issueID, commentBody); err != nil {
 		logging.LogIssueEvent(o.logger, issueID, "post_comment_failed", "err", err)
 	}
 
@@ -258,12 +321,16 @@ func (o *Orchestrator) enqueueBackoffFromRunResult(ctx context.Context, issue ty
 		},
 	})
 
+	o.recordTimelineNode(ctx, issue, attempt,
+		"retry-queued", "retry_queued", "Retry queued", fmt.Sprintf("Contrabass scheduled retry attempt %d.", nextAttempt), attempt.Error, true)
+
 	logging.LogOrchestratorEvent(
 		o.logger,
 		"backoff_enqueued",
 		"issue_id", issue.ID,
 		"attempt", nextAttempt,
 		"retry_at", retryAt,
+		"err", attempt.Error,
 	)
 }
 
@@ -288,6 +355,49 @@ func (o *Orchestrator) releaseClaimAndQueueContinuation(ctx context.Context, iss
 	}
 	o.enqueueContinuation(issueID, attempt, cause.Error())
 	o.emitIssueReleased(issueID, attempt, releaseTimestamp)
+}
+
+func (o *Orchestrator) pauseUnverifiedSuccess(
+	ctx context.Context,
+	entry *runEntry,
+	attempt types.RunAttempt,
+	cause string,
+	verifyErr error,
+) {
+	issueID := entry.issue.ID
+	if err := o.workspace.Cleanup(ctx, issueID); err != nil {
+		logging.LogIssueEvent(o.logger, issueID, "workspace_cleanup_failed", "stage", "unverified_success", "err", err)
+	}
+	if err := o.tracker.UpdateIssueState(ctx, issueID, types.Running); err != nil {
+		logging.LogIssueEvent(o.logger, issueID, "update_running_failed", "stage", "unverified_success", "err", err)
+	}
+
+	commentBody := fmt.Sprintf(
+		"Agent reported success, but Contrabass could not verify branch changes (%s). Leaving the issue in progress for manual review; no retry was scheduled.",
+		cause,
+	)
+	if verifyErr != nil {
+		commentBody += fmt.Sprintf(" error=%q", verifyErr.Error())
+	}
+	o.recordTimelineNode(ctx, entry.issue, attempt,
+		"needs-review", "needs_review", "Manual review needed", commentBody, cause, true)
+	if o.shouldSuppressLegacyComment() {
+		logging.LogIssueEvent(o.logger, issueID, "legacy_comment_suppressed", "stage", "unverified_success", "reason", "linear_sync_enabled")
+	} else if err := o.tracker.PostComment(ctx, issueID, commentBody); err != nil {
+		logging.LogIssueEvent(o.logger, issueID, "post_comment_failed", "stage", "unverified_success", "err", err)
+	}
+
+	cached := entry.issue
+	cached.State = types.Running
+	o.mu.Lock()
+	o.paused[issueID] = cause
+	o.putIssueCacheLocked(issueID, cached)
+	o.mu.Unlock()
+
+	logging.LogIssueEvent(o.logger, issueID, "success_unverified_paused",
+		"attempt", attempt.Attempt, "cause", cause)
+	logging.LogAgentEvent(o.logger, issueID, "finished",
+		"status", attempt.Phase.String(), "err", cause)
 }
 
 func (o *Orchestrator) enqueueContinuation(issueID string, attempt int, message string) {
@@ -538,6 +648,9 @@ func (o *Orchestrator) isManagedIssue(issueID string) bool {
 	if _, ok := o.running[issueID]; ok {
 		return true
 	}
+	if _, ok := o.paused[issueID]; ok {
+		return true
+	}
 	for _, backoffEntry := range o.backoff {
 		if backoffEntry.IssueID == issueID {
 			return true
@@ -608,6 +721,35 @@ func parseUsageTokens(data map[string]interface{}) (int64, int64) {
 		return 0, 0
 	}
 
+	// codex 0.128+ shape: thread/tokenUsage/updated event
+	//   params.tokenUsage.total.{inputTokens, outputTokens, ...}   cumulative across turns
+	//   params.tokenUsage.last.{inputTokens, outputTokens, ...}    this turn only
+	//   params.tokenUsage.modelContextWindow                       informational
+	// Use total to feed the orchestrator's cumulative delta accounting.
+	if tu, ok := data["tokenUsage"].(map[string]interface{}); ok {
+		// Modern (codex 0.128 verified): total is itself a map of counters.
+		if total, ok := tu["total"].(map[string]interface{}); ok {
+			in := firstInt64(total, "inputTokens", "input_tokens", "prompt_tokens")
+			out := firstInt64(total, "outputTokens", "output_tokens", "completion_tokens")
+			if in != 0 || out != 0 {
+				return in, out
+			}
+		}
+		// Legacy hypothesis (per older docs): tokenUsage.context.{inputTokens, outputTokens}.
+		if ctx, ok := tu["context"].(map[string]interface{}); ok {
+			in := firstInt64(ctx, "inputTokens", "input_tokens", "prompt_tokens")
+			out := firstInt64(ctx, "outputTokens", "output_tokens", "completion_tokens")
+			if in != 0 || out != 0 {
+				return in, out
+			}
+		}
+		// Very old hypothesis: tokenUsage.total is itself an integer.
+		if total := firstInt64(tu, "total"); total != 0 {
+			return 0, total
+		}
+	}
+
+	// Legacy + omx shape: data["usage"]
 	rawUsage, ok := data["usage"]
 	if !ok {
 		return 0, 0

@@ -175,6 +175,12 @@ agent_timeout_ms: 900000
 stall_timeout_ms: 60000
 tracker:
   type: linear
+linear:
+  issue_details:
+    enabled: true
+  sync_comments:
+    enabled: false
+    mode: reply_thread
 agent:
   type: codex
 codex:
@@ -188,6 +194,31 @@ Issue URL: {{ issue.url }}
 
 Produce code and tests that satisfy the issue requirements.
 ```
+
+### Linear detail and timeline sync settings
+
+When `tracker.type: linear` is used, the dashboard can load richer issue
+metadata through the Contrabass backend without exposing Linear credentials to
+browser code.
+
+```yaml
+linear:
+  issue_details:
+    enabled: true
+  sync_comments:
+    enabled: false
+    mode: reply_thread # reply_thread by default; top_level is the fallback-safe mode
+```
+
+- `linear.issue_details.enabled` controls backend issue detail reads used by
+  the issue detail sheet. Candidate polling remains lean.
+- `linear.sync_comments.enabled` is opt-in and defaults to `false`; when
+  enabled, durable workflow timeline nodes are projected to Linear comments.
+- Comment sync is best-effort and asynchronous. It records retry/sync status in
+  local timeline state and does not block issue completion, retry queueing, or
+  dashboard rendering.
+- Disable `linear.sync_comments.enabled` to preserve legacy direct completion
+  comments and avoid any Linear comment projection.
 
 ### Template bindings
 
@@ -207,6 +238,26 @@ Examples:
 - `opencode.password: $OPENCODE_SERVER_PASSWORD`
 - `omx.binary_path: $OMX_BINARY`
 - `omc.binary_path: $OMC_BINARY`
+
+### Linear issue details and workflow timeline
+
+For Linear trackers, Contrabass can load richer issue metadata for the dashboard and maintain a local workflow timeline that is projected back to Linear comments only when explicitly enabled.
+
+```yaml
+tracker:
+  type: linear
+linear:
+  issue_details:
+    enabled: true
+  sync_comments:
+    enabled: false
+    mode: reply_thread # or top_level
+```
+
+- `linear.issue_details.enabled` defaults to enabled for Linear trackers and is ignored for non-Linear trackers.
+- `linear.sync_comments.enabled` defaults to `false`; comment sync is best-effort and opt-in.
+- `linear.sync_comments.mode` defaults to `reply_thread`; use `top_level` when threaded replies are unsupported or undesired.
+- Workflow timeline files are local Contrabass state and remain the source of truth even when Linear sync is disabled or temporarily fails.
 
 ### OMC / OMX workflow sections
 
@@ -317,6 +368,8 @@ When `--port` is set, Contrabass serves the embedded dashboard and a small JSON/
 ### Current endpoints
 
 - `GET /api/v1/state` — full orchestrator snapshot
+- `GET /api/v1/issues/{issue_id}/details` — cached issue plus backend-only Linear detail data when available
+- `GET /api/v1/issues/{issue_id}/timeline` — local workflow timeline snapshot for the issue
 - `GET /api/v1/{identifier}` — cached issue lookup from the latest snapshot
 - `GET /api/v1/events` — SSE stream (initial snapshot + live orchestrator events)
 - `POST /api/v1/refresh` — currently returns `202 Accepted` as a placeholder hook
@@ -327,6 +380,7 @@ The dashboard currently renders:
 - aggregate runtime/token metrics
 - running session table
 - retry queue
+- issue detail sheets with Linear metadata and workflow timeline rows when those APIs are available
 
 ## Development
 

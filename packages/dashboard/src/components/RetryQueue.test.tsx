@@ -44,13 +44,13 @@ describe('RetryQueue', () => {
     expectInDocument(screen.getByText('failed to acquire lock'))
     expectInDocument(screen.getByText('process timed out'))
     expectInDocument(screen.getByText(`${longError.slice(0, 57)}...`))
-    expectInDocument(screen.getByText('Unknown'))
-    expect(screen.getAllByText('Ready')).toHaveLength(2)
+    expectInDocument(screen.getByText('未知'))
+    expect(screen.getAllByText('就绪')).toHaveLength(2)
   })
 
   it('renders empty state when queue is empty', () => {
     render(<RetryQueue entries={[]} />)
 
-    expectInDocument(screen.getByText('No retries pending'))
+    expectInDocument(screen.getByText('暂无待重试任务'))
   })
 })

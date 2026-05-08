@@ -14,6 +14,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,6 +47,7 @@ type observingTracker struct {
 	states        map[string]types.IssueState
 	claims        map[string]int
 	releases      map[string]int
+	updateCounts  map[string]map[types.IssueState]int
 	currentClaims map[string]bool
 }
 
@@ -63,6 +67,7 @@ func newObservingTracker(issues []types.Issue) *observingTracker {
 		states:        states,
 		claims:        make(map[string]int),
 		releases:      make(map[string]int),
+		updateCounts:  make(map[string]map[types.IssueState]int),
 		currentClaims: make(map[string]bool),
 	}
 }
@@ -118,6 +123,10 @@ func (t *observingTracker) UpdateIssueState(ctx context.Context, issueID string,
 
 	t.mu.Lock()
 	t.states[issueID] = state
+	if t.updateCounts[issueID] == nil {
+		t.updateCounts[issueID] = make(map[types.IssueState]int)
+	}
+	t.updateCounts[issueID][state]++
 	t.mu.Unlock()
 
 	return nil
@@ -139,6 +148,13 @@ func (t *observingTracker) ReleaseCount(issueID string) int {
 	defer t.mu.Unlock()
 
 	return t.releases[issueID]
+}
+
+func (t *observingTracker) UpdateIssueStateCount(issueID string, state types.IssueState) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return t.updateCounts[issueID][state]
 }
 
 func (t *observingTracker) State(issueID string) (types.IssueState, bool) {
@@ -239,6 +255,23 @@ func (c *eventCollector) Event(eventType EventType, issueID string) (Orchestrato
 	return OrchestratorEvent{}, false
 }
 
+func (c *eventCollector) BackoffCauseCount(issueID, cause string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	count := 0
+	for _, event := range c.events {
+		if event.Type != EventBackoffEnqueued || event.IssueID != issueID {
+			continue
+		}
+		backoff, ok := event.Data.(BackoffEnqueued)
+		if ok && strings.Contains(backoff.Error, cause) {
+			count++
+		}
+	}
+	return count
+}
+
 func assertIssueReleasedTimestampPrecedesBackoff(t *testing.T, events *eventCollector, issueID string) {
 	t.Helper()
 
@@ -310,6 +343,71 @@ func (w *countingWorkspace) CleanupAllCount() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.cleanupAllCalls
+}
+
+type gitWorkspaceManager struct {
+	base *workspace.MockManager
+	t    *testing.T
+}
+
+func newGitWorkspaceManager(t *testing.T, baseDir string) *gitWorkspaceManager {
+	t.Helper()
+
+	return &gitWorkspaceManager{
+		base: workspace.NewMockManager(baseDir),
+		t:    t,
+	}
+}
+
+func (w *gitWorkspaceManager) Create(ctx context.Context, issue types.Issue) (string, error) {
+	path, err := w.base.Create(ctx, issue)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+		return path, nil
+	}
+
+	require.NoError(w.t, os.MkdirAll(path, 0o755))
+	gitRun(w.t, path, "init")
+	require.NoError(w.t, os.WriteFile(filepath.Join(path, "baseline.txt"), []byte("baseline\n"), 0o644))
+	gitRun(w.t, path, "add", "baseline.txt")
+	gitRun(w.t, path, "commit", "-m", "baseline")
+	if issue.BranchName != "" {
+		gitRun(w.t, path, "checkout", "-B", issue.BranchName)
+	}
+	return path, nil
+}
+
+func (w *gitWorkspaceManager) Cleanup(ctx context.Context, issueID string) error {
+	return w.base.Cleanup(ctx, issueID)
+}
+
+func (w *gitWorkspaceManager) CleanupAll(ctx context.Context) error {
+	return w.base.CleanupAll(ctx)
+}
+
+type commitBeforeSuccessRunner struct {
+	t    *testing.T
+	base *agent.MockRunner
+}
+
+func (r *commitBeforeSuccessRunner) Start(
+	ctx context.Context,
+	issue types.Issue,
+	workspacePath string,
+	prompt string,
+) (*agent.AgentProcess, error) {
+	gitRun(r.t, workspacePath, "commit", "--allow-empty", "-m", "agent progress")
+	return r.base.Start(ctx, issue, workspacePath, prompt)
+}
+
+func (r *commitBeforeSuccessRunner) Stop(proc *agent.AgentProcess) error {
+	return r.base.Stop(proc)
+}
+
+func (r *commitBeforeSuccessRunner) Close() error {
+	return r.base.Close()
 }
 
 var _ agent.AgentRunner = (*trackingRunner)(nil)
@@ -536,6 +634,90 @@ func TestNoEventSuccessResolvesToSucceeded(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-done)
+}
+
+func TestSuccessGate_HollowRunPausesWithoutRetry(t *testing.T) {
+	const rejectionCause = "success_unverified_branch_unchanged"
+
+	tests := []struct {
+		name         string
+		issueID      string
+		runner       func(t *testing.T) agent.AgentRunner
+		wantReleased bool
+		wantPaused   bool
+	}{
+		{
+			name:    "hollow success rejected",
+			issueID: "ISS-HOLLOW",
+			runner: func(t *testing.T) agent.AgentRunner {
+				t.Helper()
+				return &agent.MockRunner{
+					Events: []types.AgentEvent{{Type: "turn/completed"}},
+					Delay:  10 * time.Millisecond,
+				}
+			},
+			wantPaused: true,
+		},
+		{
+			name:    "real success proceeds",
+			issueID: "ISS-REAL",
+			runner: func(t *testing.T) agent.AgentRunner {
+				t.Helper()
+				return &commitBeforeSuccessRunner{
+					t: t,
+					base: &agent.MockRunner{
+						Events: []types.AgentEvent{{Type: "turn/completed"}},
+						Delay:  10 * time.Millisecond,
+					},
+				}
+			},
+			wantReleased: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := types.Issue{
+				ID:         tt.issueID,
+				Identifier: tt.issueID,
+				Title:      tt.name,
+				State:      types.Unclaimed,
+				BranchName: tt.issueID,
+			}
+			mt := newObservingTracker([]types.Issue{issue})
+			mw := newGitWorkspaceManager(t, t.TempDir())
+			cfg := testConfig()
+			cfg.MaxRetryBackoffMsRaw = 5_000
+			orch := NewOrchestrator(mt, mw, tt.runner(t), &staticConfig{cfg: cfg}, nil)
+			events := newEventCollector(orch.Events())
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			done := startOrchestrator(ctx, orch)
+
+			if tt.wantReleased {
+				require.Eventually(t, func() bool {
+					return mt.UpdateIssueStateCount(issue.ID, types.Released) >= 1
+				}, 2*time.Second, 10*time.Millisecond)
+				assert.Zero(t, events.BackoffCauseCount(issue.ID, rejectionCause))
+			}
+			if tt.wantPaused {
+				require.Eventually(t, func() bool {
+					state, ok := mt.State(issue.ID)
+					return ok && state == types.Running && !mw.base.Exists(issue.ID)
+				}, 2*time.Second, 10*time.Millisecond)
+				assert.Zero(t, mt.UpdateIssueStateCount(issue.ID, types.Released))
+				assert.Zero(t, events.BackoffCauseCount(issue.ID, rejectionCause))
+				assert.Zero(t, mt.ReleaseCount(issue.ID))
+				require.Never(t, func() bool {
+					return mt.ClaimCount(issue.ID) > 1
+				}, 1200*time.Millisecond, 20*time.Millisecond)
+			}
+
+			cancel()
+			require.NoError(t, <-done)
+		})
+	}
 }
 
 func TestFailedAgentBackoff(t *testing.T) {
@@ -1233,6 +1415,81 @@ func TestParseUsageTokens_TotalTokensFallback(t *testing.T) {
 			wantIn:  0,
 			wantOut: 0,
 		},
+		{
+			// Real codex 0.128 shape captured live: tokenUsage.total is a map.
+			name: "codex_0_128_tokenUsage_total_map",
+			data: map[string]interface{}{
+				"tokenUsage": map[string]interface{}{
+					"total": map[string]interface{}{
+						"cachedInputTokens":     float64(3456),
+						"inputTokens":           float64(24261),
+						"outputTokens":          float64(607),
+						"reasoningOutputTokens": float64(507),
+						"totalTokens":           float64(24868),
+					},
+					"last": map[string]interface{}{
+						"inputTokens":  float64(24261),
+						"outputTokens": float64(607),
+					},
+					"modelContextWindow": float64(258400),
+				},
+			},
+			wantIn:  24261,
+			wantOut: 607,
+		},
+		{
+			// Legacy fallback: tokenUsage.context.{inputTokens, outputTokens} (older codex docs).
+			name: "codex_legacy_tokenUsage_context_fallback",
+			data: map[string]interface{}{
+				"tokenUsage": map[string]interface{}{
+					"context": map[string]interface{}{
+						"inputTokens":  float64(800),
+						"outputTokens": float64(434),
+					},
+				},
+			},
+			wantIn:  800,
+			wantOut: 434,
+		},
+		{
+			name: "codex_very_old_tokenUsage_total_int",
+			data: map[string]interface{}{
+				"tokenUsage": map[string]interface{}{
+					"total": float64(900),
+				},
+			},
+			wantIn:  0,
+			wantOut: 900,
+		},
+		{
+			name: "codex_0_128_tokenUsage_takes_precedence_over_legacy_usage",
+			data: map[string]interface{}{
+				"tokenUsage": map[string]interface{}{
+					"total": map[string]interface{}{
+						"inputTokens":  float64(11),
+						"outputTokens": float64(22),
+					},
+				},
+				"usage": map[string]interface{}{
+					"prompt_tokens":     float64(99),
+					"completion_tokens": float64(88),
+				},
+			},
+			wantIn:  11,
+			wantOut: 22,
+		},
+		{
+			name: "tokenUsage_is_not_a_map_falls_through_to_usage",
+			data: map[string]interface{}{
+				"tokenUsage": "not-a-map",
+				"usage": map[string]interface{}{
+					"prompt_tokens":     float64(7),
+					"completion_tokens": float64(3),
+				},
+			},
+			wantIn:  7,
+			wantOut: 3,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1347,6 +1604,705 @@ func TestEventTypeString_Unknown(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, tt.et.String())
+		})
+	}
+}
+
+func TestUnresolvedBlockers(t *testing.T) {
+	cases := []struct {
+		name      string
+		blockedBy []string
+		openIDs   map[string]struct{}
+		want      []string
+	}{
+		{
+			name:      "empty blockedBy",
+			blockedBy: nil,
+			openIDs:   map[string]struct{}{"X": {}},
+			want:      nil,
+		},
+		{
+			name:      "empty openIDs",
+			blockedBy: []string{"X"},
+			openIDs:   map[string]struct{}{},
+			want:      nil,
+		},
+		{
+			name:      "single match",
+			blockedBy: []string{"X"},
+			openIDs:   map[string]struct{}{"X": {}},
+			want:      []string{"X"},
+		},
+		{
+			name:      "no match",
+			blockedBy: []string{"X"},
+			openIDs:   map[string]struct{}{"Y": {}},
+			want:      []string{},
+		},
+		{
+			name:      "partial match preserves only the open subset",
+			blockedBy: []string{"X", "Y"},
+			openIDs:   map[string]struct{}{"X": {}},
+			want:      []string{"X"},
+		},
+		{
+			name:      "all match preserves input order",
+			blockedBy: []string{"X", "Y"},
+			openIDs:   map[string]struct{}{"X": {}, "Y": {}},
+			want:      []string{"X", "Y"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := unresolvedBlockers(tc.blockedBy, tc.openIDs)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestDispatchUnclaimedIssues_GatesOnBlockedBy(t *testing.T) {
+	t.Run("blocker present in batch skips dependent", func(t *testing.T) {
+		mt := newObservingTracker([]types.Issue{
+			{ID: "ISS-1", Identifier: "ZII-49", Title: "Blocker", State: types.Unclaimed},
+			{ID: "ISS-2", Identifier: "ZII-50", Title: "Blocked", State: types.Unclaimed,
+				BlockedBy: []string{"ZII-49"}},
+		})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{
+			Events: []types.AgentEvent{}, // never completes naturally
+			Delay:  10 * time.Second,     // hold the agent open while we observe
+		}
+		cfg := &staticConfig{cfg: testConfig()}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+		go func() {
+			for range orch.Events() {
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		require.Eventually(t, func() bool {
+			return mt.ClaimCount("ISS-1") > 0
+		}, 1*time.Second, 10*time.Millisecond, "blocker should be claimed")
+
+		// Allow several poll cycles (poll interval is 10ms in testConfig).
+		time.Sleep(200 * time.Millisecond)
+		require.Equal(t, 0, mt.ClaimCount("ISS-2"),
+			"blocked issue must not be claimed while blocker is in candidate set")
+
+		cancel()
+		require.NoError(t, <-done)
+	})
+
+	t.Run("blocker absent from batch dispatches dependent", func(t *testing.T) {
+		// Only the dependent is in the tracker; its blocker has presumably
+		// reached a terminal state and is no longer fetched. The gate should
+		// allow dispatch.
+		mt := newObservingTracker([]types.Issue{
+			{ID: "ISS-2", Identifier: "ZII-50", Title: "Blocked", State: types.Unclaimed,
+				BlockedBy: []string{"ZII-49"}},
+		})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{
+			Events: []types.AgentEvent{{Type: "turn/completed"}},
+			Delay:  10 * time.Millisecond,
+		}
+		cfg := &staticConfig{cfg: testConfig()}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+		go func() {
+			for range orch.Events() {
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		require.Eventually(t, func() bool {
+			return mt.ClaimCount("ISS-2") > 0
+		}, 1*time.Second, 10*time.Millisecond,
+			"dependent should be claimed when blocker is not in candidate set")
+
+		cancel()
+		require.NoError(t, <-done)
+	})
+
+	t.Run("multiple blockers — only unresolved subset gates", func(t *testing.T) {
+		// ZII-44 is an open issue in the batch; ZII-49 is not.
+		// ISS-2 has BlockedBy=[ZII-49, ZII-44] → unresolved subset is [ZII-44]
+		// → ISS-2 is skipped.
+		mt := newObservingTracker([]types.Issue{
+			{ID: "ISS-OPEN", Identifier: "ZII-44", Title: "Open Other", State: types.Unclaimed},
+			{ID: "ISS-2", Identifier: "ZII-50", Title: "Blocked", State: types.Unclaimed,
+				BlockedBy: []string{"ZII-49", "ZII-44"}},
+		})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{
+			Events: []types.AgentEvent{},
+			Delay:  10 * time.Second,
+		}
+		cfg := &staticConfig{cfg: testConfig()}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+		go func() {
+			for range orch.Events() {
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		require.Eventually(t, func() bool {
+			return mt.ClaimCount("ISS-OPEN") > 0
+		}, 1*time.Second, 10*time.Millisecond)
+
+		time.Sleep(200 * time.Millisecond)
+		require.Equal(t, 0, mt.ClaimCount("ISS-2"),
+			"dependent must be skipped while any blocker remains in batch")
+
+		cancel()
+		require.NoError(t, <-done)
+	})
+}
+
+// missingBranchWorkspaceManager wraps the mock manager but seeds a real git
+// repo at the workspace path WITHOUT creating issue.BranchName. claimIssue's
+// `git rev-parse HEAD` succeeds (so ClaimHeadSha is populated), but the
+// verify-gate's `git rev-parse <BranchName>` later fails with exit 128 ->
+// reason="git_error", which is exactly the harden-verify-success-gate trigger.
+type missingBranchWorkspaceManager struct {
+	base *workspace.MockManager
+	t    *testing.T
+}
+
+func newMissingBranchWorkspaceManager(t *testing.T, baseDir string) *missingBranchWorkspaceManager {
+	t.Helper()
+	return &missingBranchWorkspaceManager{base: workspace.NewMockManager(baseDir), t: t}
+}
+
+func (w *missingBranchWorkspaceManager) Create(ctx context.Context, issue types.Issue) (string, error) {
+	path, err := w.base.Create(ctx, issue)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+		return path, nil
+	}
+	require.NoError(w.t, os.MkdirAll(path, 0o755))
+	gitRun(w.t, path, "init")
+	require.NoError(w.t, os.WriteFile(filepath.Join(path, "baseline.txt"), []byte("x\n"), 0o644))
+	gitRun(w.t, path, "add", "baseline.txt")
+	gitRun(w.t, path, "commit", "-m", "baseline")
+	return path, nil
+}
+
+func (w *missingBranchWorkspaceManager) Cleanup(ctx context.Context, issueID string) error {
+	return w.base.Cleanup(ctx, issueID)
+}
+
+func (w *missingBranchWorkspaceManager) CleanupAll(ctx context.Context) error {
+	return w.base.CleanupAll(ctx)
+}
+
+func TestVerifyGate_GitErrorPausesWithoutRetry(t *testing.T) {
+	issue := types.Issue{
+		ID:         "ISS-GITERR",
+		Identifier: "ISS-GITERR",
+		Title:      "git_error fails closed",
+		State:      types.Unclaimed,
+		BranchName: "symphony/iss-giterr",
+	}
+	mt := newObservingTracker([]types.Issue{issue})
+	mw := newMissingBranchWorkspaceManager(t, t.TempDir())
+	cfg := testConfig()
+	cfg.MaxRetryBackoffMsRaw = 5_000
+	mr := &agent.MockRunner{
+		Events: []types.AgentEvent{{Type: "turn/completed"}},
+		Delay:  10 * time.Millisecond,
+	}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: cfg}, nil)
+	events := newEventCollector(orch.Events())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	require.Eventually(t, func() bool {
+		state, ok := mt.State(issue.ID)
+		return ok && state == types.Running && !mw.base.Exists(issue.ID)
+	}, 2*time.Second, 10*time.Millisecond, "git_error must leave the issue in progress for review")
+	assert.Zero(t, mt.UpdateIssueStateCount(issue.ID, types.Released),
+		"git_error must not fall through to Released")
+	assert.Zero(t, events.BackoffCauseCount(issue.ID, "success_unverified_workspace_invalid"),
+		"git_error must not schedule an automatic retry")
+	assert.Zero(t, mt.ReleaseCount(issue.ID),
+		"git_error must keep the issue claimed for manual review")
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestVerifyGate_NoClaimHeadStillProceedsToReleased(t *testing.T) {
+	issue := types.Issue{
+		ID:         "ISS-NOHEAD",
+		Identifier: "ISS-NOHEAD",
+		Title:      "no_claim_head still releases",
+		State:      types.Unclaimed,
+		BranchName: "symphony/iss-nohead",
+	}
+	mt := newObservingTracker([]types.Issue{issue})
+	// MockManager returns a plain temp dir (no .git), so claimIssue's
+	// workspaceHeadSHA call errors out and ClaimHeadSha stays empty.
+	// verifyBranchAdvanced then returns (true, "no_claim_head", nil) and the
+	// runtime's existing fail-open arm SHALL still release to Done.
+	mw := workspace.NewMockManager(t.TempDir())
+	cfg := testConfig()
+	cfg.MaxRetryBackoffMsRaw = 5_000
+	mr := &agent.MockRunner{
+		Events: []types.AgentEvent{{Type: "turn/completed"}},
+		Delay:  10 * time.Millisecond,
+	}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: cfg}, nil)
+	events := newEventCollector(orch.Events())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	require.Eventually(t, func() bool {
+		return mt.UpdateIssueStateCount(issue.ID, types.Released) >= 1
+	}, 2*time.Second, 10*time.Millisecond, "no_claim_head must release to Done")
+	assert.Zero(t, events.BackoffCauseCount(issue.ID, "success_unverified_workspace_invalid"),
+		"no_claim_head must NOT trigger workspace_invalid backoff")
+	assert.Zero(t, events.BackoffCauseCount(issue.ID, "success_unverified_branch_unchanged"))
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+// --- StopAgent unit tests ---
+
+func TestStopAgent_StopsRunningAndReleases(t *testing.T) {
+	target := types.Issue{ID: "ISS-A", Identifier: "ISS-A", State: types.Running}
+
+	mt := newObservingTracker([]types.Issue{target})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+
+	orch.mu.Lock()
+	orch.running["ISS-A"] = fakeRunEntry(t, target)
+	orch.stats.Running = 1
+	orch.mu.Unlock()
+
+	require.NoError(t, orch.StopAgent(context.Background(), "ISS-A"))
+
+	orch.mu.Lock()
+	_, present := orch.running["ISS-A"]
+	orch.mu.Unlock()
+	assert.False(t, present, "running entry must be removed")
+
+	state, ok := mt.State("ISS-A")
+	require.True(t, ok)
+	assert.Equal(t, types.Released, state)
+	assert.Equal(t, 1, mt.ReleaseCount("ISS-A"))
+}
+
+func TestStopAgent_NotRunningReturnsError(t *testing.T) {
+	mt := newObservingTracker(nil)
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+
+	err := orch.StopAgent(context.Background(), "ISS-MISSING")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAgentNotRunning))
+}
+
+// --- recoverOrphanedClaims unit tests ---
+
+func TestRecoverOrphanedClaims_OrphanOverriddenAndLogged(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewWithOptions(&buf, log.Options{Level: log.DebugLevel})
+
+	mt := newObservingTracker(nil)
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, logger)
+
+	issues := []types.Issue{
+		{ID: "ISS-ORPHAN", Identifier: "ISS-ORPHAN", State: types.Claimed},
+	}
+
+	orch.recoverOrphanedClaims(issues)
+
+	assert.Equal(t, types.Unclaimed, issues[0].State, "orphaned Claimed issue must be overridden to Unclaimed")
+	assert.Contains(t, buf.String(), "orphan_claim_recovered")
+	assert.Contains(t, buf.String(), "ISS-ORPHAN")
+}
+
+func TestRecoverOrphanedClaims_ManagedIssueUnchanged(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewWithOptions(&buf, log.Options{Level: log.DebugLevel})
+
+	mt := newObservingTracker(nil)
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, logger)
+
+	orch.mu.Lock()
+	orch.running["ISS-MANAGED"] = &runEntry{}
+	orch.mu.Unlock()
+
+	issues := []types.Issue{
+		{ID: "ISS-MANAGED", Identifier: "ISS-MANAGED", State: types.Claimed},
+	}
+
+	orch.recoverOrphanedClaims(issues)
+
+	assert.Equal(t, types.Claimed, issues[0].State, "genuinely managed Claimed issue must not be overridden")
+	assert.NotContains(t, buf.String(), "orphan_claim_recovered")
+}
+
+func TestRecoverOrphanedClaims_UnclaimedUnchanged(t *testing.T) {
+	mt := newObservingTracker(nil)
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+
+	issues := []types.Issue{
+		{ID: "ISS-TODO", Identifier: "ISS-TODO", State: types.Unclaimed},
+	}
+
+	orch.recoverOrphanedClaims(issues)
+
+	assert.Equal(t, types.Unclaimed, issues[0].State, "Unclaimed issue must not be modified")
+}
+
+func TestRecoverOrphanedClaims_LoggedOncePerRestart(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewWithOptions(&buf, log.Options{Level: log.DebugLevel})
+
+	mt := newObservingTracker(nil)
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, logger)
+
+	issues := []types.Issue{
+		{ID: "ISS-REPEAT", Identifier: "ISS-REPEAT", State: types.Claimed},
+	}
+
+	// First tick: override applied and logged once.
+	orch.recoverOrphanedClaims(issues)
+	firstCount := strings.Count(buf.String(), "orphan_claim_recovered")
+	assert.Equal(t, 1, firstCount, "first tick must log orphan_claim_recovered exactly once")
+
+	// Reset state to Claimed to simulate a second tick where dispatch is still pending.
+	issues[0].State = types.Claimed
+
+	// Second tick: override still applied but no additional log line.
+	orch.recoverOrphanedClaims(issues)
+	secondCount := strings.Count(buf.String(), "orphan_claim_recovered")
+	assert.Equal(t, 1, secondCount, "subsequent ticks must not duplicate orphan_claim_recovered log")
+	assert.Equal(t, types.Unclaimed, issues[0].State, "issue must still be overridden on second tick")
+}
+
+// --- releaseBlockedRunning unit tests ---
+
+// fakeRunEntry returns a runEntry with a closed Done channel and a no-op
+// cancel func, suitable for stopRun without a live agent process.
+func fakeRunEntry(t *testing.T, issue types.Issue) *runEntry {
+	t.Helper()
+
+	doneCh := make(chan error)
+	close(doneCh)
+	_, cancel := context.WithCancel(context.Background())
+
+	return &runEntry{
+		issue:   issue,
+		process: &agent.AgentProcess{PID: 999, Done: doneCh},
+		cancel:  cancel,
+	}
+}
+
+func TestReleaseBlockedRunning_StopsAndReverts(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewWithOptions(&buf, log.Options{Level: log.DebugLevel})
+
+	target := types.Issue{
+		ID:         "ISS-A",
+		Identifier: "ISS-A",
+		State:      types.Running,
+		BlockedBy:  []string{"ISS-B"},
+	}
+	blocker := types.Issue{ID: "ISS-B", Identifier: "ISS-B", State: types.Unclaimed}
+
+	mt := newObservingTracker([]types.Issue{target, blocker})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, logger)
+
+	orch.mu.Lock()
+	orch.running["ISS-A"] = fakeRunEntry(t, target)
+	orch.stats.Running = 1
+	orch.mu.Unlock()
+
+	issuesByID := map[string]types.Issue{"ISS-A": target, "ISS-B": blocker}
+	openIDs := buildOpenIDSet([]types.Issue{target, blocker})
+
+	orch.releaseBlockedRunning(context.Background(), issuesByID, openIDs)
+
+	orch.mu.Lock()
+	_, present := orch.running["ISS-A"]
+	orch.mu.Unlock()
+	assert.False(t, present, "running entry must be removed after blocker re-validation")
+
+	state, ok := mt.State("ISS-A")
+	require.True(t, ok)
+	assert.Equal(t, types.Unclaimed, state, "state must be reverted to Unclaimed")
+
+	assert.Contains(t, buf.String(), "running_released_blocked_by")
+	assert.Contains(t, buf.String(), "ISS-B")
+}
+
+func TestReleaseBlockedRunning_NoBlockedByLeavesRunning(t *testing.T) {
+	target := types.Issue{ID: "ISS-A", Identifier: "ISS-A", State: types.Running}
+
+	mt := newObservingTracker([]types.Issue{target})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+
+	orch.mu.Lock()
+	orch.running["ISS-A"] = fakeRunEntry(t, target)
+	orch.stats.Running = 1
+	orch.mu.Unlock()
+
+	issuesByID := map[string]types.Issue{"ISS-A": target}
+	openIDs := buildOpenIDSet([]types.Issue{target})
+
+	orch.releaseBlockedRunning(context.Background(), issuesByID, openIDs)
+
+	orch.mu.Lock()
+	_, present := orch.running["ISS-A"]
+	orch.mu.Unlock()
+	assert.True(t, present, "issue with empty BlockedBy must remain running")
+
+	assert.Zero(t, mt.UpdateIssueStateCount("ISS-A", types.Unclaimed),
+		"no state revert when no blocker present")
+}
+
+func TestReleaseBlockedRunning_DoneBlockerLeavesRunning(t *testing.T) {
+	target := types.Issue{
+		ID:         "ISS-A",
+		Identifier: "ISS-A",
+		State:      types.Running,
+		BlockedBy:  []string{"ISS-B"},
+	}
+	// Blocker is absent from the snapshot — i.e. terminal/Done in the tracker.
+
+	mt := newObservingTracker([]types.Issue{target})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+
+	orch.mu.Lock()
+	orch.running["ISS-A"] = fakeRunEntry(t, target)
+	orch.stats.Running = 1
+	orch.mu.Unlock()
+
+	issuesByID := map[string]types.Issue{"ISS-A": target}
+	openIDs := buildOpenIDSet([]types.Issue{target}) // blocker not in openIDs
+
+	orch.releaseBlockedRunning(context.Background(), issuesByID, openIDs)
+
+	orch.mu.Lock()
+	_, present := orch.running["ISS-A"]
+	orch.mu.Unlock()
+	assert.True(t, present, "issue with all blockers Done must remain running")
+
+	assert.Zero(t, mt.UpdateIssueStateCount("ISS-A", types.Unclaimed))
+}
+
+func TestReleaseBlockedRunning_UpdateStateFailureLogged(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewWithOptions(&buf, log.Options{Level: log.DebugLevel})
+
+	target := types.Issue{
+		ID:         "ISS-A",
+		Identifier: "ISS-A",
+		State:      types.Running,
+		BlockedBy:  []string{"ISS-B"},
+	}
+	blocker := types.Issue{ID: "ISS-B", Identifier: "ISS-B", State: types.Unclaimed}
+
+	mt := newObservingTracker([]types.Issue{target, blocker})
+	mt.base.UpdateErr = errors.New("tracker offline")
+
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, logger)
+
+	orch.mu.Lock()
+	orch.running["ISS-A"] = fakeRunEntry(t, target)
+	orch.stats.Running = 1
+	orch.mu.Unlock()
+
+	issuesByID := map[string]types.Issue{"ISS-A": target, "ISS-B": blocker}
+	openIDs := buildOpenIDSet([]types.Issue{target, blocker})
+
+	require.NotPanics(t, func() {
+		orch.releaseBlockedRunning(context.Background(), issuesByID, openIDs)
+	})
+
+	// Agent must still be stopped even if state revert fails — next tick
+	// will retry the revert.
+	orch.mu.Lock()
+	_, present := orch.running["ISS-A"]
+	orch.mu.Unlock()
+	assert.False(t, present, "agent must be stopped even when revert fails")
+
+	assert.Contains(t, buf.String(), "running_release_state_revert_failed")
+	assert.Contains(t, buf.String(), "tracker offline")
+}
+
+func TestRecoverOrphanedClaims_IntegrationRestartRedispatches(t *testing.T) {
+	issue := types.Issue{
+		ID:         "ISS-RESTART",
+		Identifier: "ISS-RESTART",
+		Title:      "orphan after restart",
+		State:      types.Claimed,
+		BranchName: "symphony/iss-restart",
+	}
+	mt := newObservingTracker([]types.Issue{issue})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{
+		Events: []types.AgentEvent{{Type: "turn/completed"}},
+		Delay:  10 * time.Millisecond,
+	}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+	go func() {
+		for range orch.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	require.Eventually(t, func() bool {
+		return mt.ClaimCount(issue.ID) >= 1
+	}, 2*time.Second, 10*time.Millisecond, "orphaned issue must be re-dispatched within one poll interval")
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+// TestSuccessGate_HollowRunReroutesToBackoff is the T5 integration test for
+// verify-success-with-diff. It drives two scenarios through the full
+// orchestrator loop:
+//
+//  1. hollow success — workspace branch HEAD does not advance; verifier must
+//     block the Released transition and record the rejection via AgentFinished.
+//
+//  2. real success — workspace receives a synthetic commit before the runner
+//     emits Succeeded; the Released transition must proceed normally.
+func TestSuccessGate_HollowRunReroutesToBackoff(t *testing.T) {
+	const rejectionCause = "success_unverified_branch_unchanged"
+
+	tests := []struct {
+		name         string
+		issueID      string
+		runner       func(t *testing.T) agent.AgentRunner
+		wantReleased bool
+		wantRejected bool
+	}{
+		{
+			name:    "hollow success rejected",
+			issueID: "ISS-T5-HOLLOW",
+			runner: func(t *testing.T) agent.AgentRunner {
+				t.Helper()
+				return &agent.MockRunner{
+					Events: []types.AgentEvent{{Type: "turn/completed"}},
+					Delay:  10 * time.Millisecond,
+				}
+			},
+			wantRejected: true,
+		},
+		{
+			name:    "real success proceeds",
+			issueID: "ISS-T5-REAL",
+			runner: func(t *testing.T) agent.AgentRunner {
+				t.Helper()
+				return &commitBeforeSuccessRunner{
+					t: t,
+					base: &agent.MockRunner{
+						Events: []types.AgentEvent{{Type: "turn/completed"}},
+						Delay:  10 * time.Millisecond,
+					},
+				}
+			},
+			wantReleased: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := types.Issue{
+				ID:         tt.issueID,
+				Identifier: tt.issueID,
+				Title:      tt.name,
+				State:      types.Unclaimed,
+				BranchName: tt.issueID,
+			}
+			mt := newObservingTracker([]types.Issue{issue})
+			mw := newGitWorkspaceManager(t, t.TempDir())
+			cfg := testConfig()
+			cfg.MaxRetryBackoffMsRaw = 5_000
+			orch := NewOrchestrator(mt, mw, tt.runner(t), &staticConfig{cfg: cfg}, nil)
+			events := newEventCollector(orch.Events())
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			done := startOrchestrator(ctx, orch)
+
+			if tt.wantRejected {
+				// Wait for the AgentFinished event (phase=Succeeded) to arrive,
+				// confirming the run completed and the verifier ran.
+				require.Eventually(t, func() bool {
+					ev, ok := events.Event(EventAgentFinished, issue.ID)
+					if !ok {
+						return false
+					}
+					finished, ok := ev.Data.(AgentFinished)
+					return ok && finished.Phase == types.Succeeded
+				}, 2*time.Second, 10*time.Millisecond,
+					"AgentFinished(Succeeded) must arrive for hollow run")
+
+				// Released transition must never have happened.
+				assert.Zero(t, mt.UpdateIssueStateCount(issue.ID, types.Released),
+					"hollow success must not release to Done")
+				// No BackoffEnqueued either — pause path does not schedule retry.
+				assert.Zero(t, events.BackoffCauseCount(issue.ID, rejectionCause),
+					"hollow success must not enqueue backoff (it is paused instead)")
+			}
+
+			if tt.wantReleased {
+				require.Eventually(t, func() bool {
+					return mt.UpdateIssueStateCount(issue.ID, types.Released) >= 1
+				}, 2*time.Second, 10*time.Millisecond,
+					"real success must release to Done")
+
+				// No rejection backoff for a real success.
+				assert.Zero(t, events.BackoffCauseCount(issue.ID, rejectionCause),
+					"real success must not carry rejection cause")
+			}
+
+			cancel()
+			require.NoError(t, <-done)
 		})
 	}
 }

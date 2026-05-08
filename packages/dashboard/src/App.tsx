@@ -1,135 +1,84 @@
-import './App.css'
-import { useEffect, useState } from 'react'
-import { Header } from './components/Header'
-import { MetricCards } from './components/MetricCards'
-import { RateLimits } from './components/RateLimits'
-import { RetryQueue } from './components/RetryQueue'
-import { SessionsTable } from './components/SessionsTable'
-import { TeamTable } from './components/TeamTable'
-import { WorkerTable } from './components/WorkerTable'
-import { BoardView } from './components/BoardView'
-import { AgentLogs } from './components/AgentLogs'
-import { useSSE } from './hooks/useSSE'
+import { useEffect, useMemo, useState } from "react";
+import { AppLayout } from "./components/AppLayout";
+import { TooltipProvider } from "./components/ui/tooltip";
+import { useSSE } from "./hooks/useSSE";
+import { formatDuration } from "./i18n/format";
+import { zhCN } from "./i18n/messages";
 
 function computeRuntimeSeconds(startTime: string | undefined): number {
   if (!startTime) {
-    return 0
+    return 0;
   }
 
-  const start = Date.parse(startTime)
+  const start = Date.parse(startTime);
   // Guard against Go zero time ("0001-01-01T00:00:00Z") and other pre-epoch dates
   if (Number.isNaN(start) || start <= 0) {
-    return 0
+    return 0;
   }
 
-  return Math.max(0, Math.floor((Date.now() - start) / 1000))
+  return Math.max(0, Math.floor((Date.now() - start) / 1000));
 }
 
 function App() {
-  const { state, connected, error, teamSnapshot, boardIssues, agentLogs } = useSSE()
-  const [runtimeSeconds, setRuntimeSeconds] = useState(0)
-  const startTime = state?.stats.StartTime
+  const { state, connected, error, queueEvents } = useSSE();
+  const [runtimeSeconds, setRuntimeSeconds] = useState(0);
+  const startTime = state?.stats.StartTime;
 
   useEffect(() => {
     if (!startTime) {
-      setRuntimeSeconds(0)
-      return
+      setRuntimeSeconds(0);
+      return;
     }
 
-    setRuntimeSeconds(computeRuntimeSeconds(startTime))
+    setRuntimeSeconds(computeRuntimeSeconds(startTime));
 
     const timer = window.setInterval(() => {
-      setRuntimeSeconds(computeRuntimeSeconds(startTime))
-    }, 1000)
+      setRuntimeSeconds(computeRuntimeSeconds(startTime));
+    }, 1000);
 
-    return () => window.clearInterval(timer)
-  }, [startTime])
+    return () => window.clearInterval(timer);
+  }, [startTime]);
+
+  const runtimeLabel = useMemo(
+    () => formatDuration(runtimeSeconds),
+    [runtimeSeconds],
+  );
 
   if (!state) {
     return (
-      <div className="dashboard">
-        <Header connected={connected} runtimeSeconds={runtimeSeconds} />
-        <div className="dashboard__skeleton">
-          <div className="dashboard__skeleton-metrics">
-            <div className="skeleton-block skeleton-block--card" />
-            <div className="skeleton-block skeleton-block--card" />
-            <div className="skeleton-block skeleton-block--card" />
-          </div>
-          <div className="dashboard__skeleton-grid">
-            <div className="dashboard__skeleton-primary">
-              <div className="skeleton-block skeleton-block--table" />
-              <div className="skeleton-block skeleton-block--table" />
-            </div>
-            <div className="dashboard__skeleton-sidebar">
-              <div className="skeleton-block skeleton-block--small" />
-              <div className="skeleton-block skeleton-block--small" />
-            </div>
-          </div>
+      <div className="flex min-h-dvh items-center justify-center bg-background px-6 text-muted-foreground">
+        <div className="rounded-2xl border border-border/70 bg-card/80 px-6 py-5 text-center shadow-lg">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-primary">
+            Contrabass
+          </p>
+          <p className="mt-2 text-sm">{zhCN.app.sections.runningSessions}…</p>
         </div>
       </div>
-    )
+    );
   }
 
   return (
-    <div className="dashboard">
-      <Header connected={connected} runtimeSeconds={runtimeSeconds} />
-
-      {error ? (
-        <div className="dashboard__notice dashboard__notice--error" role="alert">
-          <p className="dashboard__notice-title">Connection error</p>
-          <p className="dashboard__notice-message">{error}</p>
+    <TooltipProvider>
+      <div className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
+        {error ? (
+          <div
+            className="border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs font-medium text-destructive"
+            role="alert"
+          >
+            {zhCN.app.connectionError}: {error}
+          </div>
+        ) : null}
+        <div className="flex-1 overflow-hidden">
+          <AppLayout
+            state={state}
+            connected={connected}
+            runtimeLabel={runtimeLabel}
+            queueEvents={queueEvents}
+          />
         </div>
-      ) : null}
-
-      <MetricCards stats={state.stats} backoffCount={(state.backoff ?? []).length} />
-
-      <div className="dashboard__grid">
-        <div className="dashboard__primary">
-          <section className="dashboard__section">
-            <h2 className="dashboard__section-label">Running Sessions</h2>
-            <SessionsTable entries={state.running ?? []} />
-          </section>
-
-          <section className="dashboard__section">
-            <h2 className="dashboard__section-label">Board</h2>
-            <BoardView issues={boardIssues} />
-          </section>
-        </div>
-
-        <aside className="dashboard__sidebar">
-          <section className="dashboard__section">
-            <h2 className="dashboard__section-label">Retry Queue</h2>
-            <RetryQueue entries={state.backoff ?? []} />
-          </section>
-
-          <section className="dashboard__section">
-            <h2 className="dashboard__section-label">Rate Limits</h2>
-            <RateLimits limits={[]} />
-          </section>
-
-          {teamSnapshot ? (
-            <>
-              <hr className="dashboard__separator" />
-              <section className="dashboard__section">
-                <h2 className="dashboard__section-label">Team Status</h2>
-                <TeamTable snapshot={teamSnapshot} />
-              </section>
-
-              <section className="dashboard__section">
-                <h2 className="dashboard__section-label">Workers</h2>
-                <WorkerTable workers={teamSnapshot.workers} />
-              </section>
-            </>
-          ) : null}
-        </aside>
       </div>
-
-      <section className="dashboard__logs">
-        <h2 className="dashboard__section-label">Agent Logs</h2>
-        <AgentLogs logs={agentLogs} />
-      </section>
-    </div>
-  )
+    </TooltipProvider>
+  );
 }
 
-export default App
+export default App;

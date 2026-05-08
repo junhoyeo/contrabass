@@ -7,29 +7,18 @@ import (
 
 var modelOverridePattern = regexp.MustCompile(`<!--\s*model:\s*(\S+)\s*-->`)
 
-var validModelOverrides = map[string]struct{}{
-	"opus":                        {},
-	"sonnet":                      {},
-	"haiku":                       {},
-	"claude-opus-4-5":             {},
-	"claude-opus-4-6":             {},
-	"claude-sonnet-4-6":           {},
-	"claude-haiku-4-5":            {},
-	"anthropic/claude-opus-4-5":   {},
-	"anthropic/claude-opus-4-6":   {},
-	"anthropic/claude-sonnet-4-6": {},
-	"anthropic/claude-haiku-4-5":  {},
-}
-
-// ParseModelOverride extracts model name from <!-- model: opus --> in issue body.
-// Returns the first valid override and ignores invalid values.
+// ParseModelOverride extracts a model name from `<!-- model: <name> -->` in the
+// issue body and returns the first non-empty value found. Validation of the
+// model name (whether the configured agent runtime accepts it) is delegated to
+// the runtime — contrabass does not maintain a whitelist, so users can
+// reference new models (e.g. gpt-5.5, claude-haiku-5-1) without recompiling.
+// An empty payload (`<!-- model: -->`) and a missing override both return "".
 func ParseModelOverride(body string) string {
 	for _, match := range modelOverridePattern.FindAllStringSubmatch(body, -1) {
 		if len(match) < 2 {
 			continue
 		}
-		model := strings.TrimSpace(match[1])
-		if _, ok := validModelOverrides[model]; ok {
+		if model := strings.TrimSpace(match[1]); model != "" {
 			return model
 		}
 	}

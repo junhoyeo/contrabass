@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { BackoffEntry } from '../types'
+import { formatDuration } from '../i18n/format'
+import { zhCN } from '../i18n/messages'
 import './RetryQueue.css'
 
 interface RetryQueueProps {
@@ -9,21 +11,15 @@ interface RetryQueueProps {
 function formatRetryIn(retryAt: string, nowMs: number): { text: string; ready: boolean } {
   const retryAtMs = Date.parse(retryAt)
   if (Number.isNaN(retryAtMs)) {
-    return { text: 'Unknown', ready: false }
+    return { text: zhCN.retryQueue.unknown, ready: false }
   }
 
   const diffSeconds = Math.floor((retryAtMs - nowMs) / 1000)
   if (diffSeconds <= 0) {
-    return { text: 'Ready', ready: true }
+    return { text: zhCN.retryQueue.ready, ready: true }
   }
 
-  if (diffSeconds < 60) {
-    return { text: `${diffSeconds}s`, ready: false }
-  }
-
-  const minutes = Math.floor(diffSeconds / 60)
-  const seconds = diffSeconds % 60
-  return { text: `${minutes}m ${seconds}s`, ready: false }
+  return { text: formatDuration(diffSeconds), ready: false }
 }
 
 function truncateError(error: string, limit = 60): string {
@@ -52,21 +48,21 @@ export function RetryQueue({ entries }: RetryQueueProps) {
           <span className="retry-queue__empty-check" aria-hidden="true">
             ✓
           </span>{' '}
-          No retries pending
+          {zhCN.retryQueue.empty}
         </p>
       </section>
     )
   }
 
   return (
-    <section className="retry-queue" aria-label="Retry queue">
+    <section className="retry-queue" aria-label={zhCN.retryQueue.ariaLabel}>
       <table className="retry-queue__table">
         <thead>
           <tr>
-            <th>Issue ID</th>
-            <th>Attempt</th>
-            <th>Retry In</th>
-            <th>Error</th>
+            <th>{zhCN.retryQueue.headers.issueID}</th>
+            <th>{zhCN.retryQueue.headers.attempt}</th>
+            <th>{zhCN.retryQueue.headers.retryIn}</th>
+            <th>{zhCN.retryQueue.headers.error}</th>
           </tr>
         </thead>
         <tbody>

@@ -1,4 +1,6 @@
 import type { Stats } from '../types'
+import { formatCompactNumber } from '../i18n/format'
+import { zhCN } from '../i18n/messages'
 import { MetricCard } from './MetricCard'
 
 import './MetricCards.css'
@@ -8,37 +10,24 @@ interface MetricCardsProps {
   backoffCount: number
 }
 
-function formatCompactNumber(value: number): string {
-  if (value >= 1_000_000_000) {
-    return `${(value / 1_000_000_000).toFixed(1)}B`
-  }
-
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(1)}M`
-  }
-
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(1)}K`
-  }
-
-  return value.toString()
-}
-
 export function MetricCards({ stats, backoffCount }: MetricCardsProps) {
   const totalTokens = stats.TotalTokensIn + stats.TotalTokensOut
 
   return (
-    <section className="metric-cards" aria-label="Dashboard metrics">
+    <section className="metric-cards" aria-label={zhCN.metrics.ariaLabel}>
       <MetricCard
-        title="Running"
+        title={zhCN.metrics.running}
         value={`${stats.Running}/${stats.MaxAgents}`}
-        subtitle="Active agents"
+        subtitle={zhCN.metrics.activeAgents}
       />
-      <MetricCard title="Retrying" value={backoffCount} subtitle="Backoff queue" />
+      <MetricCard title={zhCN.metrics.retrying} value={backoffCount} subtitle={zhCN.metrics.backoffQueue} />
       <MetricCard
-        title="Total Tokens"
+        title={zhCN.metrics.totalTokens}
         value={formatCompactNumber(totalTokens)}
-        subtitle={`${formatCompactNumber(stats.TotalTokensIn)} in / ${formatCompactNumber(stats.TotalTokensOut)} out`}
+        subtitle={zhCN.metrics.tokensInOut(
+          formatCompactNumber(stats.TotalTokensIn),
+          formatCompactNumber(stats.TotalTokensOut),
+        )}
       />
     </section>
   )

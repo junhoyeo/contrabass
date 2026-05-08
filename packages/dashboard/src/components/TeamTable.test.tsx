@@ -41,7 +41,7 @@ function makeSnapshot(phase: string): TeamSnapshot {
 describe('TeamTable', () => {
   it('renders empty state for null snapshot', () => {
     render(<TeamTable snapshot={null} />)
-    expectInDocument(screen.getByText('No team running'))
+    expectInDocument(screen.getByText('暂无运行团队'))
   })
 
   it('renders snapshot with no workers and no tasks', () => {
@@ -96,25 +96,25 @@ describe('TeamTable', () => {
 
     render(<TeamTable snapshot={snapshot} />)
 
-    expectInDocument(screen.getByText('Exec'))
+    expectInDocument(screen.getByText('执行'))
     expectInDocument(screen.getByText('1/2'))
     expectInDocument(screen.getByText('1/2/1'))
   })
 
   it('applies phase badge classes for phase color variants', () => {
     const { rerender } = render(<TeamTable snapshot={makeSnapshot('team-plan')} />)
-    expectHasClass(screen.getByText('Plan'), 'team-table__phase-badge--plan')
+    expectHasClass(screen.getByText('规划'), 'team-table__phase-badge--plan')
 
     rerender(<TeamTable snapshot={makeSnapshot('team-exec')} />)
-    expectHasClass(screen.getByText('Exec'), 'team-table__phase-badge--exec')
+    expectHasClass(screen.getByText('执行'), 'team-table__phase-badge--exec')
 
     rerender(<TeamTable snapshot={makeSnapshot('team-verify')} />)
-    expectHasClass(screen.getByText('Verify'), 'team-table__phase-badge--verify')
+    expectHasClass(screen.getByText('验证'), 'team-table__phase-badge--verify')
 
     rerender(<TeamTable snapshot={makeSnapshot('team-fix')} />)
-    expectHasClass(screen.getByText('Fix'), 'team-table__phase-badge--fix')
+    expectHasClass(screen.getByText('修复'), 'team-table__phase-badge--fix')
 
     rerender(<TeamTable snapshot={makeSnapshot('failed')} />)
-    expectHasClass(screen.getByText('Failed'), 'team-table__phase-badge--failed')
+    expectHasClass(screen.getByText('失败'), 'team-table__phase-badge--failed')
   })
 })

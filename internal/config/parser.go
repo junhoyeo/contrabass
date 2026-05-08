@@ -55,12 +55,22 @@ func ParseWorkflow(path string) (*WorkflowConfig, error) {
 	}
 
 	resolveEnvReferences(config)
+	if err := validateLinearConfig(config); err != nil {
+		return nil, err
+	}
 
 	if !terminated {
 		return config, fmt.Errorf("%w: %s", ErrUnterminatedFrontMatter, path)
 	}
 
 	return config, nil
+}
+
+func validateLinearConfig(cfg *WorkflowConfig) error {
+	if cfg == nil || !cfg.LinearSyncCommentsEnabled() {
+		return nil
+	}
+	return cfg.ValidateLinearSyncCommentsMode()
 }
 
 func splitFrontMatter(content string) (frontMatter string, prompt string, hasFrontMatter bool, terminated bool) {

@@ -1,4 +1,6 @@
 import './RateLimits.css'
+import { formatTime } from '../i18n/format'
+import { zhCN } from '../i18n/messages'
 
 interface RateLimit {
   name: string
@@ -11,41 +13,32 @@ interface RateLimitsProps {
 }
 
 function formatResetTime(resetAt: string): string {
-  const date = new Date(resetAt)
-  if (Number.isNaN(date.getTime())) {
-    return 'Unknown'
-  }
-
-  return date.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+  return formatTime(resetAt)
 }
 
 export function RateLimits({ limits }: RateLimitsProps) {
   if (limits.length === 0) {
     return (
       <section className="rate-limits rate-limits--empty" aria-live="polite">
-        <p className="rate-limits__empty-text">No rate limits active</p>
+        <p className="rate-limits__empty-text">{zhCN.rateLimits.empty}</p>
       </section>
     )
   }
 
   return (
-    <section className="rate-limits" aria-label="Rate limits">
+    <section className="rate-limits" aria-label={zhCN.rateLimits.ariaLabel}>
       {limits.map((limit) => (
         <dl className="rate-limits__item" key={limit.name}>
           <div className="rate-limits__row">
-            <dt>Limit</dt>
+            <dt>{zhCN.rateLimits.labels.limit}</dt>
             <dd>{limit.name}</dd>
           </div>
           <div className="rate-limits__row">
-            <dt>Remaining</dt>
+            <dt>{zhCN.rateLimits.labels.remaining}</dt>
             <dd className="rate-limits__mono">{limit.remaining}</dd>
           </div>
           <div className="rate-limits__row">
-            <dt>Reset</dt>
+            <dt>{zhCN.rateLimits.labels.reset}</dt>
             <dd className="rate-limits__mono">{formatResetTime(limit.resetAt)}</dd>
           </div>
         </dl>

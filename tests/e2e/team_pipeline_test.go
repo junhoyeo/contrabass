@@ -3,9 +3,9 @@ package e2e
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -238,20 +238,35 @@ func TestTeamPipelineAgentFailure(t *testing.T) {
 func newTeamTestWorkspaceManager(t *testing.T, baseDir string, teamName string, maxWorkers int) *workspace.Manager {
 	t.Helper()
 
-	ids := []string{
-		fmt.Sprintf("team-%s-coordinator", teamName),
-		fmt.Sprintf("team-%s-verifier", teamName),
-	}
-
-	for i := range maxWorkers {
-		ids = append(ids, fmt.Sprintf("team-%s-worker-%d", teamName, i))
-	}
-
-	for _, id := range ids {
-		require.NoError(t, os.MkdirAll(filepath.Join(baseDir, "workspaces", id), 0o755))
-	}
+	// workspace.Manager.Create now provisions real git worktrees, so baseDir
+	// must be a git repository with at least one commit.
+	initE2EGitRepo(t, baseDir)
 
 	return workspace.NewManager(baseDir)
+}
+
+func initE2EGitRepo(t *testing.T, dir string) {
+	t.Helper()
+
+	runE2EGit(t, dir, "init")
+	runE2EGit(t, dir, "config", "user.email", "test@example.com")
+	runE2EGit(t, dir, "config", "user.name", "test")
+
+	readme := filepath.Join(dir, "README.md")
+	require.NoError(t, os.WriteFile(readme, []byte("# e2e\n"), 0o644))
+
+	runE2EGit(t, dir, "add", "README.md")
+	runE2EGit(t, dir, "commit", "-m", "initial commit")
+}
+
+func runE2EGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	output, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v failed: %s", args, string(output))
 }
 
 func countTaskEvent(events []types.TeamEvent, eventType string, taskID string) int {

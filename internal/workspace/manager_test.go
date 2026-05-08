@@ -413,6 +413,71 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+func TestManager_CreateRegistersWorktree(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+	ctx := context.Background()
+
+	issue := types.Issue{ID: "ISSUE-WT", BranchName: "symphony/issue-wt"}
+	path, err := mgr.Create(ctx, issue)
+	require.NoError(t, err)
+
+	// `git worktree list --porcelain` SHALL contain the new path.
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repoDir
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git worktree list: %s", out)
+
+	wantPath := resolvedAbs(path)
+	var found bool
+	for _, line := range strings.Split(string(out), "\n") {
+		rest, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		if resolvedAbs(strings.TrimSpace(rest)) == wantPath {
+			found = true
+			break
+		}
+	}
+	assert.Truef(t, found, "expected worktree %q in:\n%s", path, out)
+
+	// .git is a worktree pointer file, not a directory.
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	require.NoError(t, err, ".git pointer file should exist")
+	assert.False(t, info.IsDir(),
+		".git in a worktree must be a pointer file, not a directory")
+}
+
+func TestManager_CreateTearsDownStaleDir(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+	ctx := context.Background()
+
+	issueID := "ISSUE-STALE-DIR"
+	workspacePath := filepath.Join(repoDir, "workspaces", issueID)
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	stalePath := filepath.Join(workspacePath, "leftover.txt")
+	require.NoError(t, os.WriteFile(stalePath, []byte("orphan"), 0o644))
+
+	issue := types.Issue{ID: issueID, BranchName: "symphony/issue-stale-dir"}
+	path, err := mgr.Create(ctx, issue)
+	require.NoError(t, err)
+	assert.Equal(t, workspacePath, path)
+
+	_, err = os.Stat(stalePath)
+	assert.Truef(t, errors.Is(err, os.ErrNotExist),
+		"stale plain-dir contents must be torn down before recreate; stat err=%v", err)
+
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	require.NoError(t, err, "post-recreate worktree must have a .git pointer file")
+	assert.False(t, info.IsDir())
+}
+
 // writeFakeGit writes a shell script and ensures the fd is fully synced/closed
 // before returning, preventing "text file busy" (ETXTBSY) on Linux when the
 // script is executed immediately after creation.

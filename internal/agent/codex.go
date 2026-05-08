@@ -24,30 +24,73 @@ const (
 	threadStartRequestID = 2
 	turnStartRequestID   = 3
 	maxJSONLineSize      = 10 * 1024 * 1024 // 10MB
+	maxStreamLineSize    = 32 * 1024 * 1024 // 32 MB
 )
 
 var (
 	errCodexAlreadyStopped = errors.New("codex process already stopped")
 	errCodexStopFailed     = errors.New("codex process stop failed")
+	errCodexOverloaded     = errors.New("codex app-server overloaded (-32001)")
+	errCodexReadTimeout    = errors.New("codex read timeout")
+	errCodexStreamStalled  = errors.New("codex stream read timeout")
 )
 
+var terminalCodexEventTypes = map[string]struct{}{
+	"turn/completed": {},
+	"turn/failed":    {},
+	"turn/cancelled": {},
+}
+
 type CodexRunner struct {
-	binaryPath string
-	timeout    time.Duration
-	logger     *log.Logger
+	binaryPath         string
+	handshakeTimeout   time.Duration
+	streamReadTimeout  time.Duration
+	timeout            time.Duration
+	logger             *log.Logger
+	options            CodexRunnerOptions
+	overloadRetries    int
+	overloadRetryCap   time.Duration
+	overloadStartDelay time.Duration
 
 	mu    sync.Mutex
 	procs map[int]*codexProcess
 }
 
+// CodexRunnerOptions captures workflow-driven settings that contrabass forwards
+// to `codex app-server` as `-c key=value` overrides. Empty strings are skipped
+// so codex falls back to whatever is in `~/.codex/config.toml`. The keys are
+// codex TOML config paths — values are passed through unchanged, so callers
+// must use values codex accepts (e.g. `model="gpt-5-codex"`,
+// `approval_policy="never"`, `sandbox_mode="workspace-write"`).
+type CodexRunnerOptions struct {
+	Model          string
+	ApprovalPolicy string
+	Sandbox        interface{}
+}
+
 type codexProcess struct {
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
+	streamCtx  context.Context
 	done       chan error
 	stderr     *safeBuffer
 	stderrDone chan struct{}
 
-	doneOnce sync.Once
+	doneOnce       sync.Once
+	stdinCloseOnce sync.Once
+}
+
+// closeStdin closes the codex subprocess's stdin pipe at most once.
+// Codex exec mode requires EOF on stdin to exit cleanly after a
+// terminal turn event (turn/completed, turn/failed, turn/cancelled);
+// without it the subprocess sits idle waiting for the next prompt and
+// contrabass's stall detector synthesizes a spurious failure.
+func (p *codexProcess) closeStdin() {
+	p.stdinCloseOnce.Do(func() {
+		if p.stdin != nil {
+			_ = p.stdin.Close()
+		}
+	})
 }
 
 type safeBuffer struct {
@@ -80,11 +123,74 @@ func NewCodexRunner(binaryPath string, timeout time.Duration) *CodexRunner {
 	}
 
 	return &CodexRunner{
-		binaryPath: binaryPath,
-		timeout:    timeout,
-		logger:     log.NewWithOptions(io.Discard, log.Options{}),
-		procs:      make(map[int]*codexProcess),
+		binaryPath:         binaryPath,
+		handshakeTimeout:   timeout,
+		timeout:            timeout,
+		logger:             log.NewWithOptions(io.Discard, log.Options{}),
+		overloadRetries:    5,
+		overloadRetryCap:   4 * time.Second,
+		overloadStartDelay: 100 * time.Millisecond,
+		procs:              make(map[int]*codexProcess),
 	}
+}
+
+func (r *CodexRunner) WithStreamReadTimeout(d time.Duration) *CodexRunner {
+	r.streamReadTimeout = d
+	return r
+}
+
+// ConfigureCodex attaches workflow-driven codex config that the runner will
+// forward as `-c key=value` overrides each time it spawns the agent process.
+// Returns the receiver to allow chaining. Empty fields are skipped.
+func (r *CodexRunner) ConfigureCodex(opts CodexRunnerOptions) *CodexRunner {
+	r.options = opts
+	return r
+}
+
+// buildConfigOverrideArgs renders CodexRunnerOptions into a flat `-c key=value`
+// argument list. TOML strings are double-quoted as expected by `codex -c`.
+func (r *CodexRunner) buildConfigOverrideArgs() []string {
+	var args []string
+	add := func(key, value string) {
+		v := strings.TrimSpace(value)
+		if v == "" {
+			return
+		}
+		args = append(args, "-c", fmt.Sprintf("%s=%q", key, v))
+	}
+	add("model", r.options.Model)
+	add("approval_policy", r.options.ApprovalPolicy)
+	if sandbox, ok := r.options.Sandbox.(string); ok {
+		add("sandbox_mode", sandbox)
+	}
+	return args
+}
+
+// policyParams returns the approvalPolicy and sandboxPolicy values that
+// thread/start and turn/start must carry. Workflow override wins; otherwise
+// hardcoded defaults are returned.
+func (r *CodexRunner) policyParams() (approval string, sandbox interface{}) {
+	approval = strings.TrimSpace(r.options.ApprovalPolicy)
+	if approval == "" {
+		approval = "never"
+	}
+
+	sandbox = map[string]interface{}{
+		"type":          "workspaceWrite",
+		"networkAccess": false,
+	}
+	switch value := r.options.Sandbox.(type) {
+	case string:
+		if strings.TrimSpace(value) != "" {
+			sandbox = value
+		}
+	case map[string]interface{}:
+		if value != nil {
+			sandbox = value
+		}
+	}
+
+	return approval, sandbox
 }
 
 func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace string, prompt string) (*AgentProcess, error) {
@@ -92,6 +198,7 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 	if len(argv) == 0 {
 		return nil, errors.New("codex binary path is empty")
 	}
+	argv = append(argv, r.buildConfigOverrideArgs()...)
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = workspace
@@ -125,6 +232,7 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 	process := &codexProcess{
 		cmd:        cmd,
 		stdin:      stdin,
+		streamCtx:  ctx,
 		done:       make(chan error, 1),
 		stderr:     stderrBuf,
 		stderrDone: stderrDone,
@@ -136,8 +244,9 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 
 	writer := bufio.NewWriter(stdin)
 	reader := bufio.NewReader(stdout)
+	approvalPolicy, sandboxPolicy := r.policyParams()
 
-	if err := r.sendMessage(writer, map[string]interface{}{
+	initializeMsg := map[string]interface{}{
 		"id":     initializeRequestID,
 		"method": "initialize",
 		"params": map[string]interface{}{
@@ -148,12 +257,8 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 			},
 			"capabilities": map[string]interface{}{"experimentalApi": true},
 		},
-	}); err != nil {
-		r.cleanupOnStartFailure(process)
-		return nil, err
 	}
-
-	if _, err := r.awaitResponse(reader, initializeRequestID); err != nil {
+	if _, err := r.handshakeStep(reader, writer, initializeMsg, initializeRequestID); err != nil {
 		r.cleanupOnStartFailure(process)
 		return nil, r.withStderr(err, stderrBuf)
 	}
@@ -166,18 +271,16 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		return nil, err
 	}
 
-	if err := r.sendMessage(writer, map[string]interface{}{
+	threadStartMsg := map[string]interface{}{
 		"id":     threadStartRequestID,
 		"method": "thread/start",
 		"params": map[string]interface{}{
-			"cwd": workspace,
+			"cwd":            workspace,
+			"approvalPolicy": approvalPolicy,
+			"sandboxPolicy":  sandboxPolicy,
 		},
-	}); err != nil {
-		r.cleanupOnStartFailure(process)
-		return nil, err
 	}
-
-	threadResult, err := r.awaitResponse(reader, threadStartRequestID)
+	threadResult, err := r.handshakeStep(reader, writer, threadStartMsg, threadStartRequestID)
 	if err != nil {
 		r.cleanupOnStartFailure(process)
 		return nil, r.withStderr(err, stderrBuf)
@@ -188,24 +291,22 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		threadID = "unknown-thread"
 	}
 
-	if err := r.sendMessage(writer, map[string]interface{}{
+	turnStartMsg := map[string]interface{}{
 		"id":     turnStartRequestID,
 		"method": "turn/start",
 		"params": map[string]interface{}{
-			"threadId": threadID,
-			"cwd":      workspace,
-			"title":    fmt.Sprintf("%s: %s", issue.ID, issue.Title),
+			"threadId":       threadID,
+			"cwd":            workspace,
+			"approvalPolicy": approvalPolicy,
+			"sandboxPolicy":  sandboxPolicy,
+			"title":          fmt.Sprintf("%s: %s", issue.ID, issue.Title),
 			"input": []map[string]interface{}{{
 				"type": "text",
 				"text": prompt,
 			}},
 		},
-	}); err != nil {
-		r.cleanupOnStartFailure(process)
-		return nil, err
 	}
-
-	turnResult, err := r.awaitResponse(reader, turnStartRequestID)
+	turnResult, err := r.handshakeStep(reader, writer, turnStartMsg, turnStartRequestID)
 	if err != nil {
 		r.cleanupOnStartFailure(process)
 		return nil, r.withStderr(err, stderrBuf)
@@ -217,7 +318,7 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		sessionID = threadID + "-" + turnID
 	}
 
-	events := make(chan types.AgentEvent, 128)
+	events := make(chan types.AgentEvent, 512)
 
 	go r.streamEventsAndWait(process, reader, events)
 
@@ -242,9 +343,7 @@ func (r *CodexRunner) Stop(proc *AgentProcess) error {
 		return fmt.Errorf("%w: pid %d", errCodexAlreadyStopped, proc.PID)
 	}
 
-	if state.stdin != nil {
-		_ = state.stdin.Close()
-	}
+	state.closeStdin()
 
 	if state.cmd.Process == nil {
 		return fmt.Errorf("%w: pid %d", errCodexAlreadyStopped, proc.PID)
@@ -260,7 +359,7 @@ func (r *CodexRunner) Stop(proc *AgentProcess) error {
 			r.logger.Warn("codex process exited with error during stop", "pid", proc.PID, "err", doneErr)
 		}
 		return nil
-	case <-time.After(r.timeout):
+	case <-time.After(r.handshakeTimeout):
 		if state.cmd.Process == nil {
 			return fmt.Errorf("%w: pid %d", errCodexAlreadyStopped, proc.PID)
 		}
@@ -276,7 +375,7 @@ func (r *CodexRunner) Stop(proc *AgentProcess) error {
 				r.logger.Warn("codex process exited with error after kill", "pid", proc.PID, "err", doneErr)
 			}
 			return nil
-		case <-time.After(r.timeout):
+		case <-time.After(r.handshakeTimeout):
 			return fmt.Errorf("%w: timeout after kill", errCodexStopFailed)
 		}
 	}
@@ -288,12 +387,49 @@ func (r *CodexRunner) Close() error { return nil }
 
 func (r *CodexRunner) streamEventsAndWait(process *codexProcess, reader *bufio.Reader, events chan types.AgentEvent) {
 	defer close(events)
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxJSONLineSize)
+	var readErr error
 
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
+	for {
+		line, err := r.readStreamLine(reader)
 		if len(line) == 0 {
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					readErr = err
+				}
+				break
+			}
+			continue
+		}
+
+		line = bytes.TrimSuffix(line, []byte{'\n'})
+		if len(line) > maxStreamLineSize {
+			preview := line
+			if len(preview) > 256 {
+				preview = preview[:256]
+			}
+			r.logger.Warn(
+				"codex stream line exceeded maximum size",
+				"event", "maxStreamLineSize_exceeded",
+				"line_bytes", len(line),
+				"max_bytes", maxStreamLineSize,
+				"preview", string(preview),
+			)
+			if err != nil && !errors.Is(err, io.EOF) {
+				readErr = err
+				break
+			}
+			continue
+		}
+
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			if err != nil && !errors.Is(err, io.EOF) {
+				readErr = err
+				break
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			continue
 		}
 		msg := map[string]interface{}{}
@@ -311,14 +447,17 @@ func (r *CodexRunner) streamEventsAndWait(process *codexProcess, reader *bufio.R
 				},
 				Timestamp: time.Now(),
 			}
-			select {
-			case events <- event:
-			default:
-			}
+			r.sendStreamEvent(process.streamCtx, events, event)
 			continue
 		}
 		method, _ := msg["method"].(string)
 		if method == "" {
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					readErr = err
+				}
+				break
+			}
 			continue
 		}
 		data := map[string]interface{}{}
@@ -331,16 +470,32 @@ func (r *CodexRunner) streamEventsAndWait(process *codexProcess, reader *bufio.R
 			Data:      data,
 			Timestamp: time.Now(),
 		}
-		select {
-		case events <- event:
-		default:
+		r.sendStreamEvent(process.streamCtx, events, event)
+
+		// codex exec idles on stdin after a terminal turn event. Closing
+		// stdin signals end-of-input so codex finishes its bookkeeping
+		// (notify-hook, exit) instead of letting contrabass's
+		// stall_timeout synthesize a spurious failure. The Once guard
+		// makes this safe even if the stream emits multiple terminal
+		// events back-to-back.
+		if _, terminal := terminalCodexEventTypes[event.Type]; terminal {
+			process.closeStdin()
+		}
+
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
+			break
 		}
 	}
 
-	readErr := scanner.Err()
+	if isStreamReadTimeout(readErr) && process.cmd.Process != nil {
+		_ = process.cmd.Process.Kill()
+	}
 	waitErr := process.cmd.Wait()
 	<-process.stderrDone
-	if waitErr != nil {
+	if waitErr != nil && !isStreamReadTimeout(readErr) {
 		process.finish(r.withStderr(waitErr, process.stderr))
 	} else if readErr != nil {
 		process.finish(readErr)
@@ -352,10 +507,27 @@ func (r *CodexRunner) streamEventsAndWait(process *codexProcess, reader *bufio.R
 	r.mu.Unlock()
 }
 
-func (r *CodexRunner) cleanupOnStartFailure(process *codexProcess) {
-	if process.stdin != nil {
-		_ = process.stdin.Close()
+func (r *CodexRunner) sendStreamEvent(streamCtx context.Context, events chan types.AgentEvent, event types.AgentEvent) {
+	if streamCtx == nil {
+		streamCtx = context.Background()
 	}
+	if _, terminal := terminalCodexEventTypes[event.Type]; terminal {
+		select {
+		case events <- event:
+		case <-streamCtx.Done():
+			r.logger.Debug("codex stream context cancelled before terminal event delivery", "event", event.Type, "err", streamCtx.Err())
+		}
+		return
+	}
+
+	select {
+	case events <- event:
+	default:
+	}
+}
+
+func (r *CodexRunner) cleanupOnStartFailure(process *codexProcess) {
+	process.closeStdin()
 	if process.cmd.Process != nil {
 		_ = process.cmd.Process.Kill()
 	}
@@ -370,15 +542,18 @@ func (r *CodexRunner) cleanupOnStartFailure(process *codexProcess) {
 }
 
 func (r *CodexRunner) awaitResponse(reader *bufio.Reader, requestID int) (map[string]interface{}, error) {
-	deadline := time.Now().Add(r.timeout)
+	deadline := time.Now().Add(r.handshakeTimeout)
 
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return nil, fmt.Errorf("handshake timeout waiting for response id=%d after %s", requestID, r.timeout)
+			return nil, fmt.Errorf("handshake timeout waiting for response id=%d after %s", requestID, r.handshakeTimeout)
 		}
 
 		line, err := r.readLineWithTimeout(reader, remaining)
+		if errors.Is(err, errCodexReadTimeout) {
+			return nil, fmt.Errorf("handshake timeout waiting for read after %s", remaining)
+		}
 		if err != nil && !errors.Is(err, io.EOF) {
 			return nil, err
 		}
@@ -403,6 +578,9 @@ func (r *CodexRunner) awaitResponse(reader *bufio.Reader, requestID int) (map[st
 		}
 
 		if rpcErr, ok := msg["error"]; ok {
+			if isCodexOverloadRPCError(rpcErr) {
+				return nil, errCodexOverloaded
+			}
 			return nil, fmt.Errorf("rpc error for id %d: %v", requestID, rpcErr)
 		}
 
@@ -412,6 +590,64 @@ func (r *CodexRunner) awaitResponse(reader *bufio.Reader, requestID int) (map[st
 
 		return map[string]interface{}{}, nil
 	}
+}
+
+func (r *CodexRunner) handshakeStep(reader *bufio.Reader, writer *bufio.Writer, msg map[string]interface{}, requestID int) (map[string]interface{}, error) {
+	var lastErr error
+	for attempt := 0; attempt <= r.overloadRetries; attempt++ {
+		if err := r.sendMessage(writer, msg); err != nil {
+			return nil, err
+		}
+		result, err := r.awaitResponse(reader, requestID)
+		if !isOverloadError(err) {
+			return result, err
+		}
+		lastErr = err
+		if attempt == r.overloadRetries {
+			break
+		}
+
+		delay := r.overloadRetryDelay(attempt)
+		r.logger.Warn("codex app-server overloaded; retrying handshake", "id", requestID, "attempt", attempt+1, "delay", delay)
+		time.Sleep(delay)
+	}
+	return nil, fmt.Errorf("codex handshake id=%d overload retries exhausted: %w", requestID, lastErr)
+}
+
+func (r *CodexRunner) overloadRetryDelay(attempt int) time.Duration {
+	if r.overloadStartDelay <= 0 {
+		return 0
+	}
+	if r.overloadRetryCap <= 0 {
+		return r.overloadStartDelay
+	}
+	if attempt >= 4 {
+		return r.overloadRetryCap
+	}
+	delay := r.overloadStartDelay
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+	}
+	if delay > r.overloadRetryCap {
+		return r.overloadRetryCap
+	}
+	return delay
+}
+
+func isCodexOverloadRPCError(rpcErr interface{}) bool {
+	errMap, ok := rpcErr.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	code, ok := errMap["code"]
+	if !ok {
+		return false
+	}
+	return rpcIDEquals(code, -32001)
+}
+
+func isOverloadError(err error) bool {
+	return errors.Is(err, errCodexOverloaded)
 }
 
 func (r *CodexRunner) readLineWithTimeout(reader *bufio.Reader, timeout time.Duration) ([]byte, error) {
@@ -434,8 +670,23 @@ func (r *CodexRunner) readLineWithTimeout(reader *bufio.Reader, timeout time.Dur
 	case result := <-resultCh:
 		return result.line, result.err
 	case <-timer.C:
-		return nil, fmt.Errorf("handshake timeout waiting for read after %s", timeout)
+		return nil, fmt.Errorf("%w after %s", errCodexReadTimeout, timeout)
 	}
+}
+
+func (r *CodexRunner) readStreamLine(reader *bufio.Reader) ([]byte, error) {
+	if r.streamReadTimeout <= 0 {
+		return reader.ReadBytes('\n')
+	}
+	line, err := r.readLineWithTimeout(reader, r.streamReadTimeout)
+	if errors.Is(err, errCodexReadTimeout) {
+		return line, fmt.Errorf("%w after %s", errCodexStreamStalled, r.streamReadTimeout)
+	}
+	return line, err
+}
+
+func isStreamReadTimeout(err error) bool {
+	return errors.Is(err, errCodexStreamStalled)
 }
 
 func (r *CodexRunner) sendMessage(writer *bufio.Writer, msg map[string]interface{}) error {

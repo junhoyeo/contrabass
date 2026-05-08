@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,7 @@ func TestOMXRunner_StartStopLifecycle(t *testing.T) {
 			TeamSpec:   "1:executor",
 		},
 	}
-	runner := NewOMXRunner(cfg, time.Second)
+	runner := NewOMXRunner(cfg, 5*time.Second)
 
 	issue := types.Issue{ID: "CB-101", Title: "Add OMX runner"}
 	proc, err := runner.Start(context.Background(), issue, workspace, "Implement the feature")
@@ -74,7 +75,11 @@ func TestOMXRunner_StartStopLifecycle(t *testing.T) {
 	assert.Contains(t, logged, "team shutdown "+proc.SessionID+" --force")
 }
 
-func TestOMXRunner_RalphShutdown(t *testing.T) {
+// TestOMXRunner_RalphFlagIsDeprecatedNoOp pins down that omx v0.16+ no longer
+// accepts the inline `omx team ralph ...` form, so OMXConfig.Ralph=true must
+// be ignored when launching/shutting down a team. Ralph cycles must be invoked
+// separately via `omx ralph ...`.
+func TestOMXRunner_RalphFlagIsDeprecatedNoOp(t *testing.T) {
 	workspace := t.TempDir()
 	logPath := filepath.Join(workspace, "omx-ralph.log")
 	server := newFakeTeamCLIServer(t, logPath)
@@ -87,16 +92,19 @@ func TestOMXRunner_RalphShutdown(t *testing.T) {
 			Ralph:      true,
 		},
 	}
-	runner := NewOMXRunner(cfg, time.Second)
+	runner := NewOMXRunner(cfg, 5*time.Second)
 
-	proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-102", Title: "Ralph mode"}, workspace, "Handle shutdown")
+	proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-102", Title: "ralph deprecated"}, workspace, "Handle shutdown")
 	require.NoError(t, err)
 	require.NoError(t, runner.Stop(proc))
 
 	logData, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(logData), "team ralph 1:executor")
-	assert.Contains(t, string(logData), "team shutdown "+proc.SessionID+" --force --ralph")
+	logged := string(logData)
+	assert.NotContains(t, logged, "team ralph 1:executor", "ralph subcommand must not be threaded into team launch")
+	assert.NotContains(t, logged, "--ralph", "ralph flag must not be threaded into shutdown")
+	assert.Contains(t, logged, "team 1:executor")
+	assert.Contains(t, logged, "team shutdown "+proc.SessionID+" --force")
 }
 
 func TestOMXRunner_FailedTask(t *testing.T) {
@@ -107,7 +115,7 @@ func TestOMXRunner_FailedTask(t *testing.T) {
 	defer server.Close()
 
 	cfg := &config.WorkflowConfig{OMX: config.OMXConfig{BinaryPath: server.binaryPath}}
-	runner := NewOMXRunner(cfg, time.Second)
+	runner := NewOMXRunner(cfg, 5*time.Second)
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-103", Title: "Failing task"}, workspace, "Make it fail")
 	require.NoError(t, err)
 
@@ -127,11 +135,71 @@ func TestOMXRunner_FailedTask(t *testing.T) {
 	}
 }
 
+func TestOMXRunner_MissingTeamFailsFast(t *testing.T) {
+	tests := []struct {
+		name        string
+		missingMode string
+	}{
+		{name: "status missing", missingMode: "status"},
+		{name: "team not found error", missingMode: "team_not_found"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			logPath := filepath.Join(workspace, "omx-missing.log")
+			server := newFakeTeamCLIServer(t, logPath)
+			server.stayInProgress = true
+			server.missingMode = tc.missingMode
+			server.missingAfterAPI = 2
+			defer server.Close()
+
+			cfg := &config.WorkflowConfig{OMX: config.OMXConfig{BinaryPath: server.binaryPath, PollIntervalMs: 20}}
+			runner := NewOMXRunner(cfg, 5*time.Second)
+			proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-104", Title: "Missing team"}, workspace, "Do work")
+			require.NoError(t, err)
+
+			var events []types.AgentEvent
+			deadline := time.After(2 * time.Second)
+		collect:
+			for {
+				select {
+				case ev, ok := <-proc.Events:
+					if !ok {
+						t.Fatalf("events closed before team/missing; got %#v", events)
+					}
+					events = append(events, ev)
+					if ev.Type == "team/missing" {
+						break collect
+					}
+				case <-deadline:
+					t.Fatalf("timed out waiting for team/missing; got %#v", events)
+				}
+			}
+
+			select {
+			case doneErr := <-proc.Done:
+				require.Error(t, doneErr)
+				assert.True(t, errors.Is(doneErr, errTeamMissing), "got %v", doneErr)
+			case <-time.After(2 * time.Second):
+				t.Fatal("expected done error after team/missing")
+			}
+
+			logData, err := os.ReadFile(logPath)
+			require.NoError(t, err)
+			assert.NotContains(t, string(logData), "team shutdown "+proc.SessionID+" --force")
+		})
+	}
+}
+
 type fakeTeamCLIServer struct {
-	httpServer *httptest.Server
-	binaryPath string
-	logPath    string
-	fail       bool
+	httpServer      *httptest.Server
+	binaryPath      string
+	logPath         string
+	fail            bool
+	stayInProgress  bool
+	missingMode     string
+	missingAfterAPI int
 
 	mu    sync.Mutex
 	teams map[string]int
@@ -165,10 +233,31 @@ func newFakeTeamCLIServer(t *testing.T, logPath string) *fakeTeamCLIServer {
 			state.teams[teamName] = count + 1
 			state.mu.Unlock()
 
+			if state.missingMode != "" && count >= state.missingAfterAPI {
+				switch state.missingMode {
+				case "status":
+					require.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{"status": "missing"}))
+				case "team_not_found":
+					require.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
+						"ok":        false,
+						"operation": op,
+						"error": map[string]interface{}{
+							"code":    "team_not_found",
+							"message": "team not found",
+						},
+					}))
+				default:
+					t.Fatalf("unknown missing mode %q", state.missingMode)
+				}
+				return
+			}
+
 			switch op {
 			case "get-summary":
 				status := "pending"
-				if count >= 1 {
+				if state.stayInProgress {
+					status = "in_progress"
+				} else if count >= 1 {
 					if state.fail {
 						status = "failed"
 					} else {
@@ -200,7 +289,9 @@ func newFakeTeamCLIServer(t *testing.T, logPath string) *fakeTeamCLIServer {
 				require.NoError(t, json.NewEncoder(w).Encode(resp))
 			case "list-tasks":
 				status := "in_progress"
-				if count >= 1 {
+				if state.stayInProgress {
+					status = "in_progress"
+				} else if count >= 1 {
 					if state.fail {
 						status = "failed"
 					} else {

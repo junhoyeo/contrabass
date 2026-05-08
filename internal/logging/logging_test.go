@@ -196,6 +196,52 @@ func TestLoggerPrefix(t *testing.T) {
 	assert.Contains(t, contentStr, "myapp")
 }
 
+func TestResolveLogPath(t *testing.T) {
+	cases := []struct {
+		name    string
+		output  string
+		session string
+		want    string
+	}{
+		{"empty output is unchanged", "", "abc12345", ""},
+		{"empty session is unchanged", "/tmp/foo.log", "", "/tmp/foo.log"},
+		{"both empty is unchanged", "", "", ""},
+		{"splices before extension", "/tmp/contrabass.log", "abc12345", "/tmp/contrabass-abc12345.log"},
+		{"splices when no extension", "/tmp/contrabass", "abc12345", "/tmp/contrabass-abc12345"},
+		{"splices with multi-dot stem", "/tmp/foo.bar.log", "abc12345", "/tmp/foo.bar-abc12345.log"},
+		{"idempotent if already spliced", "/tmp/contrabass-abc12345.log", "abc12345", "/tmp/contrabass-abc12345.log"},
+		{"idempotent for stemless suffix", "/tmp/contrabass-abc12345", "abc12345", "/tmp/contrabass-abc12345"},
+		{"relative path still works", "logs/run.log", "ZZ", "logs/run-ZZ.log"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, ResolveLogPath(c.output, c.session))
+		})
+	}
+}
+
+func TestLoggerWritesToSessionScopedPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "contrabass.log")
+
+	logger := NewLogger(LogOptions{
+		Level:   log.InfoLevel,
+		Output:  logFile,
+		Prefix:  "test",
+		Session: "deadbeef",
+	})
+	require.NotNil(t, logger)
+	logger.Info("session-scoped entry")
+
+	resolved := filepath.Join(tmpDir, "contrabass-deadbeef.log")
+	content, err := os.ReadFile(resolved)
+	require.NoError(t, err, "expected logger to write to session-scoped path %s", resolved)
+	assert.Contains(t, string(content), "session-scoped entry")
+
+	_, err = os.Stat(logFile)
+	assert.True(t, os.IsNotExist(err), "original (un-suffixed) path must not be created")
+}
+
 func TestLoggerFallbackToStderr(t *testing.T) {
 	// Use an invalid path that can't be created
 	opts := LogOptions{

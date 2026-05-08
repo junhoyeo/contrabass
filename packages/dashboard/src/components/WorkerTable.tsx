@@ -1,4 +1,6 @@
 import type { WorkerState } from '../types'
+import { formatElapsedSince, formatWorkerStatus } from '../i18n/format'
+import { zhCN } from '../i18n/messages'
 import './WorkerTable.css'
 
 interface WorkerTableProps {
@@ -6,16 +8,7 @@ interface WorkerTableProps {
 }
 
 function formatAge(startedAt: string): string {
-  const started = Date.parse(startedAt)
-  if (Number.isNaN(started)) {
-    return '-'
-  }
-
-  const elapsedMs = Math.max(0, Date.now() - started)
-  const totalSeconds = Math.floor(elapsedMs / 1000)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}m ${seconds}s`
+  return formatElapsedSince(startedAt)
 }
 
 function truncate(value: string, limit: number): string {
@@ -50,7 +43,7 @@ function getStatusOrder(status: string): number {
 
 export function WorkerTable({ workers }: WorkerTableProps) {
   if (workers.length === 0) {
-    return <div className="worker-table__empty">No workers</div>
+    return <div className="worker-table__empty">{zhCN.workers.empty}</div>
   }
 
   const sortedWorkers = [...workers].sort((a, b) => {
@@ -64,14 +57,14 @@ export function WorkerTable({ workers }: WorkerTableProps) {
 
   return (
     <div className="worker-table__wrapper">
-      <table className="worker-table" aria-label="Worker status">
+      <table className="worker-table" aria-label={zhCN.workers.ariaLabel}>
         <thead>
           <tr>
-            <th>Worker ID</th>
-            <th>Status</th>
-            <th>Current Task</th>
-            <th>PID</th>
-            <th>Age</th>
+            <th>{zhCN.workers.headers.workerID}</th>
+            <th>{zhCN.workers.headers.status}</th>
+            <th>{zhCN.workers.headers.currentTask}</th>
+            <th>{zhCN.workers.headers.pid}</th>
+            <th>{zhCN.workers.headers.age}</th>
           </tr>
         </thead>
         <tbody>
@@ -81,7 +74,7 @@ export function WorkerTable({ workers }: WorkerTableProps) {
                 {truncate(worker.id, 12)}
               </td>
               <td>
-                <span className={getStatusClass(worker.status)}>{worker.status}</span>
+                <span className={getStatusClass(worker.status)}>{formatWorkerStatus(worker.status)}</span>
               </td>
               <td title={worker.current_task ?? '-'}>{truncate(worker.current_task ?? '-', 20)}</td>
               <td className="worker-table__mono">{worker.pid ?? '-'}</td>

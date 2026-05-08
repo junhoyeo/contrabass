@@ -115,6 +115,7 @@ describe('useSSE state helpers', () => {
       teamSnapshot: null,
       boardIssues: [],
       agentLogs: [],
+      queueEvents: [],
     })
   })
 
@@ -296,6 +297,25 @@ describe('useSSE state helpers', () => {
     })
 
     expect(next.state?.running.find((entry) => entry.issue_id === 'ISSUE-9')).toBeTruthy()
+  })
+
+  it('records queue channel events', () => {
+    const next = sseReducer(INITIAL_STATE, {
+      type: 'web_event',
+      data: makeWebEvent('orchestrator', 'dispatch_skipped_blocked_by', {
+        issue_id: 'issue-50',
+        identifier: 'ZII-50',
+        blockers: 'ZII-49,ZII-48',
+      }),
+    })
+
+    expect(next.queueEvents).toEqual([
+      {
+        issue_id: 'issue-50',
+        identifier: 'ZII-50',
+        blockers: 'ZII-49,ZII-48',
+      },
+    ])
   })
 
   it('updates teamSnapshot for team events', () => {

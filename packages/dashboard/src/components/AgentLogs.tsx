@@ -1,13 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentLogEvent } from '../types'
+import { zhCN } from '../i18n/messages'
 import './AgentLogs.css'
 
+type DisplayAgentLogEvent = AgentLogEvent & {
+  channel?: string
+  type?: string
+}
+
 interface AgentLogsProps {
-  logs: AgentLogEvent[]
+  logs: DisplayAgentLogEvent[]
 }
 
 const WORKER_TONE_COUNT = 5
 const MAX_VISIBLE_LOGS = 500
+const HEARTBEAT_TYPES = new Set(['team/stalled'])
 
 function formatTimestamp(timestamp: string): string {
   if (timestamp.length >= 19 && timestamp.includes('T')) {
@@ -35,15 +42,25 @@ function getWorkerTone(workerID: string): number {
   return hash % WORKER_TONE_COUNT
 }
 
+function shouldShowLog(log: DisplayAgentLogEvent): boolean {
+  if (log.channel === 'queue') {
+    return false
+  }
+
+  return !HEARTBEAT_TYPES.has(log.type ?? '')
+}
+
 export function AgentLogs({ logs }: AgentLogsProps) {
   const [selectedWorker, setSelectedWorker] = useState('all')
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true)
   const viewportRef = useRef<HTMLDivElement | null>(null)
 
+  const displayableLogs = useMemo(() => logs.filter(shouldShowLog), [logs])
+
   const workerIDs = useMemo(() => {
-    const unique = Array.from(new Set(logs.map((log) => log.worker_id)))
+    const unique = Array.from(new Set(displayableLogs.map((log) => log.worker_id)))
     return unique.sort((a, b) => a.localeCompare(b))
-  }, [logs])
+  }, [displayableLogs])
 
   useEffect(() => {
     if (selectedWorker !== 'all' && !workerIDs.includes(selectedWorker)) {
@@ -53,11 +70,11 @@ export function AgentLogs({ logs }: AgentLogsProps) {
 
   const filteredLogs = useMemo(() => {
     if (selectedWorker === 'all') {
-      return logs
+      return displayableLogs
     }
 
-    return logs.filter((log) => log.worker_id === selectedWorker)
-  }, [logs, selectedWorker])
+    return displayableLogs.filter((log) => log.worker_id === selectedWorker)
+  }, [displayableLogs, selectedWorker])
 
   const visibleLogs = useMemo(() => {
     if (filteredLogs.length <= MAX_VISIBLE_LOGS) {
@@ -86,20 +103,20 @@ export function AgentLogs({ logs }: AgentLogsProps) {
     setShouldAutoScroll(bottomOffset <= 8)
   }
 
-  if (logs.length === 0) {
+  if (displayableLogs.length === 0) {
     return (
       <section className="agent-logs agent-logs--empty" aria-live="polite">
-        <p className="agent-logs__empty-text">No agent logs</p>
+        <p className="agent-logs__empty-text">{zhCN.agentLogs.empty}</p>
       </section>
     )
   }
 
   return (
-    <section className="agent-logs" aria-label="Agent logs">
+    <section className="agent-logs" aria-label={zhCN.agentLogs.ariaLabel}>
       <header className="agent-logs__header">
-        <h3 className="agent-logs__title">Agent Logs</h3>
+        <h3 className="agent-logs__title">{zhCN.agentLogs.title}</h3>
         <label className="agent-logs__filter-label" htmlFor="agent-logs-worker-filter">
-          Worker
+          {zhCN.agentLogs.workerFilter}
         </label>
         <select
           id="agent-logs-worker-filter"
@@ -107,7 +124,7 @@ export function AgentLogs({ logs }: AgentLogsProps) {
           value={selectedWorker}
           onChange={(event) => setSelectedWorker(event.target.value)}
         >
-          <option value="all">All</option>
+          <option value="all">{zhCN.agentLogs.allWorkers}</option>
           {workerIDs.map((workerID) => (
             <option key={workerID} value={workerID}>
               {workerID}
@@ -118,7 +135,7 @@ export function AgentLogs({ logs }: AgentLogsProps) {
 
       <div className="agent-logs__viewport" ref={viewportRef} onScroll={handleScroll}>
         {visibleLogs.length === 0 ? (
-          <p className="agent-logs__empty-filtered">No logs for selected worker</p>
+          <p className="agent-logs__empty-filtered">{zhCN.agentLogs.emptyFiltered}</p>
         ) : (
           visibleLogs.map((log, index) => {
             const tone = getWorkerTone(log.worker_id)

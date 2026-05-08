@@ -170,6 +170,12 @@ func TestWorkflowConfig_NewSectionDefaults(t *testing.T) {
 	assert.Equal(t, defaultTeamStateDir, nilCfg.TeamStateDir())
 	assert.Equal(t, defaultTeamExecutionMode, nilCfg.TeamExecutionMode())
 	assert.Equal(t, defaultTeamWorkerMode, nilCfg.WorkerMode())
+	assert.Equal(t, defaultWorkflowTimelineDir, nilCfg.WorkflowTimelineDir())
+	assert.False(t, nilCfg.LinearIssueDetailsEnabled())
+	assert.False(t, nilCfg.LinearSyncCommentsEnabled())
+	assert.Equal(t, LinearSyncCommentsModeReplyThread, nilCfg.LinearSyncCommentsMode())
+	assert.Equal(t, 100, nilCfg.LinearSyncCommentsQueueSize())
+	assert.Equal(t, 5000, nilCfg.LinearSyncCommentsPollIntervalMs())
 
 	cfg := &WorkflowConfig{}
 	assert.Equal(t, defaultTrackerType, cfg.TrackerType())
@@ -185,6 +191,7 @@ func TestWorkflowConfig_NewSectionDefaults(t *testing.T) {
 	assert.Equal(t, defaultTeamStateDir, cfg.TeamStateDir())
 	assert.Equal(t, defaultTeamExecutionMode, cfg.TeamExecutionMode())
 	assert.Equal(t, defaultTeamWorkerMode, cfg.WorkerMode())
+	assert.Equal(t, defaultWorkflowTimelineDir, cfg.WorkflowTimelineDir())
 
 	legacyCfg := &WorkflowConfig{
 		ModelRaw:      "openai/gpt-5-codex",
@@ -242,6 +249,169 @@ func TestWorkflowConfig_WorkerMode(t *testing.T) {
 			assert.Equal(t, tt.want, tt.cfg.WorkerMode())
 		})
 	}
+}
+
+func TestWorkflowConfig_LinearConfig(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	disabled := false
+
+	tests := []struct {
+		name string
+		cfg  *WorkflowConfig
+		want struct {
+			issueDetails bool
+			syncEnabled  bool
+			syncMode     string
+			wantErr      bool
+		}
+	}{
+		{
+			name: "nil config uses safe defaults",
+			cfg:  nil,
+			want: struct {
+				issueDetails bool
+				syncEnabled  bool
+				syncMode     string
+				wantErr      bool
+			}{syncMode: LinearSyncCommentsModeReplyThread},
+		},
+		{
+			name: "Linear tracker defaults issue details on and comment sync off",
+			cfg: &WorkflowConfig{
+				Tracker: TrackerConfig{Type: "linear"},
+			},
+			want: struct {
+				issueDetails bool
+				syncEnabled  bool
+				syncMode     string
+				wantErr      bool
+			}{
+				issueDetails: true,
+				syncMode:     LinearSyncCommentsModeReplyThread,
+			},
+		},
+		{
+			name: "explicit enablement and top-level mode are preserved for Linear tracker",
+			cfg: &WorkflowConfig{
+				Tracker: TrackerConfig{Type: "linear"},
+				Linear: LinearConfigSection{
+					IssueDetails: LinearIssueDetailsConfig{Enabled: &enabled},
+					SyncComments: LinearSyncCommentsConfig{Enabled: true, Mode: "top_level"},
+				},
+			},
+			want: struct {
+				issueDetails bool
+				syncEnabled  bool
+				syncMode     string
+				wantErr      bool
+			}{
+				issueDetails: true,
+				syncEnabled:  true,
+				syncMode:     LinearSyncCommentsModeTopLevel,
+			},
+		},
+		{
+			name: "explicit issue details disablement is preserved for Linear tracker",
+			cfg: &WorkflowConfig{
+				Tracker: TrackerConfig{Type: "linear"},
+				Linear: LinearConfigSection{
+					IssueDetails: LinearIssueDetailsConfig{Enabled: &disabled},
+				},
+			},
+			want: struct {
+				issueDetails bool
+				syncEnabled  bool
+				syncMode     string
+				wantErr      bool
+			}{
+				syncMode: LinearSyncCommentsModeReplyThread,
+			},
+		},
+		{
+			name: "non-Linear tracker ignores explicit Linear enablement",
+			cfg: &WorkflowConfig{
+				Tracker: TrackerConfig{Type: "github"},
+				Linear: LinearConfigSection{
+					IssueDetails: LinearIssueDetailsConfig{Enabled: &enabled},
+					SyncComments: LinearSyncCommentsConfig{Enabled: true},
+				},
+			},
+			want: struct {
+				issueDetails bool
+				syncEnabled  bool
+				syncMode     string
+				wantErr      bool
+			}{
+				syncMode: LinearSyncCommentsModeReplyThread,
+			},
+		},
+		{
+			name: "invalid sync mode is surfaced",
+			cfg: &WorkflowConfig{
+				Tracker: TrackerConfig{Type: "linear"},
+				Linear: LinearConfigSection{
+					SyncComments: LinearSyncCommentsConfig{Enabled: true, Mode: "unsupported"},
+				},
+			},
+			want: struct {
+				issueDetails bool
+				syncEnabled  bool
+				syncMode     string
+				wantErr      bool
+			}{
+				issueDetails: true,
+				syncEnabled:  true,
+				syncMode:     "unsupported",
+				wantErr:      true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want.issueDetails, tt.cfg.LinearIssueDetailsEnabled())
+			assert.Equal(t, tt.want.syncEnabled, tt.cfg.LinearSyncCommentsEnabled())
+			assert.Equal(t, tt.want.syncMode, tt.cfg.LinearSyncCommentsMode())
+			if tt.want.wantErr {
+				require.Error(t, tt.cfg.ValidateLinearSyncCommentsMode())
+			} else {
+				require.NoError(t, tt.cfg.ValidateLinearSyncCommentsMode())
+			}
+		})
+	}
+}
+
+func TestWorkflowConfig_LinearSyncCommentsEffectiveMode(t *testing.T) {
+	t.Parallel()
+
+	defaultCfg := &WorkflowConfig{Tracker: TrackerConfig{Type: "linear"}}
+	mode, err := defaultCfg.LinearSyncCommentsEffectiveMode(false)
+	require.NoError(t, err)
+	assert.Equal(t, LinearSyncCommentsModeTopLevel, mode)
+
+	explicitReply := &WorkflowConfig{
+		Tracker: TrackerConfig{Type: "linear"},
+		Linear: LinearConfigSection{
+			SyncComments: LinearSyncCommentsConfig{Mode: LinearSyncCommentsModeReplyThread},
+		},
+	}
+	_, err = explicitReply.LinearSyncCommentsEffectiveMode(false)
+	require.ErrorIs(t, err, ErrLinearSyncCommentsModeUnsupported)
+
+	explicitTopLevel := &WorkflowConfig{
+		Tracker: TrackerConfig{Type: "linear"},
+		Linear: LinearConfigSection{
+			SyncComments: LinearSyncCommentsConfig{Mode: LinearSyncCommentsModeTopLevel},
+		},
+	}
+	mode, err = explicitTopLevel.LinearSyncCommentsEffectiveMode(false)
+	require.NoError(t, err)
+	assert.Equal(t, LinearSyncCommentsModeTopLevel, mode)
 }
 
 func TestWorkflowConfig_TeamExecutionMode(t *testing.T) {

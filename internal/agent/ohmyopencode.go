@@ -12,17 +12,27 @@ import (
 	"github.com/junhoyeo/contrabass/internal/types"
 )
 
+// Default oh-my-opencode model selections. Used only when the operator does
+// not configure agents / categories in their workflow file. Operators can
+// override per-agent and per-category via the workflow's `oh_my_opencode`
+// section, which is the preferred config-driven path; these constants exist so
+// that an unconfigured workflow still produces a working oh-my-opencode runtime.
+const (
+	defaultOhMyOpenCodeAgentModel = "anthropic/claude-sonnet-4-6"
+	defaultOhMyOpenCodeHaikuModel = "anthropic/claude-haiku-4-5"
+)
+
 var defaultCategories = map[string]string{
-	"visual-engineering": "anthropic/claude-sonnet-4-6",
-	"ultrabrain":         "anthropic/claude-sonnet-4-6",
-	"deep":               "anthropic/claude-sonnet-4-6",
-	"artistry":           "anthropic/claude-sonnet-4-6",
-	"quick":              "anthropic/claude-haiku-4-5",
-	"unspecified-low":    "anthropic/claude-haiku-4-5",
-	"unspecified-high":   "anthropic/claude-sonnet-4-6",
-	"writing":            "anthropic/claude-sonnet-4-6",
-	"git":                "anthropic/claude-haiku-4-5",
-	"free":               "anthropic/claude-haiku-4-5",
+	"visual-engineering": defaultOhMyOpenCodeAgentModel,
+	"ultrabrain":         defaultOhMyOpenCodeAgentModel,
+	"deep":               defaultOhMyOpenCodeAgentModel,
+	"artistry":           defaultOhMyOpenCodeAgentModel,
+	"quick":              defaultOhMyOpenCodeHaikuModel,
+	"unspecified-low":    defaultOhMyOpenCodeHaikuModel,
+	"unspecified-high":   defaultOhMyOpenCodeAgentModel,
+	"writing":            defaultOhMyOpenCodeAgentModel,
+	"git":                defaultOhMyOpenCodeHaikuModel,
+	"free":               defaultOhMyOpenCodeHaikuModel,
 }
 
 var DefaultCategories = defaultCategories
@@ -148,7 +158,7 @@ func (r *OhMyOpenCodeRunner) writeOhMyOpenCodeJSON() error {
 
 	if len(cfgAgents) == 0 {
 		agents["sisyphus"] = ohMyAgentJSON{
-			Model: "anthropic/claude-sonnet-4-6",
+			Model: defaultOhMyOpenCodeAgentModel,
 		}
 	} else {
 		for name, a := range cfgAgents {
@@ -203,7 +213,7 @@ func (r *OhMyOpenCodeRunner) writeOpencodeJSON() error {
 	if a, ok := cfgAgents["sisyphus"]; ok && a.Model != "" {
 		agentModel = a.Model
 	} else if len(cfgAgents) == 0 {
-		agentModel = "anthropic/claude-sonnet-4-6"
+		agentModel = defaultOhMyOpenCodeAgentModel
 	}
 	if agentModel != "" {
 		doc.Model = agentModel

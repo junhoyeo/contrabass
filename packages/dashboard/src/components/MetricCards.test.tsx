@@ -25,12 +25,12 @@ describe('MetricCards', () => {
 
     render(<MetricCards stats={stats} backoffCount={2} />)
 
-    expectInDocument(screen.getByText('Running'))
+    expectInDocument(screen.getByText('运行中'))
     expectInDocument(screen.getByText('3/5'))
-    expectInDocument(screen.getByText('Retrying'))
+    expectInDocument(screen.getByText('重试中'))
     expectInDocument(screen.getByText('2'))
-    expectInDocument(screen.getByText('Total Tokens'))
-    expectInDocument(screen.getByText('2.0K'))
-    expectInDocument(screen.getByText('1.6K in / 400 out'))
+    expectInDocument(screen.getByText('Token 总量'))
+    expectInDocument(screen.getByText('2,000'))
+    expectInDocument(screen.getByText('1,600 输入 / 400 输出'))
   })
 })

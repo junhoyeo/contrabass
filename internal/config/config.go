@@ -2,24 +2,33 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
 )
 
 const (
-	defaultMaxConcurrency      = 10
-	defaultPollIntervalMs      = 30_000
-	defaultMaxRetryBackoffMs   = 300_000
-	defaultAgentTimeoutMs      = 600_000
-	defaultStallTimeoutMs      = 120_000
-	defaultTrackerType         = "internal"
-	defaultBackoffStrategy     = "exponential"
-	defaultWorkspaceBaseDir    = "."
-	defaultBranchPrefix        = "symphony/"
-	defaultCodexBinaryPath     = "codex app-server"
-	defaultApprovalPolicy      = "auto-edit"
-	defaultSandbox             = "docker"
+	defaultMaxConcurrency    = 10
+	defaultPollIntervalMs    = 30_000
+	defaultMaxRetryBackoffMs = 300_000
+	defaultAgentTimeoutMs    = 600_000
+	defaultStallTimeoutMs    = 120_000
+	defaultTrackerType       = "internal"
+	defaultBackoffStrategy   = "exponential"
+	defaultWorkspaceBaseDir  = "."
+	defaultBranchPrefix      = "symphony/"
+	defaultCodexBinaryPath   = "codex app-server"
+	// defaultApprovalPolicy and defaultSandbox are intentionally empty.
+	// Earlier values ("auto-edit" / "docker") were not valid codex TOML
+	// settings — codex accepts approval_policy values like "never" /
+	// "on-request" and sandbox_mode values like "workspace-write". Keeping
+	// these empty means contrabass injects nothing when a workflow does not
+	// set them, so codex falls back to whatever lives in
+	// ~/.codex/config.toml. Operators opt in via codex.approval_policy and
+	// codex.sandbox in their workflow file.
+	defaultApprovalPolicy      = ""
+	defaultSandbox             = ""
 	defaultAgentType           = "codex"
 	defaultOpenCodeBinaryPath  = "opencode serve"
 	defaultOMXBinaryPath       = "omx"
@@ -35,7 +44,6 @@ const (
 	defaultLocalIssuePrefix    = "CB"
 
 	defaultOhMyOpenCodePluginVersion = "oh-my-opencode"
-	defaultOhMyOpenCodeAgentModel    = "anthropic/claude-sonnet-4-6"
 
 	defaultTeamMaxWorkers        = 5
 	defaultTeamMaxFixLoops       = 3
@@ -43,6 +51,7 @@ const (
 	defaultTeamStateDir          = ".contrabass/state/team"
 	defaultTeamExecutionMode     = TeamExecutionModeTeam
 	defaultTeamWorkerMode        = "tmux"
+	defaultWorkflowTimelineDir   = ".contrabass/state/workflow-timeline"
 )
 
 const (
@@ -51,31 +60,40 @@ const (
 	TeamExecutionModeAuto   = "auto"
 )
 
+const (
+	LinearSyncCommentsModeReplyThread = "reply_thread"
+	LinearSyncCommentsModeTopLevel    = "top_level"
+)
+
 var (
-	ErrModelRequired      = errors.New("model is required")
-	ErrProjectURLRequired = errors.New("project_url is required")
+	ErrModelRequired                     = errors.New("model is required")
+	ErrProjectURLRequired                = errors.New("project_url is required")
+	ErrLinearSyncCommentsModeInvalid     = errors.New("invalid linear.sync_comments.mode")
+	ErrLinearSyncCommentsModeUnsupported = errors.New("unsupported linear.sync_comments.mode")
 )
 
 type WorkflowConfig struct {
-	MaxConcurrencyRaw    int                `yaml:"max_concurrency"`
-	PollIntervalMsRaw    int                `yaml:"poll_interval_ms"`
-	MaxRetryBackoffMsRaw int                `yaml:"max_retry_backoff_ms"`
-	ModelRaw             string             `yaml:"model"`
-	ProjectURLRaw        string             `yaml:"project_url"`
-	AgentTimeoutMsRaw    int                `yaml:"agent_timeout_ms"`
-	StallTimeoutMsRaw    int                `yaml:"stall_timeout_ms"`
-	Tracker              TrackerConfig      `yaml:"tracker"`
-	Polling              PollingConfig      `yaml:"polling"`
-	Workspace            WorkspaceConfig    `yaml:"workspace"`
-	Hooks                HooksConfig        `yaml:"hooks"`
-	Codex                CodexConfig        `yaml:"codex"`
-	Agent                AgentConfig        `yaml:"agent"`
-	OpenCode             OpenCodeConfig     `yaml:"opencode"`
-	OMX                  OMXConfig          `yaml:"omx"`
-	OMC                  OMCConfig          `yaml:"omc"`
-	OhMyOpenCode         OhMyOpenCodeConfig `yaml:"oh_my_opencode"`
-	Team                 TeamSectionConfig  `yaml:"team"`
-	PromptTemplate       string             `yaml:"-"`
+	MaxConcurrencyRaw    int                 `yaml:"max_concurrency"`
+	PollIntervalMsRaw    int                 `yaml:"poll_interval_ms"`
+	MaxRetryBackoffMsRaw int                 `yaml:"max_retry_backoff_ms"`
+	ModelRaw             string              `yaml:"model"`
+	ProjectURLRaw        string              `yaml:"project_url"`
+	AgentTimeoutMsRaw    int                 `yaml:"agent_timeout_ms"`
+	StallTimeoutMsRaw    int                 `yaml:"stall_timeout_ms"`
+	Tracker              TrackerConfig       `yaml:"tracker"`
+	Polling              PollingConfig       `yaml:"polling"`
+	Workspace            WorkspaceConfig     `yaml:"workspace"`
+	Hooks                HooksConfig         `yaml:"hooks"`
+	Codex                CodexConfig         `yaml:"codex"`
+	Agent                AgentConfig         `yaml:"agent"`
+	OpenCode             OpenCodeConfig      `yaml:"opencode"`
+	OMX                  OMXConfig           `yaml:"omx"`
+	OMC                  OMCConfig           `yaml:"omc"`
+	Linear               LinearConfigSection `yaml:"linear"`
+	OhMyOpenCode         OhMyOpenCodeConfig  `yaml:"oh_my_opencode"`
+	Team                 TeamSectionConfig   `yaml:"team"`
+	Timeline             TimelineConfig      `yaml:"timeline"`
+	PromptTemplate       string              `yaml:"-"`
 }
 
 type TrackerConfig struct {
@@ -91,6 +109,10 @@ type TrackerConfig struct {
 	Assignee    string   `yaml:"assignee"`
 	Token       string   `yaml:"token"`
 	Endpoint    string   `yaml:"endpoint"`
+}
+
+type TimelineConfig struct {
+	Dir string `yaml:"dir"`
 }
 
 type PollingConfig struct {
@@ -144,6 +166,27 @@ type OMCConfig struct {
 	StartupTimeoutMs int    `yaml:"startup_timeout_ms"`
 }
 
+// LinearConfigSection holds Linear-specific workflow behavior.
+type LinearConfigSection struct {
+	IssueDetails LinearIssueDetailsConfig `yaml:"issue_details"`
+	SyncComments LinearSyncCommentsConfig `yaml:"sync_comments"`
+}
+
+// LinearIssueDetailsConfig controls whether the dashboard fetches rich Linear
+// issue detail payloads.
+type LinearIssueDetailsConfig struct {
+	Enabled *bool `yaml:"enabled"`
+}
+
+// LinearSyncCommentsConfig controls best-effort projection of workflow
+// timeline nodes back into Linear comments.
+type LinearSyncCommentsConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Mode           string `yaml:"mode"`
+	QueueSize      int    `yaml:"queue_size"`
+	PollIntervalMs int    `yaml:"poll_interval_ms"`
+}
+
 // TeamSectionConfig holds settings for multi-agent team coordination.
 type TeamSectionConfig struct {
 	MaxWorkers        int    `yaml:"max_workers"`
@@ -193,6 +236,10 @@ func (c *WorkflowConfig) Clone() *WorkflowConfig {
 	cfg.OhMyOpenCode.Plugins = slices.Clone(c.OhMyOpenCode.Plugins)
 	cfg.OhMyOpenCode.Agents = maps.Clone(c.OhMyOpenCode.Agents)
 	cfg.OhMyOpenCode.Categories = maps.Clone(c.OhMyOpenCode.Categories)
+	if c.Linear.IssueDetails.Enabled != nil {
+		enabled := *c.Linear.IssueDetails.Enabled
+		cfg.Linear.IssueDetails.Enabled = &enabled
+	}
 	return &cfg
 }
 
@@ -425,6 +472,85 @@ func (c *WorkflowConfig) OMCStartupTimeoutMs() int {
 	return c.OMC.StartupTimeoutMs
 }
 
+func (c *WorkflowConfig) LinearIssueDetailsEnabled() bool {
+	if c == nil || !strings.EqualFold(strings.TrimSpace(c.TrackerType()), "linear") {
+		return false
+	}
+	if c.Linear.IssueDetails.Enabled == nil {
+		return true
+	}
+	return *c.Linear.IssueDetails.Enabled
+}
+
+func (c *WorkflowConfig) LinearSyncCommentsEnabled() bool {
+	if c == nil || !strings.EqualFold(strings.TrimSpace(c.TrackerType()), "linear") {
+		return false
+	}
+	return c.Linear.SyncComments.Enabled
+}
+
+func (c *WorkflowConfig) LinearSyncCommentsMode() string {
+	if c == nil {
+		return LinearSyncCommentsModeReplyThread
+	}
+
+	switch strings.TrimSpace(strings.ToLower(c.Linear.SyncComments.Mode)) {
+	case "", LinearSyncCommentsModeReplyThread:
+		return LinearSyncCommentsModeReplyThread
+	case LinearSyncCommentsModeTopLevel:
+		return LinearSyncCommentsModeTopLevel
+	default:
+		return strings.TrimSpace(strings.ToLower(c.Linear.SyncComments.Mode))
+	}
+}
+
+func (c *WorkflowConfig) ValidateLinearSyncCommentsMode() error {
+	_, err := c.LinearSyncCommentsEffectiveMode(true)
+	return err
+}
+
+func (c *WorkflowConfig) LinearSyncCommentsEffectiveMode(replyThreadSupported bool) (string, error) {
+	if c == nil {
+		return LinearSyncCommentsModeReplyThread, nil
+	}
+
+	raw := strings.TrimSpace(strings.ToLower(c.Linear.SyncComments.Mode))
+	switch raw {
+	case "":
+		if replyThreadSupported {
+			return LinearSyncCommentsModeReplyThread, nil
+		}
+		return LinearSyncCommentsModeTopLevel, nil
+	case LinearSyncCommentsModeReplyThread:
+		if !replyThreadSupported {
+			return "", fmt.Errorf("%w: reply_thread requires Linear threaded reply support", ErrLinearSyncCommentsModeUnsupported)
+		}
+		return LinearSyncCommentsModeReplyThread, nil
+	case LinearSyncCommentsModeTopLevel:
+		return LinearSyncCommentsModeTopLevel, nil
+	default:
+		return "", fmt.Errorf("%w: %s (valid values: reply_thread, top_level)", ErrLinearSyncCommentsModeInvalid, c.Linear.SyncComments.Mode)
+	}
+}
+
+func (c *WorkflowConfig) LinearSyncCommentsModeExplicit() bool {
+	return c != nil && strings.TrimSpace(c.Linear.SyncComments.Mode) != ""
+}
+
+func (c *WorkflowConfig) LinearSyncCommentsQueueSize() int {
+	if c == nil || c.Linear.SyncComments.QueueSize <= 0 {
+		return 100
+	}
+	return c.Linear.SyncComments.QueueSize
+}
+
+func (c *WorkflowConfig) LinearSyncCommentsPollIntervalMs() int {
+	if c == nil || c.Linear.SyncComments.PollIntervalMs <= 0 {
+		return 5000
+	}
+	return c.Linear.SyncComments.PollIntervalMs
+}
+
 func (c *WorkflowConfig) OhMyOpenCodePluginVersion() string {
 	if c == nil || c.OhMyOpenCode.PluginVersion == "" {
 		return defaultOhMyOpenCodePluginVersion
@@ -500,6 +626,13 @@ func (c *WorkflowConfig) TeamStateDir() string {
 		return defaultTeamStateDir
 	}
 	return c.Team.StateDir
+}
+
+func (c *WorkflowConfig) WorkflowTimelineDir() string {
+	if c == nil || strings.TrimSpace(c.Timeline.Dir) == "" {
+		return defaultWorkflowTimelineDir
+	}
+	return c.Timeline.Dir
 }
 
 func (c *WorkflowConfig) TeamExecutionMode() string {

@@ -2,6 +2,7 @@ package ipc
 
 import "time"
 
+// Heartbeat records the current liveness state reported by a team worker.
 type Heartbeat struct {
 	WorkerID    string    `json:"worker_id"`
 	PID         int       `json:"pid"`
@@ -10,10 +11,12 @@ type Heartbeat struct {
 	Timestamp   time.Time `json:"timestamp"`
 }
 
+// HeartbeatWriter persists worker heartbeat snapshots for a team.
 type HeartbeatWriter interface {
 	Write(teamName string, hb Heartbeat) error
 }
 
+// Event describes a timestamped team or worker activity record.
 type Event struct {
 	ID        string                 `json:"id,omitempty"`
 	Type      string                 `json:"type"`
@@ -24,10 +27,12 @@ type Event struct {
 	Timestamp time.Time              `json:"timestamp"`
 }
 
+// EventWriter appends team activity events to the durable event log.
 type EventWriter interface {
 	Log(teamName string, event Event) error
 }
 
+// DispatchEntry captures a task dispatch request and its acknowledgement state.
 type DispatchEntry struct {
 	TaskID       string     `json:"task_id"`
 	WorkerID     string     `json:"worker_id"`
@@ -37,6 +42,7 @@ type DispatchEntry struct {
 	Status       string     `json:"status,omitempty"`
 }
 
+// Dispatcher manages task dispatch lifecycle events for workers.
 type Dispatcher interface {
 	Dispatch(teamName string, entry DispatchEntry) error
 	Ack(teamName, taskID, workerID string) error

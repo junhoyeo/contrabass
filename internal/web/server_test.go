@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -233,6 +234,94 @@ func TestPublishEvent(t *testing.T) {
 			tt.assertion(t, sink, event)
 		})
 	}
+}
+
+type fakeAgentStopper struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeAgentStopper) StopAgent(_ context.Context, issueID string) error {
+	f.calls = append(f.calls, issueID)
+	return f.err
+}
+
+func TestHandleStopAgent(t *testing.T) {
+	provider := fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{Issues: map[string]types.Issue{}}}
+
+	tests := []struct {
+		name        string
+		stopper     AgentStopper
+		issueID     string
+		wantStatus  int
+		wantErrBody string
+	}{
+		{
+			name:       "running entry returns 202",
+			stopper:    &fakeAgentStopper{},
+			issueID:    "ISS-A",
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name:        "missing entry returns 404",
+			stopper:     &fakeAgentStopper{err: orchestrator.ErrAgentNotRunning},
+			issueID:     "ISS-MISSING",
+			wantStatus:  http.StatusNotFound,
+			wantErrBody: "agent not running",
+		},
+		{
+			name:        "stopper internal error returns 500",
+			stopper:     &fakeAgentStopper{err: errors.New("kaboom")},
+			issueID:     "ISS-A",
+			wantStatus:  http.StatusInternalServerError,
+			wantErrBody: "kaboom",
+		},
+		{
+			name:        "no stopper configured returns 503",
+			stopper:     nil,
+			issueID:     "ISS-A",
+			wantStatus:  http.StatusServiceUnavailable,
+			wantErrBody: "stop endpoint not configured",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{snapshotProvider: provider, dashboardFS: nil, agentStopper: tt.stopper}
+			h := s.newMux()
+
+			target := fmt.Sprintf("/api/v1/running/%s/stop", tt.issueID)
+			req := httptest.NewRequest(http.MethodPost, target, nil)
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			if tt.wantErrBody != "" {
+				var body map[string]string
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+				assert.Contains(t, body["error"], tt.wantErrBody)
+			}
+		})
+	}
+}
+
+func TestHandleStopAgent_RejectsBlankIssueID(t *testing.T) {
+	provider := fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{Issues: map[string]types.Issue{}}}
+	stopper := &fakeAgentStopper{}
+	s := &Server{snapshotProvider: provider, dashboardFS: nil, agentStopper: stopper}
+	h := s.newMux()
+
+	// PathValue extracts the issue_id; an explicit blank segment 404s at the
+	// router. Use a whitespace-only segment to drive the BadRequest branch.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/running/%20/stop", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, stopper.calls, "blank issue_id must not invoke the stopper")
 }
 
 func TestStartReturnsErrorWhenPortAlreadyInUse(t *testing.T) {

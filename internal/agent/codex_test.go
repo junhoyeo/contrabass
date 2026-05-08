@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,204 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCodexRunner_PolicyDefaults_OnWire(t *testing.T) {
+	runner := NewCodexRunner(helperCommand(t, "capture-wire"), 2*time.Second)
+
+	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
+	require.NoError(t, err)
+
+	event := waitForEventType(t, proc.Events, "helper/requests")
+	threadParams := eventDataMap(t, event, "threadStart")
+	turnParams := eventDataMap(t, event, "turnStart")
+	wantSandbox := map[string]interface{}{"type": "workspaceWrite", "networkAccess": false}
+
+	assert.Equal(t, "never", threadParams["approvalPolicy"])
+	assert.Equal(t, wantSandbox, threadParams["sandboxPolicy"])
+	assert.Equal(t, "never", turnParams["approvalPolicy"])
+	assert.Equal(t, wantSandbox, turnParams["sandboxPolicy"])
+	assertDoneEventually(t, proc.Done)
+}
+
+func TestCodexRunner_PolicyOverride_OnWire(t *testing.T) {
+	runner := NewCodexRunner(helperCommand(t, "capture-wire"), 2*time.Second)
+	runner.ConfigureCodex(CodexRunnerOptions{
+		ApprovalPolicy: "on-request",
+		Sandbox:        map[string]interface{}{"type": "readOnly"},
+	})
+
+	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
+	require.NoError(t, err)
+
+	event := waitForEventType(t, proc.Events, "helper/requests")
+	threadParams := eventDataMap(t, event, "threadStart")
+	turnParams := eventDataMap(t, event, "turnStart")
+	wantSandbox := map[string]interface{}{"type": "readOnly"}
+
+	assert.Equal(t, "on-request", threadParams["approvalPolicy"])
+	assert.Equal(t, wantSandbox, threadParams["sandboxPolicy"])
+	assert.Equal(t, "on-request", turnParams["approvalPolicy"])
+	assert.Equal(t, wantSandbox, turnParams["sandboxPolicy"])
+	assertDoneEventually(t, proc.Done)
+}
+
+func TestCodexRunner_OverloadRetried(t *testing.T) {
+	runner := NewCodexRunner(helperCommand(t, "overload-once"), 2*time.Second)
+	runner.overloadStartDelay = 0
+
+	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
+	require.NoError(t, err)
+
+	event := waitForEventType(t, proc.Events, "helper/requests")
+	counts := eventDataMap(t, event, "counts")
+	assert.Equal(t, float64(2), counts["thread/start"])
+	assertDoneEventually(t, proc.Done)
+}
+
+func TestCodexRunner_OverloadBudgetExhausted(t *testing.T) {
+	runner := NewCodexRunner(helperCommand(t, "overload-forever"), 2*time.Second)
+	runner.overloadRetries = 2
+	runner.overloadStartDelay = 0
+
+	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
+	require.Error(t, err)
+	assert.Nil(t, proc)
+	assert.ErrorIs(t, err, errCodexOverloaded)
+
+	runner.mu.Lock()
+	assert.Empty(t, runner.procs)
+	runner.mu.Unlock()
+}
+
+func TestCodexRunner_LargeAgentMessage(t *testing.T) {
+	runner := NewCodexRunner("unused", 5*time.Second)
+	input := bytes.Buffer{}
+	writeJSONLine(t, &input, map[string]interface{}{
+		"method": "item/agentMessage",
+		"params": map[string]interface{}{"text": strings.Repeat("x", 5*1024*1024)},
+	})
+	writeJSONLine(t, &input, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	process := startedExitedCodexProcess(t, ctx)
+	eventsCh := make(chan types.AgentEvent, 512)
+	go runner.streamEventsAndWait(process, bufio.NewReader(bytes.NewReader(input.Bytes())), eventsCh)
+
+	events := collectEvents(t, eventsCh, process.done, 2, 10*time.Second)
+	require.Len(t, events, 2)
+	assert.Equal(t, "item/agentMessage", events[0].Type)
+	text, ok := events[0].Data["text"].(string)
+	require.True(t, ok)
+	assert.Len(t, text, 5*1024*1024)
+	assert.Equal(t, "turn/completed", events[1].Type)
+	assertDoneEventually(t, process.done)
+}
+
+func TestCodexRunner_OversizedLineSkipped(t *testing.T) {
+	runner := NewCodexRunner("unused", 5*time.Second)
+	var logs bytes.Buffer
+	runner.logger = log.NewWithOptions(&logs, log.Options{Level: log.DebugLevel})
+	input := bytes.Buffer{}
+	input.WriteString(strings.Repeat("x", 64*1024*1024))
+	input.WriteByte('\n')
+	writeJSONLine(t, &input, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	process := startedExitedCodexProcess(t, ctx)
+	eventsCh := make(chan types.AgentEvent, 512)
+	go runner.streamEventsAndWait(process, bufio.NewReader(bytes.NewReader(input.Bytes())), eventsCh)
+
+	events := collectEvents(t, eventsCh, process.done, 1, 10*time.Second)
+	require.Len(t, events, 1)
+	assert.Equal(t, "turn/completed", events[0].Type)
+	assertDoneEventually(t, process.done)
+	assert.Equal(t, 1, strings.Count(logs.String(), "maxStreamLineSize_exceeded"))
+}
+
+func TestCodexRunner_TerminalEventsNotDropped(t *testing.T) {
+	runner := NewCodexRunner("unused", 2*time.Second)
+	input := bytes.Buffer{}
+	for i := 0; i < 50; i++ {
+		writeJSONLine(t, &input, map[string]interface{}{
+			"method": "item/test",
+			"params": map[string]interface{}{"index": i},
+		})
+	}
+	writeJSONLine(t, &input, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	process := startedExitedCodexProcess(t, ctx)
+	events := make(chan types.AgentEvent, 4)
+
+	go runner.streamEventsAndWait(process, bufio.NewReader(bytes.NewReader(input.Bytes())), events)
+	time.Sleep(50 * time.Millisecond)
+
+	var got []types.AgentEvent
+	for event := range events {
+		got = append(got, event)
+	}
+	require.NotEmpty(t, got)
+	assert.Equal(t, "turn/completed", got[len(got)-1].Type)
+	assertDoneEventually(t, process.done)
+}
+
+func TestCodexRunner_FlushErrorSurfaced(t *testing.T) {
+	runner := NewCodexRunner("unused", 2*time.Second)
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	defer writer.Close()
+
+	err = runner.sendMessage(bufio.NewWriter(writer), map[string]interface{}{
+		"id":     initializeRequestID,
+		"method": "initialize",
+		"params": map[string]interface{}{},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "flush")
+}
+
+func TestCodexRunner_HandshakeAndStreamTimeoutsIndependent(t *testing.T) {
+	t.Run("handshake stalls", func(t *testing.T) {
+		handshakeTimeout := 150 * time.Millisecond
+		runner := NewCodexRunner(helperCommand(t, "silent-handshake"), handshakeTimeout).
+			WithStreamReadTimeout(10 * time.Millisecond)
+
+		start := time.Now()
+		proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
+		elapsed := time.Since(start)
+
+		require.Error(t, err)
+		assert.Nil(t, proc)
+		assert.Contains(t, err.Error(), "handshake timeout")
+		assert.GreaterOrEqual(t, elapsed, handshakeTimeout)
+		assert.Less(t, elapsed, 2*time.Second)
+	})
+
+	t.Run("stream stalls", func(t *testing.T) {
+		streamTimeout := 120 * time.Millisecond
+		runner := NewCodexRunner(helperCommand(t, "stream-stall"), 5*time.Second).
+			WithStreamReadTimeout(streamTimeout)
+
+		proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
+		require.NoError(t, err)
+
+		start := time.Now()
+		select {
+		case doneErr := <-proc.Done:
+			elapsed := time.Since(start)
+			require.Error(t, doneErr)
+			assert.ErrorIs(t, doneErr, errCodexStreamStalled)
+			assert.GreaterOrEqual(t, elapsed, streamTimeout)
+			assert.Less(t, elapsed, 2*time.Second)
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected stream read timeout")
+		}
+	})
+}
 
 func TestCodexProtocolSequence(t *testing.T) {
 	runner := NewCodexRunner(helperCommand(t, "sequence"), 5*time.Second)
@@ -76,7 +275,7 @@ func TestTimeoutKillsProcess(t *testing.T) {
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
 	require.NoError(t, err)
 
-	runner.timeout = 100 * time.Millisecond
+	runner.handshakeTimeout = 100 * time.Millisecond
 
 	require.NoError(t, runner.Stop(proc))
 
@@ -445,6 +644,147 @@ func waitForEvent(t *testing.T, ch <-chan types.AgentEvent) types.AgentEvent {
 	}
 }
 
+func waitForEventType(t *testing.T, ch <-chan types.AgentEvent, eventType string) types.AgentEvent {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == eventType {
+				return ev
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for event type %q", eventType)
+			return types.AgentEvent{}
+		}
+	}
+}
+
+func eventDataMap(t *testing.T, event types.AgentEvent, key string) map[string]interface{} {
+	t.Helper()
+	value, ok := event.Data[key].(map[string]interface{})
+	require.True(t, ok, "expected event data %q to be an object", key)
+	return value
+}
+
+// trackingWriteCloser is an in-memory stdin substitute that counts how
+// many times Close() was invoked. Used by T8 tests to assert that
+// closeStdin's sync.Once guard fires exactly once even when the
+// runner observes multiple terminal events.
+type trackingWriteCloser struct {
+	mu         sync.Mutex
+	buf        bytes.Buffer
+	closeCount int
+}
+
+func (w *trackingWriteCloser) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *trackingWriteCloser) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closeCount++
+	return nil
+}
+
+func (w *trackingWriteCloser) CloseCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closeCount
+}
+
+// startedExitedCodexProcessWithStdin mirrors startedExitedCodexProcess
+// but installs a trackingWriteCloser as stdin so tests can observe
+// closeStdin invocations.
+func startedExitedCodexProcessWithStdin(t *testing.T, ctx context.Context) (*codexProcess, *trackingWriteCloser) {
+	t.Helper()
+	stdin := &trackingWriteCloser{}
+	cmd := exec.CommandContext(ctx, "sh", "-c", "exit 0")
+	require.NoError(t, cmd.Start())
+	stderrDone := make(chan struct{})
+	close(stderrDone)
+	return &codexProcess{
+		cmd:        cmd,
+		stdin:      stdin,
+		streamCtx:  ctx,
+		done:       make(chan error, 1),
+		stderr:     &safeBuffer{},
+		stderrDone: stderrDone,
+	}, stdin
+}
+
+func TestCodexRunner_StdinClosesAfterTerminalEvent(t *testing.T) {
+	runner := NewCodexRunner("unused", 5*time.Second)
+	input := bytes.Buffer{}
+	writeJSONLine(t, &input, map[string]interface{}{"method": "item/started", "params": map[string]interface{}{}})
+	writeJSONLine(t, &input, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	process, stdin := startedExitedCodexProcessWithStdin(t, ctx)
+	eventsCh := make(chan types.AgentEvent, 16)
+	go runner.streamEventsAndWait(process, bufio.NewReader(bytes.NewReader(input.Bytes())), eventsCh)
+
+	events := collectEvents(t, eventsCh, process.done, 2, 5*time.Second)
+	require.Len(t, events, 2)
+	assert.Equal(t, "turn/completed", events[1].Type)
+	assertDoneEventually(t, process.done)
+
+	assert.Equal(t, 1, stdin.CloseCount(),
+		"closeStdin must fire exactly once after a terminal event")
+}
+
+func TestCodexRunner_StdinCloseIsIdempotent(t *testing.T) {
+	runner := NewCodexRunner("unused", 5*time.Second)
+	input := bytes.Buffer{}
+	writeJSONLine(t, &input, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
+	writeJSONLine(t, &input, map[string]interface{}{"method": "turn/cancelled", "params": map[string]interface{}{}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	process, stdin := startedExitedCodexProcessWithStdin(t, ctx)
+	eventsCh := make(chan types.AgentEvent, 16)
+	go runner.streamEventsAndWait(process, bufio.NewReader(bytes.NewReader(input.Bytes())), eventsCh)
+
+	events := collectEvents(t, eventsCh, process.done, 2, 5*time.Second)
+	require.Len(t, events, 2)
+	assertDoneEventually(t, process.done)
+
+	assert.Equal(t, 1, stdin.CloseCount(),
+		"two terminal events back-to-back must still close stdin only once")
+
+	// Calling closeStdin manually a third time must remain a no-op.
+	process.closeStdin()
+	assert.Equal(t, 1, stdin.CloseCount(),
+		"sync.Once guard must hold across direct closeStdin calls")
+}
+
+func writeJSONLine(t *testing.T, buf *bytes.Buffer, v map[string]interface{}) {
+	t.Helper()
+	payload, err := json.Marshal(v)
+	require.NoError(t, err)
+	buf.Write(payload)
+	buf.WriteByte('\n')
+}
+
+func startedExitedCodexProcess(t *testing.T, ctx context.Context) *codexProcess {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, "sh", "-c", "exit 0")
+	require.NoError(t, cmd.Start())
+	stderrDone := make(chan struct{})
+	close(stderrDone)
+	return &codexProcess{
+		cmd:        cmd,
+		streamCtx:  ctx,
+		done:       make(chan error, 1),
+		stderr:     &safeBuffer{},
+		stderrDone: stderrDone,
+	}
+}
+
 func collectEvents(t *testing.T, events <-chan types.AgentEvent, done <-chan error, expected int, timeout time.Duration) []types.AgentEvent {
 	t.Helper()
 	out := make([]types.AgentEvent, 0, expected)
@@ -497,6 +837,9 @@ func TestCodexHelperProcess(t *testing.T) {
 	writer := bufio.NewWriter(os.Stdout)
 
 	var methods []string
+	counts := map[string]int{}
+	var threadStartParams map[string]interface{}
+	var turnStartParams map[string]interface{}
 
 	for reader.Scan() {
 		line := reader.Text()
@@ -508,6 +851,7 @@ func TestCodexHelperProcess(t *testing.T) {
 		method, _ := msg["method"].(string)
 		if method != "" {
 			methods = append(methods, method)
+			counts[method]++
 		}
 
 		switch method {
@@ -518,18 +862,49 @@ func TestCodexHelperProcess(t *testing.T) {
 			if mode == "rpc-error" {
 				writeJSON(t, writer, map[string]interface{}{
 					"id":    msg["id"],
-					"error": map[string]interface{}{"code": -32001, "message": "server overload"},
+					"error": map[string]interface{}{"code": -32600, "message": "invalid request"},
 				})
 				return
 			}
 			writeJSON(t, writer, map[string]interface{}{"id": msg["id"], "result": map[string]interface{}{"ok": true}})
 		case "initialized":
 		case "thread/start":
+			if params, ok := msg["params"].(map[string]interface{}); ok {
+				threadStartParams = params
+			}
+			if mode == "overload-once" && counts["thread/start"] == 1 {
+				writeJSON(t, writer, map[string]interface{}{
+					"id":    msg["id"],
+					"error": map[string]interface{}{"code": -32001, "message": "Server overloaded"},
+				})
+				continue
+			}
+			if mode == "overload-forever" {
+				writeJSON(t, writer, map[string]interface{}{
+					"id":    msg["id"],
+					"error": map[string]interface{}{"code": -32001, "message": "Server overloaded"},
+				})
+				continue
+			}
 			writeJSON(t, writer, map[string]interface{}{"id": msg["id"], "result": map[string]interface{}{"thread": map[string]interface{}{"id": "thread-1"}}})
 		case "turn/start":
+			if params, ok := msg["params"].(map[string]interface{}); ok {
+				turnStartParams = params
+			}
 			writeJSON(t, writer, map[string]interface{}{"id": msg["id"], "result": map[string]interface{}{"turn": map[string]interface{}{"id": "turn-1"}}})
 
 			switch mode {
+			case "capture-wire", "overload-once":
+				writeJSON(t, writer, map[string]interface{}{
+					"method": "helper/requests",
+					"params": map[string]interface{}{
+						"counts":      counts,
+						"threadStart": threadStartParams,
+						"turnStart":   turnStartParams,
+					},
+				})
+				writeJSON(t, writer, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
+				return
 			case "sequence":
 				writeJSON(t, writer, map[string]interface{}{"method": "helper/sequence", "params": map[string]interface{}{"methods": methods}})
 				writeJSON(t, writer, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
@@ -566,6 +941,9 @@ func TestCodexHelperProcess(t *testing.T) {
 					},
 				})
 				writeJSON(t, writer, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
+				return
+			case "stream-stall":
+				time.Sleep(10 * time.Second)
 				return
 			case "stderr-race":
 				sigCh := make(chan os.Signal, 1)
@@ -645,4 +1023,67 @@ func writeJSON(t *testing.T, writer *bufio.Writer, v map[string]interface{}) {
 	_, err = writer.Write(append(bytes, '\n'))
 	require.NoError(t, err)
 	require.NoError(t, writer.Flush())
+}
+
+// TestCodexRunner_BuildConfigOverrideArgs covers the contract between the
+// workflow's codex.* fields and the `-c key=value` arguments that contrabass
+// appends when spawning `codex app-server`. Without this plumbing, workflow
+// settings were silently dropped and codex inherited whatever lived in the
+// operator's ~/.codex/config.toml.
+func TestCodexRunner_BuildConfigOverrideArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		opts CodexRunnerOptions
+		want []string
+	}{
+		{
+			name: "empty options produce no args",
+			opts: CodexRunnerOptions{},
+			want: nil,
+		},
+		{
+			name: "model only",
+			opts: CodexRunnerOptions{Model: "gpt-5-codex"},
+			want: []string{"-c", `model="gpt-5-codex"`},
+		},
+		{
+			name: "all three fields, in canonical order",
+			opts: CodexRunnerOptions{
+				Model:          "gpt-5-codex",
+				ApprovalPolicy: "never",
+				Sandbox:        "workspace-write",
+			},
+			want: []string{
+				"-c", `model="gpt-5-codex"`,
+				"-c", `approval_policy="never"`,
+				"-c", `sandbox_mode="workspace-write"`,
+			},
+		},
+		{
+			name: "whitespace-only fields are skipped",
+			opts: CodexRunnerOptions{Model: "  ", ApprovalPolicy: "never", Sandbox: ""},
+			want: []string{"-c", `approval_policy="never"`},
+		},
+		{
+			name: "values with spaces are quoted",
+			opts: CodexRunnerOptions{Model: "gpt 5 codex"},
+			want: []string{"-c", `model="gpt 5 codex"`},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := NewCodexRunner("codex app-server", 5*time.Second)
+			r.ConfigureCodex(c.opts)
+			assert.Equal(t, c.want, r.buildConfigOverrideArgs())
+		})
+	}
+}
+
+// TestCodexRunner_ConfigureCodex_Chains checks that ConfigureCodex returns the
+// receiver so call sites can chain it onto NewCodexRunner.
+func TestCodexRunner_ConfigureCodex_Chains(t *testing.T) {
+	base := NewCodexRunner("codex app-server", 5*time.Second)
+	chained := base.ConfigureCodex(CodexRunnerOptions{Model: "gpt-5-codex"})
+	assert.Same(t, base, chained, "ConfigureCodex must return the same runner pointer")
+	assert.Equal(t, "gpt-5-codex", base.options.Model)
 }

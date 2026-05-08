@@ -12,6 +12,7 @@ import (
 
 	"github.com/junhoyeo/contrabass/internal/hub"
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/timeline"
 	"github.com/junhoyeo/contrabass/internal/tracker"
 )
 
@@ -19,6 +20,13 @@ const defaultListenAddr = "localhost:8080"
 
 type SnapshotProvider interface {
 	Snapshot() orchestrator.StateSnapshot
+}
+
+// AgentStopper is implemented by the orchestrator so the dashboard can
+// terminate a running agent via the stop endpoint without coupling the
+// HTTP layer to process-lifecycle details.
+type AgentStopper interface {
+	StopAgent(ctx context.Context, issueID string) error
 }
 
 type BoardProvider interface {
@@ -29,6 +37,10 @@ type BoardProvider interface {
 	MoveIssue(ctx context.Context, issueID string, state tracker.LocalBoardState) (tracker.LocalBoardIssue, error)
 }
 
+type TimelineProvider interface {
+	IssueTimeline(ctx context.Context, issueID string) (*timeline.WorkflowTimelineSnapshot, error)
+}
+
 type Server struct {
 	httpServer       *http.Server
 	hub              *hub.Hub[WebEvent]
@@ -36,7 +48,10 @@ type Server struct {
 	dashboardFS      fs.FS
 	listenAddr       string
 	snapshotProvider SnapshotProvider
+	agentStopper     AgentStopper
 	boardProvider    BoardProvider
+	detailProvider   tracker.IssueDetailProvider
+	timelineProvider TimelineProvider
 }
 
 func NewServer(
@@ -70,6 +85,18 @@ func normalizeListenAddr(addr string) string {
 
 func (s *Server) SetBoardProvider(provider BoardProvider) {
 	s.boardProvider = provider
+}
+
+func (s *Server) SetIssueDetailProvider(provider tracker.IssueDetailProvider) {
+	s.detailProvider = provider
+}
+
+func (s *Server) SetTimelineProvider(provider TimelineProvider) {
+	s.timelineProvider = provider
+}
+
+func (s *Server) SetAgentStopper(stopper AgentStopper) {
+	s.agentStopper = stopper
 }
 
 func (s *Server) SetEventSink(sink chan<- WebEvent) {
@@ -139,11 +166,14 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 func (s *Server) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/state", s.withCORS(s.handleGetState))
+	mux.HandleFunc("GET /api/v1/issues/{issue_id}/details", s.withCORS(s.handleGetIssueDetails))
+	mux.HandleFunc("GET /api/v1/issues/{issue_id}/timeline", s.withCORS(s.handleGetIssueTimeline))
 	mux.HandleFunc("GET /api/v1/{identifier}", s.withCORS(s.handleGetIssue))
 	mux.HandleFunc("GET /api/v1/board/issues", s.withCORS(s.handleListBoardIssues))
 	mux.HandleFunc("GET /api/v1/board/issues/{identifier}", s.withCORS(s.handleGetBoardIssue))
 	mux.HandleFunc("POST /api/v1/board/issues", s.withCORS(s.handleCreateBoardIssue))
 	mux.HandleFunc("PATCH /api/v1/board/issues/{identifier}", s.withCORS(s.handleUpdateBoardIssue))
+	mux.HandleFunc("POST /api/v1/running/{issue_id}/stop", s.withCORS(s.handleStopAgent))
 	mux.HandleFunc("POST /api/v1/refresh", s.withCORS(s.handleRefresh))
 	mux.HandleFunc("GET /api/v1/events", s.withCORS(s.handleSSE))
 	mux.HandleFunc("/api/v1/", s.withCORS(func(w http.ResponseWriter, _ *http.Request) {
@@ -192,6 +222,28 @@ func (s *Server) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRefresh(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request) {
+	if s.agentStopper == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "stop endpoint not configured")
+		return
+	}
+
+	issueID := strings.TrimSpace(r.PathValue("issue_id"))
+	if issueID == "" {
+		writeJSONError(w, http.StatusBadRequest, "issue_id is required")
+		return
+	}
+
+	switch err := s.agentStopper.StopAgent(r.Context(), issueID); {
+	case err == nil:
+		w.WriteHeader(http.StatusAccepted)
+	case errors.Is(err, orchestrator.ErrAgentNotRunning):
+		writeJSONError(w, http.StatusNotFound, "agent not running")
+	default:
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {

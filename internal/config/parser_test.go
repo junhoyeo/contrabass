@@ -233,6 +233,16 @@ codex:
   model: openai/gpt-5.3-codex-mini
   approval_policy: manual
   sandbox: none
+timeline:
+  dir: .contrabass/custom-timeline
+linear:
+  issue_details:
+    enabled: true
+  sync_comments:
+    enabled: true
+    mode: top_level
+    queue_size: 7
+    poll_interval_ms: 2500
 ---
 Prompt body.
 `
@@ -258,9 +268,15 @@ Prompt body.
 	assert.Equal(t, "./scripts/after.sh", cfg.HookAfterRun())
 	assert.Equal(t, "./scripts/cleanup.sh", cfg.HookBeforeRemove())
 	assert.Equal(t, "/usr/local/bin/codex", cfg.CodexBinaryPath())
+	assert.Equal(t, ".contrabass/custom-timeline", cfg.WorkflowTimelineDir())
 	assert.Equal(t, "openai/gpt-5.3-codex-mini", cfg.CodexModel())
 	assert.Equal(t, "manual", cfg.CodexApprovalPolicy())
 	assert.Equal(t, "none", cfg.CodexSandbox())
+	assert.False(t, cfg.LinearIssueDetailsEnabled())
+	assert.False(t, cfg.LinearSyncCommentsEnabled())
+	assert.Equal(t, LinearSyncCommentsModeTopLevel, cfg.LinearSyncCommentsMode())
+	assert.Equal(t, 7, cfg.LinearSyncCommentsQueueSize())
+	assert.Equal(t, 2500, cfg.LinearSyncCommentsPollIntervalMs())
 
 	model, modelErr := cfg.Model()
 	require.NoError(t, modelErr)

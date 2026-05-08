@@ -135,6 +135,108 @@ func TestFetchIssues_EmptyResponse(t *testing.T) {
 	assert.NotNil(t, issues) // should be empty slice, not nil
 }
 
+// TestFetchIssues_FiltersTerminalAndBacklogStates exercises the post-success
+// re-claim guard: the orchestrator releases an issue by transitioning its Linear
+// state to "Done" (type=completed). Without this filter the next poll would
+// hand the same issue back to the orchestrator and produce a re-claim loop.
+// Backlog issues are also filtered so triage-stage work doesn't get picked up.
+func TestFetchIssues_FiltersTerminalAndBacklogStates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issues": map[string]interface{}{
+					"nodes": []interface{}{
+						map[string]interface{}{
+							"id":     "open-todo",
+							"title":  "Open Todo",
+							"state":  map[string]interface{}{"name": "Todo", "type": "unstarted"},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+						},
+						map[string]interface{}{
+							"id":     "open-in-progress",
+							"title":  "Open In Progress",
+							"state":  map[string]interface{}{"name": "In Progress", "type": "started"},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+						},
+						map[string]interface{}{
+							"id":     "done-completed",
+							"title":  "Done Completed",
+							"state":  map[string]interface{}{"name": "Done", "type": "completed"},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+						},
+						map[string]interface{}{
+							"id":     "canceled",
+							"title":  "Canceled",
+							"state":  map[string]interface{}{"name": "Canceled", "type": "canceled"},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+						},
+						map[string]interface{}{
+							"id":     "backlog",
+							"title":  "Backlog",
+							"state":  map[string]interface{}{"name": "Backlog", "type": "backlog"},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+						},
+					},
+					"pageInfo": map[string]interface{}{"hasNextPage": false},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	issues, err := client.FetchIssues(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, issues, 2, "completed/canceled/backlog must be filtered out")
+
+	ids := []string{issues[0].ID, issues[1].ID}
+	assert.ElementsMatch(t, []string{"open-todo", "open-in-progress"}, ids)
+
+	for _, iss := range issues {
+		assert.Contains(t, []string{"unstarted", "started"}, iss.TrackerMeta["linear_state_type"])
+	}
+
+	statesByID := map[string]types.IssueState{}
+	for _, iss := range issues {
+		statesByID[iss.ID] = iss.State
+	}
+	assert.Equal(t, types.Unclaimed, statesByID["open-todo"])
+	assert.Equal(t, types.Claimed, statesByID["open-in-progress"])
+}
+
+// TestFetchIssues_KeepsIssuesWithoutStateType guards backwards compatibility:
+// older / mocked Linear responses that omit state.type must still be returned
+// so the orchestrator's existing behavior is preserved when type info is
+// genuinely unavailable. Real Linear always returns type, so this only covers
+// fixtures and adversarial responses.
+func TestFetchIssues_KeepsIssuesWithoutStateType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issues": map[string]interface{}{
+					"nodes": []interface{}{
+						map[string]interface{}{
+							"id":     "no-type",
+							"title":  "Type Field Omitted",
+							"state":  map[string]interface{}{"name": "Todo"},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+						},
+					},
+					"pageInfo": map[string]interface{}{"hasNextPage": false},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	issues, err := client.FetchIssues(context.Background())
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.Equal(t, "", issues[0].TrackerMeta["linear_state_type"])
+}
+
 func TestFetchIssues_Pagination(t *testing.T) {
 	var requestCount atomic.Int32
 
@@ -453,7 +555,13 @@ func TestPostComment(t *testing.T) {
 			statusCode: 200,
 			response: map[string]interface{}{
 				"data": map[string]interface{}{
-					"commentCreate": map[string]interface{}{"success": true},
+					"commentCreate": map[string]interface{}{
+						"success": true,
+						"comment": map[string]interface{}{
+							"id":  "comment-1",
+							"url": "https://linear.app/acme/comment/comment-1",
+						},
+					},
 				},
 			},
 			wantErr: false,
@@ -490,6 +598,95 @@ func TestPostComment(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestLinearCommentWriterMutations(t *testing.T) {
+	tests := []struct {
+		name      string
+		call      func(context.Context, *LinearClient) (CommentRef, error)
+		assertReq func(t *testing.T, req gqlRequest)
+		response  map[string]interface{}
+		wantRef   CommentRef
+	}{
+		{
+			name: "root comment returns id and url",
+			call: func(ctx context.Context, c *LinearClient) (CommentRef, error) {
+				return c.CreateRootComment(ctx, RootCommentInput{IssueID: "issue-42", Body: "root body"})
+			},
+			assertReq: func(t *testing.T, req gqlRequest) {
+				assert.Contains(t, req.Query, "commentCreate")
+				assert.Contains(t, req.Query, "comment { id url }")
+				assert.Equal(t, "issue-42", req.Variables["issueId"])
+				assert.Equal(t, "root body", req.Variables["body"])
+			},
+			response: map[string]interface{}{
+				"data": map[string]interface{}{
+					"commentCreate": map[string]interface{}{
+						"success": true,
+						"comment": map[string]interface{}{"id": "root-1", "url": "https://linear.app/root-1"},
+					},
+				},
+			},
+			wantRef: CommentRef{ID: "root-1", URL: "https://linear.app/root-1"},
+		},
+		{
+			name: "reply comment sends parent id",
+			call: func(ctx context.Context, c *LinearClient) (CommentRef, error) {
+				return c.CreateReplyComment(ctx, ReplyCommentInput{IssueID: "issue-42", ParentID: "root-1", Body: "reply body"})
+			},
+			assertReq: func(t *testing.T, req gqlRequest) {
+				assert.Contains(t, req.Query, "parentId")
+				assert.Equal(t, "issue-42", req.Variables["issueId"])
+				assert.Equal(t, "root-1", req.Variables["parentId"])
+				assert.Equal(t, "reply body", req.Variables["body"])
+			},
+			response: map[string]interface{}{
+				"data": map[string]interface{}{
+					"commentCreate": map[string]interface{}{
+						"success": true,
+						"comment": map[string]interface{}{"id": "reply-1", "url": "https://linear.app/reply-1"},
+					},
+				},
+			},
+			wantRef: CommentRef{ID: "reply-1", URL: "https://linear.app/reply-1"},
+		},
+		{
+			name: "update comment sends comment id",
+			call: func(ctx context.Context, c *LinearClient) (CommentRef, error) {
+				return c.UpdateComment(ctx, "reply-1", "updated body")
+			},
+			assertReq: func(t *testing.T, req gqlRequest) {
+				assert.Contains(t, req.Query, "commentUpdate")
+				assert.Equal(t, "reply-1", req.Variables["commentId"])
+				assert.Equal(t, "updated body", req.Variables["body"])
+			},
+			response: map[string]interface{}{
+				"data": map[string]interface{}{
+					"commentUpdate": map[string]interface{}{
+						"success": true,
+						"comment": map[string]interface{}{"id": "reply-1", "url": "https://linear.app/reply-1"},
+					},
+				},
+			},
+			wantRef: CommentRef{ID: "reply-1", URL: "https://linear.app/reply-1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				req := parseGQLRequest(t, r)
+				tt.assertReq(t, req)
+				respondJSON(w, 200, tt.response)
+			}))
+			defer server.Close()
+
+			client := testClient(t, server.URL)
+			ref, err := tt.call(context.Background(), client)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantRef, ref)
 		})
 	}
 }
@@ -780,6 +977,95 @@ func TestFetchIssues_MissingDataField(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing or invalid data field")
+}
+
+// --- BlockedBy from inverseRelations Tests ---
+
+func TestNormalizeIssue_BlockedByFromInverseRelations(t *testing.T) {
+	tests := []struct {
+		name            string
+		inverseRelNodes interface{}
+		wantBlockedBy   []string
+	}{
+		{
+			name: "one inverse blocks -> single-element BlockedBy",
+			inverseRelNodes: []interface{}{
+				map[string]interface{}{
+					"type":  "blocks",
+					"issue": map[string]interface{}{"identifier": "ZII-49"},
+				},
+			},
+			wantBlockedBy: []string{"ZII-49"},
+		},
+		{
+			name: "two inverse blocks plus one related -> only blocks kept in input order",
+			inverseRelNodes: []interface{}{
+				map[string]interface{}{
+					"type":  "blocks",
+					"issue": map[string]interface{}{"identifier": "ZII-49"},
+				},
+				map[string]interface{}{
+					"type":  "related",
+					"issue": map[string]interface{}{"identifier": "ZII-99"},
+				},
+				map[string]interface{}{
+					"type":  "blocks",
+					"issue": map[string]interface{}{"identifier": "ZII-50"},
+				},
+			},
+			wantBlockedBy: []string{"ZII-49", "ZII-50"},
+		},
+		{
+			name:            "empty inverseRelations.nodes -> empty slice",
+			inverseRelNodes: []interface{}{},
+			wantBlockedBy:   []string{},
+		},
+		{
+			name: "inverse blocks node missing issue.identifier -> silently skipped",
+			inverseRelNodes: []interface{}{
+				map[string]interface{}{
+					"type":  "blocks",
+					"issue": map[string]interface{}{},
+				},
+			},
+			wantBlockedBy: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				respondJSON(w, 200, map[string]interface{}{
+					"data": map[string]interface{}{
+						"issues": map[string]interface{}{
+							"nodes": []interface{}{
+								map[string]interface{}{
+									"id":         "issue-1",
+									"identifier": "ZII-53",
+									"title":      "Dependent task",
+									"state":      map[string]interface{}{"name": "Todo"},
+									"labels":     map[string]interface{}{"nodes": []interface{}{}},
+									"inverseRelations": map[string]interface{}{
+										"nodes": tt.inverseRelNodes,
+									},
+								},
+							},
+							"pageInfo": map[string]interface{}{"hasNextPage": false},
+						},
+					},
+				})
+			}))
+			defer server.Close()
+
+			client := testClient(t, server.URL)
+			issues, err := client.FetchIssues(context.Background())
+
+			require.NoError(t, err)
+			require.Len(t, issues, 1)
+			assert.Equal(t, tt.wantBlockedBy, issues[0].BlockedBy)
+			assert.NotNil(t, issues[0].BlockedBy)
+		})
+	}
 }
 
 // --- truncateBody Tests ---

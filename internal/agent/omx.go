@@ -23,20 +23,20 @@ func NewOMXRunner(cfg *config.WorkflowConfig, timeout time.Duration) *OMXRunner 
 		teamSpec:       cfg.OMXTeamSpec(),
 		pollInterval:   pollInterval,
 		startupTimeout: startupTimeout,
+		// omx v0.16+ runs its own worker supervisor (heartbeat, restart,
+		// quarantine), so contrabass should only observe — driving its own
+		// restart/quarantine on top of omx kills healthy codex turns.
+		selfHealing: true,
+		// omx v0.16 removed the inline `omx team ralph ...` form (ralph must
+		// now run as a separate `omx ralph ...` invocation), so the workflow
+		// `omx.ralph` flag is no longer threaded into team launch. Setting it
+		// has no effect on contrabass-driven team runs; ralph cycles need to
+		// be invoked outside the runner.
 		startArgs: func(teamSpec, task string) []string {
-			args := []string{"team"}
-			if cfg.OMXRalph() {
-				args = append(args, "ralph")
-			}
-			args = append(args, teamSpec, task)
-			return args
+			return []string{"team", teamSpec, task}
 		},
 		shutdownArgs: func(teamName string) []string {
-			args := []string{"team", "shutdown", teamName, "--force"}
-			if cfg.OMXRalph() {
-				args = append(args, "--ralph")
-			}
-			return args
+			return []string{"team", "shutdown", teamName, "--force"}
 		},
 	})
 

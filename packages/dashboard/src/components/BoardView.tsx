@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { BoardIssue } from '../types'
+import { formatDateTime, formatIssueState } from '../i18n/format'
+import { zhCN } from '../i18n/messages'
 import './BoardView.css'
 
 interface BoardViewProps {
@@ -19,25 +21,8 @@ function sortByUpdatedAtDesc(entries: BoardIssue[]): BoardIssue[] {
   )
 }
 
-function formatUpdatedAt(value: string): string {
-  const timestamp = Date.parse(value)
-  if (Number.isNaN(timestamp)) {
-    return '-'
-  }
-
-  return new Date(timestamp).toLocaleString()
-}
-
 function getStateLabel(state: string): string {
-  if (state === 'in_progress') {
-    return 'In Progress'
-  }
-
-  if (state === 'done') {
-    return 'Done'
-  }
-
-  return 'Open'
+  return formatIssueState(state)
 }
 
 function getStateClassName(state: string): string {
@@ -139,7 +124,7 @@ export function BoardView({ issues }: BoardViewProps) {
       setTitle('')
       setDescription('')
     } catch {
-      setErrorMessage('Unable to create board issue')
+      setErrorMessage(zhCN.board.createError)
     } finally {
       setSubmitting(false)
     }
@@ -172,7 +157,7 @@ export function BoardView({ issues }: BoardViewProps) {
 
       setLocalIssues((prev) => updateIssueList(prev, identifier, patch))
     } catch {
-      setErrorMessage(`Unable to update issue ${identifier}`)
+      setErrorMessage(zhCN.board.updateError(identifier))
     }
   }
 
@@ -203,28 +188,28 @@ export function BoardView({ issues }: BoardViewProps) {
   }
 
   return (
-    <section className="board-view" aria-label="Board issues">
+    <section className="board-view" aria-label={zhCN.board.ariaLabel}>
       <form className="board-view__create" onSubmit={handleCreateIssue}>
         <input
           className="board-view__input"
           type="text"
-          placeholder="Issue title"
+          placeholder={zhCN.board.titlePlaceholder}
           value={title}
           onChange={(event) => setTitle(event.target.value)}
-          aria-label="Issue title"
+          aria-label={zhCN.board.titlePlaceholder}
           disabled={submitting}
         />
         <input
           className="board-view__input"
           type="text"
-          placeholder="Issue description"
+          placeholder={zhCN.board.descriptionPlaceholder}
           value={description}
           onChange={(event) => setDescription(event.target.value)}
-          aria-label="Issue description"
+          aria-label={zhCN.board.descriptionPlaceholder}
           disabled={submitting}
         />
         <button className="board-view__button" type="submit" disabled={submitting || !title.trim()}>
-          {submitting ? 'Creating...' : 'Create'}
+          {submitting ? zhCN.board.creating : zhCN.board.create}
         </button>
       </form>
 
@@ -235,17 +220,17 @@ export function BoardView({ issues }: BoardViewProps) {
       ) : null}
 
       {sortedIssues.length === 0 ? (
-        <div className="board-view__empty">No board issues</div>
+        <div className="board-view__empty">{zhCN.board.empty}</div>
       ) : (
         <div className="board-view__wrapper">
-          <table className="board-view__table" aria-label="Board issues table">
+          <table className="board-view__table" aria-label={zhCN.board.tableAriaLabel}>
             <thead>
               <tr>
-                <th>Identifier</th>
-                <th>Title</th>
-                <th>State</th>
-                <th>Assignee</th>
-                <th>Updated</th>
+                <th>{zhCN.board.headers.identifier}</th>
+                <th>{zhCN.board.headers.title}</th>
+                <th>{zhCN.board.headers.state}</th>
+                <th>{zhCN.board.headers.assignee}</th>
+                <th>{zhCN.board.headers.updated}</th>
               </tr>
             </thead>
             <tbody>
@@ -265,7 +250,7 @@ export function BoardView({ issues }: BoardViewProps) {
                             onChange={(event) =>
                               setEditDraft((prev) => ({ ...prev, title: event.target.value }))
                             }
-                            aria-label={`Edit title ${issue.identifier}`}
+                            aria-label={zhCN.board.editTitleAria(issue.identifier)}
                           />
                           <input
                             className="board-view__input board-view__input--compact"
@@ -274,7 +259,7 @@ export function BoardView({ issues }: BoardViewProps) {
                             onChange={(event) =>
                               setEditDraft((prev) => ({ ...prev, description: event.target.value }))
                             }
-                            aria-label={`Edit description ${issue.identifier}`}
+                            aria-label={zhCN.board.editDescriptionAria(issue.identifier)}
                           />
                           <div className="board-view__actions">
                             <button
@@ -284,14 +269,14 @@ export function BoardView({ issues }: BoardViewProps) {
                                 void handleSaveEdit(issue.identifier)
                               }}
                             >
-                              Save
+                              {zhCN.board.save}
                             </button>
                             <button
                               className="board-view__button board-view__button--ghost board-view__button--small"
                               type="button"
                               onClick={handleCancelEditing}
                             >
-                              Cancel
+                              {zhCN.board.cancel}
                             </button>
                           </div>
                         </div>
@@ -322,7 +307,7 @@ export function BoardView({ issues }: BoardViewProps) {
                                   void patchIssue(issue.identifier, { state: nextState })
                                 }}
                               >
-                                {nextState === 'in_progress' ? 'in progress' : nextState}
+                                {zhCN.board.stateAction(formatIssueState(nextState))}
                               </button>
                             )
                           })}
@@ -330,7 +315,7 @@ export function BoardView({ issues }: BoardViewProps) {
                       </div>
                     </td>
                     <td>{issue.assignee || '-'}</td>
-                    <td>{formatUpdatedAt(issue.updated_at)}</td>
+                    <td>{formatDateTime(issue.updated_at)}</td>
                   </tr>
                 )
               })}
