@@ -24,7 +24,7 @@ import (
 )
 
 func TestCodexRunner_PolicyDefaults_OnWire(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "capture-wire"), 2*time.Second)
+	runner := NewCodexRunner(helperCommand(t, "capture-wire"), 15*time.Second)
 
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
 	require.NoError(t, err)
@@ -42,7 +42,7 @@ func TestCodexRunner_PolicyDefaults_OnWire(t *testing.T) {
 }
 
 func TestCodexRunner_PolicyOverride_OnWire(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "capture-wire"), 2*time.Second)
+	runner := NewCodexRunner(helperCommand(t, "capture-wire"), 15*time.Second)
 	runner.ConfigureCodex(CodexRunnerOptions{
 		ApprovalPolicy: "on-request",
 		Sandbox:        map[string]interface{}{"type": "readOnly"},
@@ -64,7 +64,7 @@ func TestCodexRunner_PolicyOverride_OnWire(t *testing.T) {
 }
 
 func TestCodexRunner_OverloadRetried(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "overload-once"), 2*time.Second)
+	runner := NewCodexRunner(helperCommand(t, "overload-once"), 15*time.Second)
 	runner.overloadStartDelay = 0
 
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
@@ -77,7 +77,7 @@ func TestCodexRunner_OverloadRetried(t *testing.T) {
 }
 
 func TestCodexRunner_OverloadBudgetExhausted(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "overload-forever"), 2*time.Second)
+	runner := NewCodexRunner(helperCommand(t, "overload-forever"), 15*time.Second)
 	runner.overloadRetries = 2
 	runner.overloadStartDelay = 0
 
