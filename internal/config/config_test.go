@@ -852,7 +852,8 @@ func TestWorkflowConfig_OhMyOpenCodeDefaults(t *testing.T) {
 }
 
 func TestParseWorkflow_OhMyOpenCodeConfig(t *testing.T) {
-	t.Parallel()
+	const wantAPIKey = "sk-test-key"
+	t.Setenv("OPENCODE_PROVIDER_API_KEY", wantAPIKey)
 
 	cfg, err := ParseWorkflow("../../testdata/workflow.ohmyopencode.md")
 	require.NoError(t, err)
@@ -875,7 +876,7 @@ func TestParseWorkflow_OhMyOpenCodeConfig(t *testing.T) {
 
 	assert.Equal(t, "anthropic", cfg.OhMyOpenCodeProviderName())
 	assert.Equal(t, "https://proxy.example.com/v1", cfg.OhMyOpenCodeProviderBaseURL())
-	assert.Equal(t, "sk-test-key", cfg.OhMyOpenCodeProviderAPIKey())
+	assert.Equal(t, wantAPIKey, cfg.OhMyOpenCodeProviderAPIKey())
 
 	assert.Equal(t, "opencode serve", cfg.OpenCodeBinaryPath())
 	assert.Equal(t, 8787, cfg.OpenCodePort())

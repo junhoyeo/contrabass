@@ -1,9 +1,10 @@
 ---
 max_concurrency: 5
 poll_interval_ms: 10000
-model: anthropic/claude-sonnet-4-6
+model: $CONTRABASS_MODEL
 agent_timeout_ms: 600000
 stall_timeout_ms: 120000
+project_url: $CONTRABASS_PROJECT_URL
 tracker:
   type: github
   owner: example-org
@@ -35,7 +36,7 @@ oh_my_opencode:
   provider:
     name: anthropic
     base_url: https://proxy.example.com/v1
-    api_key: sk-test-key
+    api_key: $OPENCODE_PROVIDER_API_KEY
 ---
 # Oh-My-OpenCode Workflow
 

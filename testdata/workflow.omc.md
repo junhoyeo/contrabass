@@ -1,8 +1,8 @@
 ---
 max_concurrency: 4
 poll_interval_ms: 8000
-model: anthropic/claude-sonnet-4-6
-project_url: https://linear.app/example/project/omc
+model: $CONTRABASS_MODEL
+project_url: $CONTRABASS_PROJECT_URL
 tracker:
   type: internal
 agent:
