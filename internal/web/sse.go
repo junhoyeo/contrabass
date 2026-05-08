@@ -9,7 +9,14 @@ import (
 	"github.com/junhoyeo/contrabass/internal/agent"
 )
 
-const sseKeepAliveInterval = 15 * time.Second
+const defaultSSEKeepaliveInterval = 15 * time.Second
+
+func (s *Server) sseKeepalive() time.Duration {
+	if s.sseKeepaliveInterval > 0 {
+		return s.sseKeepaliveInterval
+	}
+	return defaultSSEKeepaliveInterval
+}
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
@@ -39,7 +46,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 	id++
 
-	ticker := time.NewTicker(sseKeepAliveInterval)
+	ticker := time.NewTicker(s.sseKeepalive())
 	defer ticker.Stop()
 
 	for {
