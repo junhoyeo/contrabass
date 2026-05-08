@@ -25,7 +25,7 @@ func TestNewServerWithTeamSnapshotProvider(t *testing.T) {
 	provider := NewTeamSnapshotProvider()
 
 	require.NotPanics(t, func() {
-		srv := NewServer(":0", provider, h, nil)
+		srv := NewServer("localhost", 0, provider, h, nil)
 		require.NotNil(t, srv)
 		require.Equal(t, provider, srv.snapshotProvider)
 	})

@@ -40,6 +40,7 @@ func runTeamExecutionApp(
 	noTUI bool,
 	dryRun bool,
 	port int,
+	host string,
 ) error {
 	if watcher == nil {
 		return errors.New("config watcher is required for team execution")
@@ -48,7 +49,7 @@ func runTeamExecutionApp(
 	var webSink chan<- web.WebEvent
 	if port > 0 {
 		var err error
-		webSink, err = startTeamWebServer(ctx, logger, port)
+		webSink, err = startTeamWebServer(ctx, logger, port, host)
 		if err != nil {
 			return err
 		}
@@ -85,7 +86,7 @@ func runTeamExecutionApp(
 	})
 }
 
-func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int) (chan<- web.WebEvent, error) {
+func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int, host string) (chan<- web.WebEvent, error) {
 	webEvents := make(chan web.WebEvent, 256)
 	h := hub.NewHub(webEvents)
 	go h.Run(ctx)
@@ -96,9 +97,13 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 	}
 
 	provider := web.NewTeamSnapshotProvider()
-	srv := web.NewServer(fmt.Sprintf("localhost:%d", port), provider, h, dashboardFS)
+	srv := web.NewServer(host, port, provider, h, dashboardFS)
 
-	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
+	listenHost := host
+	if listenHost == "" {
+		listenHost = "localhost"
+	}
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", listenHost, port))
 	if err != nil {
 		return nil, fmt.Errorf("listen web dashboard: %w", err)
 	}
@@ -109,7 +114,7 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 		}
 	}()
 
-	fmt.Fprintf(os.Stderr, "Web dashboard available at http://localhost:%d\n", port)
+	printDashboardURL(os.Stderr, listenHost, port)
 	return webEvents, nil
 }
 func runTeamExecutionLoop(

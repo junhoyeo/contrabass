@@ -80,6 +80,58 @@ func TestFlagDefaults(t *testing.T) {
 	}
 }
 
+func TestHostFlagDefault(t *testing.T) {
+	cmd := newRootCmd()
+	f := cmd.Flags().Lookup("host")
+	require.NotNil(t, f, "flag --host should be registered")
+	assert.Equal(t, "localhost", f.DefValue)
+}
+
+func TestHostFlagIsPassedToRun(t *testing.T) {
+	restoreRunTUITestHooks(t)
+
+	boardDir := filepath.Join(t.TempDir(), "board")
+	cfgPath := writeRootWorkflowConfig(t, fmt.Sprintf(`---
+model: openai/gpt-5-codex
+project_url: https://linear.app/example/project/internal
+tracker:
+  type: internal
+  board_dir: %q
+team:
+  execution_mode: team
+---
+Prompt.
+`, boardDir))
+
+	originalRunRootTeamExecution := runRootTeamExecution
+	t.Cleanup(func() { runRootTeamExecution = originalRunRootTeamExecution })
+
+	var capturedHost string
+	runRootTeamExecution = func(
+		_ context.Context,
+		_ string,
+		_ *config.Watcher,
+		_ *log.Logger,
+		_ bool,
+		_ bool,
+		_ int,
+		host string,
+	) error {
+		capturedHost = host
+		return nil
+	}
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"--config", cfgPath, "--host", "0.0.0.0", "--no-tui"})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, "0.0.0.0", capturedHost)
+}
+
 func TestRunTUIPropagatesOrchestratorError(t *testing.T) {
 	orch := orchestrator.NewOrchestrator(nil, nil, nil, nil, nil)
 
@@ -346,7 +398,7 @@ func TestProjectSlug(t *testing.T) {
 // --- Tests for run ---
 
 func TestRun_ConfigParseError(t *testing.T) {
-	err := run(filepath.Join(t.TempDir(), "no-such-file.md"), false, "", "info", false, 0)
+	err := run(filepath.Join(t.TempDir(), "no-such-file.md"), false, "", "info", false, 0, "")
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "parsing workflow config")
 }
@@ -373,6 +425,7 @@ Prompt.
 		noTUI bool,
 		dryRun bool,
 		port int,
+		host string,
 	) error {
 		called = true
 		require.NotNil(t, watcher)
@@ -383,7 +436,7 @@ Prompt.
 		return nil
 	}
 
-	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", false, 0)
+	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", false, 0, "")
 	require.NoError(t, err)
 	assert.True(t, called)
 }
@@ -411,12 +464,13 @@ Prompt.
 		bool,
 		bool,
 		int,
+		string,
 	) error {
 		t.Fatal("team execution path should not be called when execution_mode=single")
 		return nil
 	}
 
-	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", true, 0)
+	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", true, 0, "")
 	require.NoError(t, err)
 }
 
@@ -434,7 +488,7 @@ team:
 Prompt.
 `)
 
-	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", true, 0)
+	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", true, 0, "")
 	require.Error(t, err)
 	assert.ErrorContains(t, err, `team execution requires tracker.type internal/local, got "github"`)
 }

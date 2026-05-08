@@ -159,6 +159,64 @@ func TestNormalizeListenAddr(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:9090", normalizeListenAddr("127.0.0.1:9090"))
 }
 
+func TestBuildListenAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		port int
+		want string
+	}{
+		{"defaults when empty host and zero port", "", 0, "localhost:8080"},
+		{"explicit host and port", "0.0.0.0", 9090, "0.0.0.0:9090"},
+		{"localhost explicit", "localhost", 8080, "localhost:8080"},
+		{"negative port uses default", "localhost", -1, "localhost:8080"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, buildListenAddr(tt.host, tt.port))
+		})
+	}
+}
+
+func TestServerBindsOnAllInterfaces(t *testing.T) {
+	provider := fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{Issues: map[string]types.Issue{}}}
+	server := &Server{
+		listenAddr:       "0.0.0.0:0",
+		snapshotProvider: provider,
+		dashboardFS:      nil,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	require.NoError(t, err)
+
+	boundPort := listener.Addr().(*net.TCPAddr).Port
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Serve(ctx, listener)
+	}()
+
+	require.Eventually(t, func() bool {
+		resp, reqErr := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/v1/state", boundPort))
+		if reqErr != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 2*time.Second, 20*time.Millisecond)
+
+	cancel()
+	select {
+	case serveErr := <-errCh:
+		require.NoError(t, serveErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for server shutdown")
+	}
+}
+
 func TestPublishEvent(t *testing.T) {
 	tests := []struct {
 		name        string

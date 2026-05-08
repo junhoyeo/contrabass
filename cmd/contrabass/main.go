@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -58,8 +59,9 @@ var (
 		noTUI bool,
 		dryRun bool,
 		port int,
+		host string,
 	) error {
-		return runTeamExecutionApp(ctx, cfgPath, watcher, logger, noTUI, dryRun, port)
+		return runTeamExecutionApp(ctx, cfgPath, watcher, logger, noTUI, dryRun, port, host)
 	}
 	runTUIShutdownTimeout = 6 * time.Second
 )
@@ -79,6 +81,7 @@ func newRootCmd() *cobra.Command {
 		logLevel string
 		dryRun   bool
 		port     int
+		host     string
 	)
 
 	var updateResult update.Result
@@ -100,7 +103,7 @@ progress in a terminal UI built with the Charm stack.`,
 			}
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(cfgPath, noTUI, logFile, logLevel, dryRun, port)
+			return run(cfgPath, noTUI, logFile, logLevel, dryRun, port, host)
 		},
 	}
 
@@ -110,6 +113,7 @@ progress in a terminal UI built with the Charm stack.`,
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "log level (debug/info/warn/error)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "exit after first poll cycle")
 	cmd.Flags().IntVar(&port, "port", 0, "web dashboard port (0 = disabled)")
+	cmd.Flags().StringVar(&host, "host", "localhost", "web dashboard bind host (e.g. 0.0.0.0 for all interfaces)")
 
 	_ = cmd.MarkFlagRequired("config")
 
@@ -144,7 +148,7 @@ func newSessionID() string {
 }
 
 // run is the main entry point wired into the root command's RunE.
-func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port int) error {
+func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port int, host string) error {
 	// 1. Parse and validate workflow config
 	cfg, err := config.ParseWorkflow(cfgPath)
 	if err != nil {
@@ -185,7 +189,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 
 	switch cfg.TeamExecutionMode() {
 	case config.TeamExecutionModeTeam:
-		return runRootTeamExecution(ctx, cfgPath, watcher, logger, noTUI, dryRun, port)
+		return runRootTeamExecution(ctx, cfgPath, watcher, logger, noTUI, dryRun, port, host)
 	case config.TeamExecutionModeSingle:
 		// Continue into the original single-agent orchestrator path.
 	default:
@@ -326,13 +330,17 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 			return fmt.Errorf("sub dashboard dist fs: %w", err)
 		}
 
-		srv := web.NewServer(fmt.Sprintf("localhost:%d", port), orch, h, dashboardFS)
+		srv := web.NewServer(host, port, orch, h, dashboardFS)
 		srv.SetAgentStopper(orch)
 		if detailProvider, ok := trackerClient.(tracker.IssueDetailProvider); ok {
 			srv.SetIssueDetailProvider(detailProvider)
 		}
 		srv.SetTimelineProvider(timelineStore)
-		listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
+		listenHost := host
+		if listenHost == "" {
+			listenHost = "localhost"
+		}
+		listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", listenHost, port))
 		if err != nil {
 			return fmt.Errorf("listen web dashboard: %w", err)
 		}
@@ -342,7 +350,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 			}
 		}()
 
-		fmt.Fprintf(os.Stderr, "Web dashboard available at http://localhost:%d\n", port)
+		printDashboardURL(os.Stderr, listenHost, port)
 	}
 
 	// 10. Select run mode
@@ -535,6 +543,36 @@ func (m viewportProgramModel) View() tea.View {
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+// printDashboardURL writes the dashboard URL to w. When the host is "0.0.0.0",
+// it also resolves and prints a LAN IP so the user has a concrete address to open.
+func printDashboardURL(w io.Writer, host string, port int) {
+	if host == "0.0.0.0" {
+		fmt.Fprintf(w, "Web dashboard listening on all interfaces (0.0.0.0:%d)\n", port)
+		if lanIP := resolveOutboundIP(); lanIP != "" {
+			fmt.Fprintf(w, "Web dashboard available at http://%s:%d\n", lanIP, port)
+		} else {
+			fmt.Fprintf(w, "Web dashboard available at http://0.0.0.0:%d\n", port)
+		}
+	} else {
+		fmt.Fprintf(w, "Web dashboard available at http://%s:%d\n", host, port)
+	}
+}
+
+// resolveOutboundIP returns the preferred outbound LAN IP by opening a UDP
+// connection (no packet is actually sent). Returns empty string on failure.
+func resolveOutboundIP() string {
+	conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 80})
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return ""
+	}
+	return addr.IP.String()
 }
 
 // projectSlug extracts the Linear project slug from env or config.
