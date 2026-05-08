@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
@@ -89,6 +90,11 @@ type Orchestrator struct {
 	recoveredSet map[string]struct{}
 
 	buildInfo BuildInfo
+
+	// grepFn is used to find commits on mainRef matching an issue identifier.
+	// Defaults to a no-op (always miss). Call EnableMainRefGate() to activate the
+	// real git-based implementation in production, or inject a stub in tests.
+	grepFn func(ctx context.Context, mainRef, identifier string) (sha, subject string, found, unresolvable bool, err error)
 }
 
 func (o *Orchestrator) SetWorkflowTimeline(store *timeline.Store, suppressLinearLegacyComments bool) {
@@ -135,7 +141,18 @@ func NewOrchestrator(
 			MaxAgents: cfg.MaxConcurrency(),
 			StartTime: time.Now(),
 		},
+		// Default to a no-op so the gate is opt-in. Call EnableMainRefGate() in
+		// production startup to activate real git-based already-implemented checks.
+		grepFn: func(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+			return "", "", false, false, nil
+		},
 	}
+}
+
+// EnableMainRefGate activates the git-based already-implemented gate. Call this
+// after NewOrchestrator in production startup. Tests inject their own grepFn.
+func (o *Orchestrator) EnableMainRefGate() {
+	o.grepFn = grepMainForIdentifier
 }
 
 func (o *Orchestrator) Events() <-chan OrchestratorEvent {
@@ -304,6 +321,9 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 	supervisor *errgroup.Group,
 	runSignals chan<- runSignal,
 ) {
+	mainRef := cfg.TrackerMainRef()
+	mainRefUnresolvableWarnedThisCycle := false
+
 	for _, issue := range issues {
 		if issue.State != types.Unclaimed {
 			continue
@@ -314,6 +334,44 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 				"blockers", strings.Join(unresolved, ","))
 			continue
 		}
+
+		// Gate: skip dispatch if the issue is already implemented on mainRef.
+		if sha, subject, found, unresolvable, grepErr := o.grepFn(ctx, mainRef, issue.Identifier); grepErr != nil {
+			logging.LogIssueEvent(o.logger, issue.ID, "grep_main_error", "err", grepErr)
+		} else if unresolvable {
+			if !mainRefUnresolvableWarnedThisCycle {
+				mainRefUnresolvableWarnedThisCycle = true
+				logging.LogOrchestratorEvent(o.logger, "claim_main_ref_unresolvable", "main_ref", mainRef)
+				o.emitEvent(OrchestratorEvent{
+					Type:    EventClaimMainRefUnresolvable,
+					IssueID: issue.ID,
+					Data:    ClaimMainRefUnresolvable{MainRef: mainRef},
+				})
+			}
+			// Fail open: fall through to dispatch.
+		} else if found {
+			logging.LogIssueEvent(o.logger, issue.ID,
+				"dispatch_skipped_already_implemented",
+				"main_ref", mainRef,
+				"commit_sha", sha,
+				"commit_subject", subject)
+			o.emitEvent(OrchestratorEvent{
+				Type:    EventClaimSkippedAlreadyImplemented,
+				IssueID: issue.ID,
+				Data: ClaimSkippedAlreadyImplemented{
+					IssueIdentifier: issue.Identifier,
+					CommitSHA:       sha,
+					CommitSubject:   subject,
+					MainRef:         mainRef,
+				},
+			})
+
+			if cfg.TrackerAutoCloseAlreadyImplemented() {
+				o.autoCloseAlreadyImplemented(ctx, issue, sha, subject)
+			}
+			continue
+		}
+
 		if !o.canDispatch(cfg.MaxConcurrency()) {
 			return
 		}
@@ -323,6 +381,32 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 
 		o.dispatchIssue(ctx, watchCtx, cfg, issue, 1, supervisor, runSignals)
 	}
+}
+
+// autoCloseAlreadyImplemented transitions issue to Done and posts a comment
+// when auto_close_already_implemented is enabled. Errors are logged but do not
+// block the caller; this is a best-effort operation.
+func (o *Orchestrator) autoCloseAlreadyImplemented(ctx context.Context, issue types.Issue, sha, subject string) {
+	lc, ok := o.tracker.(linearAutoCloser)
+	if !ok {
+		logging.LogIssueEvent(o.logger, issue.ID, "auto_close_skipped_unsupported_tracker")
+		return
+	}
+	commentBody := fmt.Sprintf(
+		"Contrabass: skipping claim — commit `%s` on `%s` already addresses this issue.\n\n> %s",
+		sha, o.currentConfig().TrackerMainRef(), subject,
+	)
+	if err := lc.TransitionToDone(ctx, issue.ID, commentBody); err != nil {
+		logging.LogIssueEvent(o.logger, issue.ID, "auto_close_failed", "err", err)
+	} else {
+		logging.LogIssueEvent(o.logger, issue.ID, "auto_closed_already_implemented", "commit_sha", sha)
+	}
+}
+
+// linearAutoCloser is an optional tracker capability to transition an issue to
+// Done and post a comment in a single operation.
+type linearAutoCloser interface {
+	TransitionToDone(ctx context.Context, issueID, commentBody string) error
 }
 
 // recoverOrphanedClaims overrides the state of any issue that is Claimed in
@@ -660,6 +744,65 @@ func workspaceRevParse(ctx context.Context, workspace, rev string, timeout time.
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+// grepMainForIdentifier searches the git log of mainRef for commits whose
+// message contains identifier as a whole word. dir sets the working directory
+// for the git command; an empty string uses the process CWD. It returns the
+// SHA and subject of the first matching commit when found=true. When the ref
+// cannot be resolved (unknown revision or ambiguous ref), it returns
+// unresolvable=true so callers can fail open without treating it as an error.
+// An empty identifier is a no-op that returns found=false without invoking git.
+func grepMainForIdentifier(ctx context.Context, mainRef, identifier string) (sha, subject string, found, unresolvable bool, err error) {
+	return grepMainForIdentifierIn(ctx, "", mainRef, identifier)
+}
+
+// grepMainForIdentifierIn is the testable variant of grepMainForIdentifier that
+// accepts an explicit working directory so tests can point it at a temp repo
+// without touching os.Chdir.
+func grepMainForIdentifierIn(ctx context.Context, dir, mainRef, identifier string) (sha, subject string, found, unresolvable bool, err error) {
+	if strings.TrimSpace(identifier) == "" {
+		return "", "", false, false, nil
+	}
+
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// --grep with -P (Perl regex) enables \b word-boundary matching so
+	// ABC-1 does not match ABC-12. Note: -E (ERE) does not support \b on macOS.
+	pattern := `\b` + identifier + `\b`
+	cmd := exec.CommandContext(cmdCtx, "git", "log", mainRef,
+		"--grep="+pattern, "-P",
+		"-1", "--no-color", "--format=%H%n%s")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	out, runErr := cmd.Output()
+	if runErr != nil {
+		stderrStr := stderr.String()
+		// git exits non-zero with "unknown revision or path" when the ref cannot
+		// be resolved. Treat this as unresolvable so callers can fail open.
+		if strings.Contains(stderrStr, "unknown revision") ||
+			strings.Contains(stderrStr, "ambiguous argument") {
+			return "", "", false, true, nil
+		}
+		return "", "", false, false, fmt.Errorf("git log: %w", runErr)
+	}
+
+	lines := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		return "", "", false, false, nil
+	}
+
+	sha = strings.TrimSpace(lines[0])
+	if len(lines) > 1 {
+		subject = strings.TrimSpace(lines[1])
+	}
+	return sha, subject, true, false, nil
 }
 
 func (o *Orchestrator) watchProcess(

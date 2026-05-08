@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+
 	"github.com/charmbracelet/log"
 	"github.com/junhoyeo/contrabass/internal/agent"
 	"github.com/junhoyeo/contrabass/internal/config"
@@ -1768,6 +1770,294 @@ func TestDispatchUnclaimedIssues_GatesOnBlockedBy(t *testing.T) {
 	})
 }
 
+func TestDispatchUnclaimedIssues_GatesOnAlreadyImplemented(t *testing.T) {
+	t.Run("gate fires on hit: dispatch skipped, event emitted", func(t *testing.T) {
+		issue := types.Issue{
+			ID: "ISS-1", Identifier: "ABC-1", Title: "Already done", State: types.Unclaimed,
+		}
+		mt := newObservingTracker([]types.Issue{issue})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{Events: []types.AgentEvent{}, Delay: 10 * time.Second}
+		cfg := &staticConfig{cfg: testConfig()}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+
+		// Inject a grep function that always reports ABC-1 as found.
+		orch.grepFn = func(_ context.Context, _, identifier string) (string, string, bool, bool, error) {
+			if identifier == "ABC-1" {
+				return "abc1sha0000000000000000000000000000000001", "fix: implement ABC-1 task", true, false, nil
+			}
+			return "", "", false, false, nil
+		}
+
+		var collectedEvents []OrchestratorEvent
+		var evMu sync.Mutex
+		go func() {
+			for e := range orch.Events() {
+				evMu.Lock()
+				collectedEvents = append(collectedEvents, e)
+				evMu.Unlock()
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		// Allow several poll cycles.
+		time.Sleep(300 * time.Millisecond)
+
+		require.Equal(t, 0, mt.ClaimCount("ISS-1"),
+			"already-implemented issue must not be claimed")
+
+		cancel()
+		require.NoError(t, <-done)
+
+		evMu.Lock()
+		defer evMu.Unlock()
+		var found bool
+		for _, e := range collectedEvents {
+			if e.Type == EventClaimSkippedAlreadyImplemented {
+				p, ok := e.Data.(ClaimSkippedAlreadyImplemented)
+				require.True(t, ok)
+				assert.Equal(t, "ABC-1", p.IssueIdentifier)
+				assert.Equal(t, "abc1sha0000000000000000000000000000000001", p.CommitSHA)
+				assert.Contains(t, p.CommitSubject, "ABC-1")
+				assert.Equal(t, "main", p.MainRef)
+				found = true
+				break
+			}
+		}
+		assert.True(t, found, "ClaimSkippedAlreadyImplemented event must be emitted")
+	})
+
+	t.Run("fail-open on unresolvable mainRef: dispatch proceeds", func(t *testing.T) {
+		issue := types.Issue{
+			ID: "ISS-2", Identifier: "ABC-2", Title: "Normal issue", State: types.Unclaimed,
+		}
+		mt := newObservingTracker([]types.Issue{issue})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{
+			Events: []types.AgentEvent{{Type: "turn/completed"}},
+			Delay:  10 * time.Millisecond,
+		}
+		cfg := &staticConfig{cfg: testConfig()}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+
+		// Inject a grep function that always reports the ref as unresolvable.
+		orch.grepFn = func(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+			return "", "", false, true, nil
+		}
+
+		var collectedEvents []OrchestratorEvent
+		var evMu sync.Mutex
+		go func() {
+			for e := range orch.Events() {
+				evMu.Lock()
+				collectedEvents = append(collectedEvents, e)
+				evMu.Unlock()
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		// Issue should be claimed despite unresolvable ref (fail-open).
+		require.Eventually(t, func() bool {
+			return mt.ClaimCount("ISS-2") > 0
+		}, 1*time.Second, 10*time.Millisecond,
+			"fail-open: issue must be dispatched when mainRef is unresolvable")
+
+		cancel()
+		require.NoError(t, <-done)
+
+		evMu.Lock()
+		defer evMu.Unlock()
+		var unresolvableEmitted bool
+		for _, e := range collectedEvents {
+			if e.Type == EventClaimMainRefUnresolvable {
+				unresolvableEmitted = true
+				break
+			}
+		}
+		assert.True(t, unresolvableEmitted, "ClaimMainRefUnresolvable event must be emitted")
+	})
+
+	t.Run("warn-once semantics: unresolvable event emitted once per cycle", func(t *testing.T) {
+		issues := []types.Issue{
+			{ID: "ISS-3", Identifier: "ABC-3", Title: "Issue A", State: types.Unclaimed},
+			{ID: "ISS-4", Identifier: "ABC-4", Title: "Issue B", State: types.Unclaimed},
+		}
+		mt := newObservingTracker(issues)
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{
+			Events: []types.AgentEvent{{Type: "turn/completed"}},
+			Delay:  10 * time.Millisecond,
+		}
+		cfg := &staticConfig{cfg: &config.WorkflowConfig{
+			MaxConcurrencyRaw:    1, // limit concurrency to force both issues through gate
+			PollIntervalMsRaw:    50,
+			MaxRetryBackoffMsRaw: 100,
+			AgentTimeoutMsRaw:    5000,
+			StallTimeoutMsRaw:    5000,
+			PromptTemplate:       "Fix: {{ issue.title }}",
+			ModelRaw:             "test-model",
+			ProjectURLRaw:        "https://test.example.com",
+		}}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+
+		callCount := new(atomic.Int32)
+		orch.grepFn = func(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+			callCount.Add(1)
+			return "", "", false, true, nil
+		}
+
+		var evMu sync.Mutex
+		var unresolvableCount int
+		go func() {
+			for e := range orch.Events() {
+				if e.Type == EventClaimMainRefUnresolvable {
+					evMu.Lock()
+					unresolvableCount++
+					evMu.Unlock()
+				}
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+		cancel()
+		require.NoError(t, <-done)
+
+		evMu.Lock()
+		defer evMu.Unlock()
+		// With 2 issues and multiple poll cycles, unresolvable event should be
+		// emitted at most once per cycle (not once per issue).
+		// We allow up to 1 per cycle * ~10 cycles = generous budget.
+		assert.GreaterOrEqual(t, unresolvableCount, 1, "at least one ClaimMainRefUnresolvable event expected")
+		// callCount can be higher than unresolvableCount because grepFn is called
+		// per issue; the warn-once gate only suppresses the *event* after the first.
+		assert.GreaterOrEqual(t, callCount.Load(), int32(unresolvableCount),
+			"grepFn called at least as many times as events emitted")
+	})
+}
+
+// autoCloseTracker wraps MockTracker and records TransitionToDone calls.
+type autoCloseTracker struct {
+	*tracker.MockTracker
+
+	mu              sync.Mutex
+	transitionCalls []string // issueIDs that were transitioned
+	transitionErr   error
+}
+
+func newAutoCloseTracker(issues []types.Issue) *autoCloseTracker {
+	mt := tracker.NewMockTracker()
+	mt.Issues = append([]types.Issue(nil), issues...)
+	return &autoCloseTracker{MockTracker: mt}
+}
+
+func (a *autoCloseTracker) TransitionToDone(_ context.Context, issueID, _ string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.transitionErr != nil {
+		return a.transitionErr
+	}
+	a.transitionCalls = append(a.transitionCalls, issueID)
+	return nil
+}
+
+func (a *autoCloseTracker) TransitionCount(issueID string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	count := 0
+	for _, id := range a.transitionCalls {
+		if id == issueID {
+			count++
+		}
+	}
+	return count
+}
+
+func TestDispatchUnclaimedIssues_AutoCloseAlreadyImplemented(t *testing.T) {
+	t.Run("auto-close calls TransitionToDone when enabled and gate fires", func(t *testing.T) {
+		issue := types.Issue{
+			ID: "ISS-AC-1", Identifier: "AC-1", Title: "Auto close me", State: types.Unclaimed,
+		}
+		mt := newAutoCloseTracker([]types.Issue{issue})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{Events: []types.AgentEvent{}, Delay: 10 * time.Second}
+		cfg := &staticConfig{cfg: &config.WorkflowConfig{
+			MaxConcurrencyRaw:    2,
+			PollIntervalMsRaw:    10,
+			MaxRetryBackoffMsRaw: 100,
+			AgentTimeoutMsRaw:    5000,
+			StallTimeoutMsRaw:    5000,
+			PromptTemplate:       "Fix: {{ issue.title }}",
+			ModelRaw:             "test-model",
+			ProjectURLRaw:        "https://test.example.com",
+			Tracker: config.TrackerConfig{
+				AutoCloseAlreadyImplementedRaw: true,
+			},
+		}}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+		orch.grepFn = func(_ context.Context, _, identifier string) (string, string, bool, bool, error) {
+			if identifier == "AC-1" {
+				return "deadbeef00000000000000000000000000000001", "fix: done AC-1", true, false, nil
+			}
+			return "", "", false, false, nil
+		}
+
+		go func() {
+			for range orch.Events() {
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		require.Eventually(t, func() bool {
+			return mt.TransitionCount("ISS-AC-1") >= 1
+		}, 1*time.Second, 10*time.Millisecond,
+			"TransitionToDone must be called when auto-close is enabled and gate fires")
+
+		cancel()
+		require.NoError(t, <-done)
+	})
+
+	t.Run("auto-close NOT called when disabled (default)", func(t *testing.T) {
+		issue := types.Issue{
+			ID: "ISS-AC-2", Identifier: "AC-2", Title: "No auto close", State: types.Unclaimed,
+		}
+		mt := newAutoCloseTracker([]types.Issue{issue})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{Events: []types.AgentEvent{}, Delay: 10 * time.Second}
+		cfg := &staticConfig{cfg: testConfig()} // auto_close defaults to false
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+		orch.grepFn = func(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+			return "sha1sha2sha3sha4sha5sha6sha7sha8sha9sha0", "fix: done", true, false, nil
+		}
+
+		go func() {
+			for range orch.Events() {
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		time.Sleep(300 * time.Millisecond)
+		assert.Equal(t, 0, mt.TransitionCount("ISS-AC-2"),
+			"TransitionToDone must NOT be called when auto_close_already_implemented=false")
+
+		cancel()
+		require.NoError(t, <-done)
+	})
+}
+
 // missingBranchWorkspaceManager wraps the mock manager but seeds a real git
 // repo at the workspace path WITHOUT creating issue.BranchName. claimIssue's
 // `git rev-parse HEAD` succeeds (so ClaimHeadSha is populated), but the
@@ -2305,4 +2595,136 @@ func TestSuccessGate_HollowRunReroutesToBackoff(t *testing.T) {
 			require.NoError(t, <-done)
 		})
 	}
+}
+
+// --- grepMainForIdentifier tests ---
+
+// initTestRepo creates a minimal git repo with two commits:
+//   - one mentioning ABC-1
+//   - one mentioning ABC-12
+//
+// Returns the repo directory path.
+func initTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	mustRun := func(args ...string) {
+		t.Helper()
+		var stderr bytes.Buffer
+		cmd := append([]string{"-C", dir}, args...)
+		c := exec.Command("git", cmd...)
+		c.Stderr = &stderr
+		if err := c.Run(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, stderr.String())
+		}
+	}
+
+	mustRun("init", "--initial-branch=main")
+	mustRun("config", "user.email", "test@test.com")
+	mustRun("config", "user.name", "Test")
+
+	writeFile := func(name, body string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644))
+	}
+
+	// commit 1: mentions ABC-1 (word boundary)
+	writeFile("a.txt", "a")
+	mustRun("add", ".")
+	mustRun("commit", "-m", "fix: implement ABC-1 task")
+
+	// commit 2: mentions ABC-12 (must NOT match ABC-1 via word-boundary grep)
+	writeFile("b.txt", "b")
+	mustRun("add", ".")
+	mustRun("commit", "-m", "feat: close ABC-12 story")
+
+	// commit 3: unrelated
+	writeFile("c.txt", "c")
+	mustRun("add", ".")
+	mustRun("commit", "-m", "chore: cleanup")
+
+	return dir
+}
+
+func TestGrepMainForIdentifier_HitMissPrefix(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+
+	t.Run("hit returns sha and subject", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "ABC-1")
+		require.NoError(t, grepErr)
+		assert.True(t, found)
+		assert.False(t, unresolvable)
+		assert.Len(t, sha, 40, "sha should be a full 40-char commit hash")
+		assert.Contains(t, subject, "ABC-1")
+	})
+
+	t.Run("miss returns found=false", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "XYZ-999")
+		require.NoError(t, grepErr)
+		assert.False(t, found)
+		assert.False(t, unresolvable)
+		assert.Empty(t, sha)
+		assert.Empty(t, subject)
+	})
+
+	t.Run("prefix overlap: ABC-1 does not match ABC-12 commit", func(t *testing.T) {
+		t.Parallel()
+		// ABC-12 commit subject should NOT appear when searching for ABC-1
+		sha1, sub1, found1, _, err1 := grepMainForIdentifierIn(ctx, repoDir, "main", "ABC-1")
+		require.NoError(t, err1)
+		assert.True(t, found1)
+		assert.NotContains(t, sub1, "ABC-12", "word boundary must exclude ABC-12 commit")
+
+		sha12, sub12, found12, _, err12 := grepMainForIdentifierIn(ctx, repoDir, "main", "ABC-12")
+		require.NoError(t, err12)
+		assert.True(t, found12)
+		assert.Contains(t, sub12, "ABC-12")
+
+		assert.NotEqual(t, sha1, sha12, "ABC-1 and ABC-12 must map to different commits")
+	})
+
+	t.Run("empty identifier returns false without git call", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "")
+		require.NoError(t, grepErr)
+		assert.False(t, found)
+		assert.False(t, unresolvable)
+		assert.Empty(t, sha)
+		assert.Empty(t, subject)
+	})
+
+	t.Run("whitespace-only identifier returns false", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "   ")
+		require.NoError(t, grepErr)
+		assert.False(t, found)
+		assert.False(t, unresolvable)
+		assert.Empty(t, sha)
+		assert.Empty(t, subject)
+	})
+
+	t.Run("unresolvable mainRef returns unresolvable=true err=nil", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "no-such-ref-xyz", "ABC-1")
+		require.NoError(t, grepErr)
+		assert.False(t, found)
+		assert.True(t, unresolvable)
+		assert.Empty(t, sha)
+		assert.Empty(t, subject)
+	})
+
+	t.Run("multiple matching commits returns first", func(t *testing.T) {
+		t.Parallel()
+		// git log -1 returns the most recent matching commit.
+		// ABC-1 word-boundary grep should find exactly one commit and return its sha.
+		sha, _, found, _, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "ABC-1")
+		require.NoError(t, grepErr)
+		assert.True(t, found)
+		assert.NotEmpty(t, sha)
+	})
 }

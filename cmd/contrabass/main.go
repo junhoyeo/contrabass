@@ -279,6 +279,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 
 	// 9. Create orchestrator
 	orch := orchestrator.NewOrchestrator(trackerClient, workspaceMgr, agentRunner, watcher, logger)
+	orch.EnableMainRefGate()
 	orch.SetBuildInfo(orchestrator.BuildInfo{Version: version, Commit: commit, Date: date})
 	timelineStore := timeline.NewStore(cfg.WorkflowTimelineDir())
 	orch.SetWorkflowTimeline(timelineStore, cfg.LinearSyncCommentsEnabled())

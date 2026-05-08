@@ -109,19 +109,21 @@ type WorkflowConfig struct {
 }
 
 type TrackerConfig struct {
-	Type            string `yaml:"type"`
-	ProjectURL      string `yaml:"project_url"`
-	TeamID          string `yaml:"team_id"`
-	AssigneeID      string `yaml:"assignee_id"`
-	BoardDir        string `yaml:"board_dir"`
-	IssuePrefix     string `yaml:"issue_prefix"`
-	Owner           string `yaml:"owner"`
-	Repo            string `yaml:"repo"`
-	Labels          []string `yaml:"labels"`
-	Assignee        string `yaml:"assignee"`
-	Token           string `yaml:"token"`
-	Endpoint        string `yaml:"endpoint"`
-	HTTPTimeoutMsRaw int   `yaml:"http_timeout_ms"`
+	Type                           string   `yaml:"type"`
+	ProjectURL                     string   `yaml:"project_url"`
+	TeamID                         string   `yaml:"team_id"`
+	AssigneeID                     string   `yaml:"assignee_id"`
+	BoardDir                       string   `yaml:"board_dir"`
+	IssuePrefix                    string   `yaml:"issue_prefix"`
+	Owner                          string   `yaml:"owner"`
+	Repo                           string   `yaml:"repo"`
+	Labels                         []string `yaml:"labels"`
+	Assignee                       string   `yaml:"assignee"`
+	Token                          string   `yaml:"token"`
+	Endpoint                       string   `yaml:"endpoint"`
+	HTTPTimeoutMsRaw               int      `yaml:"http_timeout_ms"`
+	MainRefRaw                     string   `yaml:"main_ref"`
+	AutoCloseAlreadyImplementedRaw bool     `yaml:"auto_close_already_implemented"`
 }
 
 // WebConfig holds HTTP/SSE server tunables.
@@ -210,15 +212,15 @@ type LinearSyncCommentsConfig struct {
 
 // TeamSectionConfig holds settings for multi-agent team coordination.
 type TeamSectionConfig struct {
-	MaxWorkers                 int    `yaml:"max_workers"`
-	MaxFixLoops                int    `yaml:"max_fix_loops"`
-	ClaimLeaseSeconds          int    `yaml:"claim_lease_seconds"`
-	StateDir                   string `yaml:"state_dir"`
-	ExecutionMode              string `yaml:"execution_mode"`
-	WorkerMode                 string `yaml:"worker_mode"`
-	RestartGracePeriodMsRaw    int    `yaml:"restart_grace_period_ms"`
-	GovernanceRetryDelayMsRaw  int    `yaml:"governance_retry_delay_ms"`
-	HeartbeatIntervalMsRaw     int    `yaml:"heartbeat_interval_ms"`
+	MaxWorkers                int    `yaml:"max_workers"`
+	MaxFixLoops               int    `yaml:"max_fix_loops"`
+	ClaimLeaseSeconds         int    `yaml:"claim_lease_seconds"`
+	StateDir                  string `yaml:"state_dir"`
+	ExecutionMode             string `yaml:"execution_mode"`
+	WorkerMode                string `yaml:"worker_mode"`
+	RestartGracePeriodMsRaw   int    `yaml:"restart_grace_period_ms"`
+	GovernanceRetryDelayMsRaw int    `yaml:"governance_retry_delay_ms"`
+	HeartbeatIntervalMsRaw    int    `yaml:"heartbeat_interval_ms"`
 }
 
 // OhMyOpenCodeConfig holds settings for the oh-my-opencode agent runner which
@@ -839,6 +841,24 @@ func (c *WorkflowConfig) TrackerHTTPTimeout() time.Duration {
 		return time.Duration(defaultTrackerHTTPTimeoutMs) * time.Millisecond
 	}
 	return time.Duration(c.Tracker.HTTPTimeoutMsRaw) * time.Millisecond
+}
+
+// TrackerMainRef returns the git ref used for the "already implemented" gate.
+// Defaults to "main" when unset.
+func (c *WorkflowConfig) TrackerMainRef() string {
+	if c == nil || strings.TrimSpace(c.Tracker.MainRefRaw) == "" {
+		return "main"
+	}
+	return strings.TrimSpace(c.Tracker.MainRefRaw)
+}
+
+// TrackerAutoCloseAlreadyImplemented reports whether issues found to be already
+// implemented should be automatically transitioned to Done. Defaults to false.
+func (c *WorkflowConfig) TrackerAutoCloseAlreadyImplemented() bool {
+	if c == nil {
+		return false
+	}
+	return c.Tracker.AutoCloseAlreadyImplementedRaw
 }
 
 func (c *WorkflowConfig) Model() (string, error) {

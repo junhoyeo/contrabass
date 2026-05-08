@@ -182,6 +182,18 @@ const updateCommentMutation = `mutation UpdateComment($commentId: String!, $body
 
 const viewerQuery = `query { viewer { id } }`
 
+// resolveDoneStateQuery fetches the first workflow state of type "completed"
+// for the team that owns the given issue. Used by TransitionToDone.
+const resolveDoneStateQuery = `query ResolveDoneState($issueId: String!) {
+	issue(id: $issueId) {
+		team {
+			states(filter: {type: {eq: "completed"}}, first: 1) {
+				nodes { id name }
+			}
+		}
+	}
+}`
+
 // defaultStateNames maps internal IssueState to Linear workflow state names.
 var defaultStateNames = map[types.IssueState]string{
 	types.Unclaimed:   "Todo",
@@ -293,6 +305,64 @@ func (c *LinearClient) UpdateIssueState(ctx context.Context, issueID string, sta
 	}
 
 	return checkMutationSuccess(data, "issueUpdate")
+}
+
+// TransitionToDone transitions the issue to the first "completed" workflow state
+// for its team and posts commentBody as a top-level comment. Both operations are
+// executed sequentially; a comment failure does not roll back the state update.
+// Returns an error if no completed state is found or if either API call fails.
+func (c *LinearClient) TransitionToDone(ctx context.Context, issueID, commentBody string) error {
+	// Step 1: resolve the first "completed" state ID.
+	data, err := c.doGraphQL(ctx, resolveDoneStateQuery, map[string]interface{}{"issueId": issueID})
+	if err != nil {
+		return fmt.Errorf("resolving done state: %w", err)
+	}
+
+	issue, _ := data["issue"].(map[string]interface{})
+	if issue == nil {
+		return fmt.Errorf("issue %s not found", issueID)
+	}
+	team, _ := issue["team"].(map[string]interface{})
+	if team == nil {
+		return fmt.Errorf("team not found for issue %s", issueID)
+	}
+	states, _ := team["states"].(map[string]interface{})
+	if states == nil {
+		return fmt.Errorf("states not found for issue %s", issueID)
+	}
+	nodes, _ := states["nodes"].([]interface{})
+	if len(nodes) == 0 {
+		return fmt.Errorf("no completed state available for issue %s", issueID)
+	}
+	firstNode, _ := nodes[0].(map[string]interface{})
+	if firstNode == nil {
+		return fmt.Errorf("invalid state node for issue %s", issueID)
+	}
+	stateID, _ := firstNode["id"].(string)
+	if stateID == "" {
+		return fmt.Errorf("empty done state ID for issue %s", issueID)
+	}
+
+	// Step 2: update issue state to Done.
+	stateData, err := c.doGraphQL(ctx, updateIssueStateMutation, map[string]interface{}{
+		"issueId": issueID,
+		"stateId": stateID,
+	})
+	if err != nil {
+		return fmt.Errorf("transitioning to done: %w", err)
+	}
+	if err := checkMutationSuccess(stateData, "issueUpdate"); err != nil {
+		return fmt.Errorf("transitioning to done: %w", err)
+	}
+
+	// Step 3: post comment (best-effort; does not roll back the state update).
+	if commentBody != "" {
+		if _, err := c.CreateRootComment(ctx, RootCommentInput{IssueID: issueID, Body: commentBody}); err != nil {
+			return fmt.Errorf("posting already-implemented comment: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // IsLinearTracker identifies this tracker as Linear-backed.

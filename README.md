@@ -357,6 +357,8 @@ All values are in milliseconds unless noted. Omitting a key uses the default.
 | `team.governance_retry_delay_ms` | `500` | Pause between governance-check retries in the worker loop |
 | `team.heartbeat_interval_ms` | `10000` | How often the coordinator scans for stale workers |
 | `tracker.http_timeout_ms` | `30000` | HTTP timeout for Linear / GitHub API calls |
+| `tracker.main_ref` | `"main"` | Git ref searched for already-implemented commits; set to `origin/main` if you don't maintain a local main branch |
+| `tracker.auto_close_already_implemented` | `false` | When `true`, issues whose identifier appears in `main_ref` commits are automatically transitioned to Done (Linear only) |
 
 ## Supported integrations
 

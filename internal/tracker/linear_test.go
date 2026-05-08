@@ -1101,3 +1101,106 @@ func TestTruncateBody_LongBody(t *testing.T) {
 		})
 	}
 }
+
+// --- TransitionToDone Tests ---
+
+func TestTransitionToDone_Success(t *testing.T) {
+	t.Parallel()
+
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := parseGQLRequest(t, r)
+		requestCount++
+
+		switch requestCount {
+		case 1:
+			// ResolveDoneState query
+			assert.Contains(t, req.Query, "ResolveDoneState")
+			assert.Equal(t, "issue-1", req.Variables["issueId"])
+			respondJSON(w, 200, map[string]interface{}{
+				"data": map[string]interface{}{
+					"issue": map[string]interface{}{
+						"team": map[string]interface{}{
+							"states": map[string]interface{}{
+								"nodes": []interface{}{
+									map[string]interface{}{"id": "state-done-1", "name": "Done"},
+								},
+							},
+						},
+					},
+				},
+			})
+		case 2:
+			// UpdateIssueState mutation
+			assert.Contains(t, req.Query, "UpdateIssueState")
+			assert.Equal(t, "issue-1", req.Variables["issueId"])
+			assert.Equal(t, "state-done-1", req.Variables["stateId"])
+			respondJSON(w, 200, map[string]interface{}{
+				"data": map[string]interface{}{
+					"issueUpdate": map[string]interface{}{"success": true},
+				},
+			})
+		case 3:
+			// CreateRootComment mutation
+			assert.Contains(t, req.Query, "commentCreate")
+			assert.Equal(t, "issue-1", req.Variables["issueId"])
+			assert.Contains(t, req.Variables["body"], "already")
+			respondJSON(w, 200, map[string]interface{}{
+				"data": map[string]interface{}{
+					"commentCreate": map[string]interface{}{
+						"success": true,
+						"comment": map[string]interface{}{"id": "comment-1", "url": "https://linear.app/c/1"},
+					},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	err := client.TransitionToDone(context.Background(), "issue-1", "already implemented")
+	require.NoError(t, err)
+	assert.Equal(t, 3, requestCount, "expected 3 requests: resolve state, update, comment")
+}
+
+func TestTransitionToDone_NoDoneStateAvailable(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issue": map[string]interface{}{
+					"team": map[string]interface{}{
+						"states": map[string]interface{}{
+							"nodes": []interface{}{}, // no completed states
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	err := client.TransitionToDone(context.Background(), "issue-1", "comment")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no completed state available")
+}
+
+func TestTransitionToDone_NetworkError(t *testing.T) {
+	t.Parallel()
+
+	// Use a server that immediately closes the connection.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hijack to close the connection abruptly.
+		hj, ok := w.(http.Hijacker)
+		require.True(t, ok)
+		conn, _, _ := hj.Hijack()
+		conn.Close()
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	err := client.TransitionToDone(context.Background(), "issue-1", "comment")
+	require.Error(t, err)
+}
