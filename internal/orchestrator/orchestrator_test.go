@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+
 	"github.com/charmbracelet/log"
 	"github.com/junhoyeo/contrabass/internal/agent"
 	"github.com/junhoyeo/contrabass/internal/config"
@@ -2305,4 +2307,136 @@ func TestSuccessGate_HollowRunReroutesToBackoff(t *testing.T) {
 			require.NoError(t, <-done)
 		})
 	}
+}
+
+// --- grepMainForIdentifier tests ---
+
+// initTestRepo creates a minimal git repo with two commits:
+//   - one mentioning ABC-1
+//   - one mentioning ABC-12
+//
+// Returns the repo directory path.
+func initTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	mustRun := func(args ...string) {
+		t.Helper()
+		var stderr bytes.Buffer
+		cmd := append([]string{"-C", dir}, args...)
+		c := exec.Command("git", cmd...)
+		c.Stderr = &stderr
+		if err := c.Run(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, stderr.String())
+		}
+	}
+
+	mustRun("init", "--initial-branch=main")
+	mustRun("config", "user.email", "test@test.com")
+	mustRun("config", "user.name", "Test")
+
+	writeFile := func(name, body string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644))
+	}
+
+	// commit 1: mentions ABC-1 (word boundary)
+	writeFile("a.txt", "a")
+	mustRun("add", ".")
+	mustRun("commit", "-m", "fix: implement ABC-1 task")
+
+	// commit 2: mentions ABC-12 (must NOT match ABC-1 via word-boundary grep)
+	writeFile("b.txt", "b")
+	mustRun("add", ".")
+	mustRun("commit", "-m", "feat: close ABC-12 story")
+
+	// commit 3: unrelated
+	writeFile("c.txt", "c")
+	mustRun("add", ".")
+	mustRun("commit", "-m", "chore: cleanup")
+
+	return dir
+}
+
+func TestGrepMainForIdentifier_HitMissPrefix(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+
+	t.Run("hit returns sha and subject", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "ABC-1")
+		require.NoError(t, grepErr)
+		assert.True(t, found)
+		assert.False(t, unresolvable)
+		assert.Len(t, sha, 40, "sha should be a full 40-char commit hash")
+		assert.Contains(t, subject, "ABC-1")
+	})
+
+	t.Run("miss returns found=false", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "XYZ-999")
+		require.NoError(t, grepErr)
+		assert.False(t, found)
+		assert.False(t, unresolvable)
+		assert.Empty(t, sha)
+		assert.Empty(t, subject)
+	})
+
+	t.Run("prefix overlap: ABC-1 does not match ABC-12 commit", func(t *testing.T) {
+		t.Parallel()
+		// ABC-12 commit subject should NOT appear when searching for ABC-1
+		sha1, sub1, found1, _, err1 := grepMainForIdentifierIn(ctx, repoDir, "main", "ABC-1")
+		require.NoError(t, err1)
+		assert.True(t, found1)
+		assert.NotContains(t, sub1, "ABC-12", "word boundary must exclude ABC-12 commit")
+
+		sha12, sub12, found12, _, err12 := grepMainForIdentifierIn(ctx, repoDir, "main", "ABC-12")
+		require.NoError(t, err12)
+		assert.True(t, found12)
+		assert.Contains(t, sub12, "ABC-12")
+
+		assert.NotEqual(t, sha1, sha12, "ABC-1 and ABC-12 must map to different commits")
+	})
+
+	t.Run("empty identifier returns false without git call", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "")
+		require.NoError(t, grepErr)
+		assert.False(t, found)
+		assert.False(t, unresolvable)
+		assert.Empty(t, sha)
+		assert.Empty(t, subject)
+	})
+
+	t.Run("whitespace-only identifier returns false", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "   ")
+		require.NoError(t, grepErr)
+		assert.False(t, found)
+		assert.False(t, unresolvable)
+		assert.Empty(t, sha)
+		assert.Empty(t, subject)
+	})
+
+	t.Run("unresolvable mainRef returns unresolvable=true err=nil", func(t *testing.T) {
+		t.Parallel()
+		sha, subject, found, unresolvable, grepErr := grepMainForIdentifierIn(ctx, repoDir, "no-such-ref-xyz", "ABC-1")
+		require.NoError(t, grepErr)
+		assert.False(t, found)
+		assert.True(t, unresolvable)
+		assert.Empty(t, sha)
+		assert.Empty(t, subject)
+	})
+
+	t.Run("multiple matching commits returns first", func(t *testing.T) {
+		t.Parallel()
+		// git log -1 returns the most recent matching commit.
+		// ABC-1 word-boundary grep should find exactly one commit and return its sha.
+		sha, _, found, _, grepErr := grepMainForIdentifierIn(ctx, repoDir, "main", "ABC-1")
+		require.NoError(t, grepErr)
+		assert.True(t, found)
+		assert.NotEmpty(t, sha)
+	})
 }

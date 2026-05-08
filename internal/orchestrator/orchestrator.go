@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
@@ -660,6 +661,65 @@ func workspaceRevParse(ctx context.Context, workspace, rev string, timeout time.
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+// grepMainForIdentifier searches the git log of mainRef for commits whose
+// message contains identifier as a whole word. dir sets the working directory
+// for the git command; an empty string uses the process CWD. It returns the
+// SHA and subject of the first matching commit when found=true. When the ref
+// cannot be resolved (unknown revision or ambiguous ref), it returns
+// unresolvable=true so callers can fail open without treating it as an error.
+// An empty identifier is a no-op that returns found=false without invoking git.
+func grepMainForIdentifier(ctx context.Context, mainRef, identifier string) (sha, subject string, found, unresolvable bool, err error) {
+	return grepMainForIdentifierIn(ctx, "", mainRef, identifier)
+}
+
+// grepMainForIdentifierIn is the testable variant of grepMainForIdentifier that
+// accepts an explicit working directory so tests can point it at a temp repo
+// without touching os.Chdir.
+func grepMainForIdentifierIn(ctx context.Context, dir, mainRef, identifier string) (sha, subject string, found, unresolvable bool, err error) {
+	if strings.TrimSpace(identifier) == "" {
+		return "", "", false, false, nil
+	}
+
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// --grep with -P (Perl regex) enables \b word-boundary matching so
+	// ABC-1 does not match ABC-12. Note: -E (ERE) does not support \b on macOS.
+	pattern := `\b` + identifier + `\b`
+	cmd := exec.CommandContext(cmdCtx, "git", "log", mainRef,
+		"--grep="+pattern, "-P",
+		"-1", "--no-color", "--format=%H%n%s")
+	if dir != "" {
+		cmd.Dir = dir
+	}
+
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	out, runErr := cmd.Output()
+	if runErr != nil {
+		stderrStr := stderr.String()
+		// git exits non-zero with "unknown revision or path" when the ref cannot
+		// be resolved. Treat this as unresolvable so callers can fail open.
+		if strings.Contains(stderrStr, "unknown revision") ||
+			strings.Contains(stderrStr, "ambiguous argument") {
+			return "", "", false, true, nil
+		}
+		return "", "", false, false, fmt.Errorf("git log: %w", runErr)
+	}
+
+	lines := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		return "", "", false, false, nil
+	}
+
+	sha = strings.TrimSpace(lines[0])
+	if len(lines) > 1 {
+		subject = strings.TrimSpace(lines[1])
+	}
+	return sha, subject, true, false, nil
 }
 
 func (o *Orchestrator) watchProcess(
