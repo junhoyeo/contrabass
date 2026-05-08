@@ -92,7 +92,8 @@ type Orchestrator struct {
 	buildInfo BuildInfo
 
 	// grepFn is used to find commits on mainRef matching an issue identifier.
-	// Non-nil only in tests; production code uses grepMainForIdentifier.
+	// Defaults to a no-op (always miss). Call EnableMainRefGate() to activate the
+	// real git-based implementation in production, or inject a stub in tests.
 	grepFn func(ctx context.Context, mainRef, identifier string) (sha, subject string, found, unresolvable bool, err error)
 }
 
@@ -140,7 +141,18 @@ func NewOrchestrator(
 			MaxAgents: cfg.MaxConcurrency(),
 			StartTime: time.Now(),
 		},
+		// Default to a no-op so the gate is opt-in. Call EnableMainRefGate() in
+		// production startup to activate real git-based already-implemented checks.
+		grepFn: func(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+			return "", "", false, false, nil
+		},
 	}
+}
+
+// EnableMainRefGate activates the git-based already-implemented gate. Call this
+// after NewOrchestrator in production startup. Tests inject their own grepFn.
+func (o *Orchestrator) EnableMainRefGate() {
+	o.grepFn = grepMainForIdentifier
 }
 
 func (o *Orchestrator) Events() <-chan OrchestratorEvent {
@@ -324,11 +336,7 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 		}
 
 		// Gate: skip dispatch if the issue is already implemented on mainRef.
-		grepFn := o.grepFn
-		if grepFn == nil {
-			grepFn = grepMainForIdentifier
-		}
-		if sha, subject, found, unresolvable, grepErr := grepFn(ctx, mainRef, issue.Identifier); grepErr != nil {
+		if sha, subject, found, unresolvable, grepErr := o.grepFn(ctx, mainRef, issue.Identifier); grepErr != nil {
 			logging.LogIssueEvent(o.logger, issue.ID, "grep_main_error", "err", grepErr)
 		} else if unresolvable {
 			if !mainRefUnresolvableWarnedThisCycle {

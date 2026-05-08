@@ -1943,6 +1943,115 @@ func TestDispatchUnclaimedIssues_GatesOnAlreadyImplemented(t *testing.T) {
 	})
 }
 
+// autoCloseTracker wraps MockTracker and records TransitionToDone calls.
+type autoCloseTracker struct {
+	*tracker.MockTracker
+
+	mu               sync.Mutex
+	transitionCalls  []string // issueIDs that were transitioned
+	transitionErr    error
+}
+
+func newAutoCloseTracker(issues []types.Issue) *autoCloseTracker {
+	mt := tracker.NewMockTracker()
+	mt.Issues = append([]types.Issue(nil), issues...)
+	return &autoCloseTracker{MockTracker: mt}
+}
+
+func (a *autoCloseTracker) TransitionToDone(_ context.Context, issueID, _ string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.transitionErr != nil {
+		return a.transitionErr
+	}
+	a.transitionCalls = append(a.transitionCalls, issueID)
+	return nil
+}
+
+func (a *autoCloseTracker) TransitionCount(issueID string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	count := 0
+	for _, id := range a.transitionCalls {
+		if id == issueID {
+			count++
+		}
+	}
+	return count
+}
+
+func TestDispatchUnclaimedIssues_AutoCloseAlreadyImplemented(t *testing.T) {
+	t.Run("auto-close calls TransitionToDone when enabled and gate fires", func(t *testing.T) {
+		issue := types.Issue{
+			ID: "ISS-AC-1", Identifier: "AC-1", Title: "Auto close me", State: types.Unclaimed,
+		}
+		mt := newAutoCloseTracker([]types.Issue{issue})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{Events: []types.AgentEvent{}, Delay: 10 * time.Second}
+		cfg := &staticConfig{cfg: &config.WorkflowConfig{
+			MaxConcurrencyRaw:    2,
+			PollIntervalMsRaw:    10,
+			MaxRetryBackoffMsRaw: 100,
+			AgentTimeoutMsRaw:    5000,
+			StallTimeoutMsRaw:    5000,
+			PromptTemplate:       "Fix: {{ issue.title }}",
+			ModelRaw:             "test-model",
+			ProjectURLRaw:        "https://test.example.com",
+			Tracker: config.TrackerConfig{
+				AutoCloseAlreadyImplementedRaw: true,
+			},
+		}}
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+		orch.grepFn = func(_ context.Context, _, identifier string) (string, string, bool, bool, error) {
+			if identifier == "AC-1" {
+				return "deadbeef00000000000000000000000000000001", "fix: done AC-1", true, false, nil
+			}
+			return "", "", false, false, nil
+		}
+
+		go func() { for range orch.Events() {} }()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		require.Eventually(t, func() bool {
+			return mt.TransitionCount("ISS-AC-1") >= 1
+		}, 1*time.Second, 10*time.Millisecond,
+			"TransitionToDone must be called when auto-close is enabled and gate fires")
+
+		cancel()
+		require.NoError(t, <-done)
+	})
+
+	t.Run("auto-close NOT called when disabled (default)", func(t *testing.T) {
+		issue := types.Issue{
+			ID: "ISS-AC-2", Identifier: "AC-2", Title: "No auto close", State: types.Unclaimed,
+		}
+		mt := newAutoCloseTracker([]types.Issue{issue})
+		mw := workspace.NewMockManager(t.TempDir())
+		mr := &agent.MockRunner{Events: []types.AgentEvent{}, Delay: 10 * time.Second}
+		cfg := &staticConfig{cfg: testConfig()} // auto_close defaults to false
+		orch := NewOrchestrator(mt, mw, mr, cfg, nil)
+		orch.grepFn = func(_ context.Context, _, _ string) (string, string, bool, bool, error) {
+			return "sha1sha2sha3sha4sha5sha6sha7sha8sha9sha0", "fix: done", true, false, nil
+		}
+
+		go func() { for range orch.Events() {} }()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		done := startOrchestrator(ctx, orch)
+
+		time.Sleep(300 * time.Millisecond)
+		assert.Equal(t, 0, mt.TransitionCount("ISS-AC-2"),
+			"TransitionToDone must NOT be called when auto_close_already_implemented=false")
+
+		cancel()
+		require.NoError(t, <-done)
+	})
+}
+
 // missingBranchWorkspaceManager wraps the mock manager but seeds a real git
 // repo at the workspace path WITHOUT creating issue.BranchName. claimIssue's
 // `git rev-parse HEAD` succeeds (so ClaimHeadSha is populated), but the
