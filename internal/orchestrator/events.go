@@ -14,6 +14,8 @@ const (
 	EventAgentFinished
 	EventBackoffEnqueued
 	EventIssueReleased
+	EventClaimSkippedAlreadyImplemented
+	EventClaimMainRefUnresolvable
 )
 
 func (t EventType) String() string {
@@ -28,6 +30,10 @@ func (t EventType) String() string {
 		return "BackoffEnqueued"
 	case EventIssueReleased:
 		return "IssueReleased"
+	case EventClaimSkippedAlreadyImplemented:
+		return "ClaimSkippedAlreadyImplemented"
+	case EventClaimMainRefUnresolvable:
+		return "ClaimMainRefUnresolvable"
 	default:
 		return "Unknown"
 	}
@@ -90,3 +96,23 @@ type IssueReleased struct {
 }
 
 func (IssueReleased) eventPayload() {}
+
+// ClaimSkippedAlreadyImplemented is emitted when an issue's identifier is found
+// in the git log of mainRef, indicating it has already been implemented.
+type ClaimSkippedAlreadyImplemented struct {
+	IssueIdentifier string
+	CommitSHA       string
+	CommitSubject   string
+	MainRef         string
+}
+
+func (ClaimSkippedAlreadyImplemented) eventPayload() {}
+
+// ClaimMainRefUnresolvable is emitted (once per cycle) when the configured
+// mainRef cannot be resolved by git. The orchestrator fails open and dispatches
+// as normal when this occurs.
+type ClaimMainRefUnresolvable struct {
+	MainRef string
+}
+
+func (ClaimMainRefUnresolvable) eventPayload() {}
