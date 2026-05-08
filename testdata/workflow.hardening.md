@@ -2,12 +2,13 @@
 max_concurrency: 1
 poll_interval_ms: 4000
 max_retry_backoff_ms: 90000
+model: $CONTRABASS_MODEL
 agent_timeout_ms: 900000
 stall_timeout_ms: 90000
-project_url: https://linear.app/ziikoo/project/contrabass-hardening-19a0b71d32b6
+project_url: $CONTRABASS_PROJECT_URL
 tracker:
   type: linear
-  assignee_id: dee4ae24-e192-4314-93f6-3a43c7b12773
+  assignee_id: $LINEAR_ASSIGNEE_ID
 agent:
   type: codex
 codex:

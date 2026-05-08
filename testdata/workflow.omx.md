@@ -1,8 +1,8 @@
 ---
 max_concurrency: 4
 poll_interval_ms: 8000
-model: openai/gpt-5-codex
-project_url: https://linear.app/example/project/omx
+model: $CONTRABASS_MODEL
+project_url: $CONTRABASS_PROJECT_URL
 tracker:
   type: internal
 agent:

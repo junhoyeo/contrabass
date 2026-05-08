@@ -8,22 +8,40 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	repoOwner     = "junhoyeo"
-	repoName      = "contrabass"
-	checkInterval = 12 * time.Hour
-	fetchTimeout  = 3500 * time.Millisecond
-	stateDir      = ".contrabass"
-	stateFile     = "update-check.json"
-	disableEnvVar = "CONTRABASS_NO_UPDATE_CHECK"
+	fallbackRepoOwner = "junhoyeo"
+	fallbackRepoName  = "contrabass"
+	checkInterval     = 12 * time.Hour
+	fetchTimeout      = 3500 * time.Millisecond
+	stateDir          = ".contrabass"
+	stateFile         = "update-check.json"
+	disableEnvVar     = "CONTRABASS_NO_UPDATE_CHECK"
 )
 
-var releasesURL = "https://api.github.com/repos/" + repoOwner + "/" + repoName + "/releases/latest"
+// repoOwnerName returns the GitHub owner and repository name derived from the
+// module path in build info. Falls back to compile-time constants when build
+// info is unavailable (e.g. go test -trimpath or go install).
+func repoOwnerName() (owner, repo string) {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Path != "" {
+		// Module path is expected to be github.com/<owner>/<repo>[/...]
+		parts := strings.SplitN(info.Main.Path, "/", 4)
+		if len(parts) >= 3 {
+			return parts[1], parts[2]
+		}
+	}
+	return fallbackRepoOwner, fallbackRepoName
+}
+
+var releasesURL = func() string {
+	owner, repo := repoOwnerName()
+	return "https://api.github.com/repos/" + owner + "/" + repo + "/releases/latest"
+}()
 
 func setGitHubReleasesURL(url string) { releasesURL = url }
 
