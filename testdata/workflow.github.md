@@ -1,7 +1,7 @@
 ---
 max_concurrency: 5
 poll_interval_ms: 10000
-model: anthropic/claude-sonnet
+model: $CONTRABASS_MODEL
 agent_timeout_ms: 600000
 stall_timeout_ms: 120000
 tracker:

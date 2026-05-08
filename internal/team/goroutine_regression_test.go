@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -307,16 +308,38 @@ func buildGoroutineRegressionTasks(execTasks int) []types.TeamTask {
 }
 
 func prepareGoroutineWorkspaces(baseDir, teamName string, maxWorkers int) error {
-	workers := []string{"coordinator", "verifier"}
-	for i := range maxWorkers {
-		workers = append(workers, fmt.Sprintf("worker-%d", i))
+	// workspace.Manager.Create now provisions real git worktrees, so baseDir
+	// must be a git repository with at least one commit. The pre-created
+	// per-issue dirs are no longer needed (Manager creates them via worktree add).
+	_ = teamName
+	_ = maxWorkers
+
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = baseDir
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %v failed: %s: %w", args, string(out), err)
+		}
 	}
 
-	for _, workerID := range workers {
-		issueID := fmt.Sprintf("team-%s-%s", teamName, workerID)
-		path := filepath.Join(baseDir, "workspaces", issueID)
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			return err
+	readme := filepath.Join(baseDir, "README.md")
+	if err := os.WriteFile(readme, []byte("# regression\n"), 0o644); err != nil {
+		return err
+	}
+	for _, args := range [][]string{
+		{"add", "README.md"},
+		{"commit", "-m", "initial commit"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = baseDir
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %v failed: %s: %w", args, string(out), err)
 		}
 	}
 

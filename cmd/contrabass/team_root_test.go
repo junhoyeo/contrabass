@@ -119,13 +119,14 @@ Prompt.
 	})
 
 	called := false
-	startTeamWebServer = func(_ context.Context, _ *log.Logger, port int, _ *config.WorkflowConfig) (chan<- web.WebEvent, error) {
+	startTeamWebServer = func(_ context.Context, _ *log.Logger, port int, host string, _ *config.WorkflowConfig) (chan<- web.WebEvent, error) {
 		called = true
 		assert.Equal(t, 43111, port)
+		assert.Equal(t, "localhost", host)
 		return make(chan<- web.WebEvent, 1), nil
 	}
 
-	err = runTeamExecutionApp(context.Background(), cfgPath, watcher, nil, true, true, 43111)
+	err = runTeamExecutionApp(context.Background(), cfgPath, watcher, nil, true, true, 43111, "localhost")
 	require.NoError(t, err)
 	assert.True(t, called)
 }
