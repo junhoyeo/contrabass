@@ -75,6 +75,18 @@ make build
 > CLI and TUI, but the embedded web dashboard (`--port`) will be empty because `go install`
 > does not run the JS build step.
 
+## Local environment
+
+Copy `.env.example` to `.env`, fill in your Linear project URL, assignee UUID,
+and preferred model. Workflow YAMLs in `testdata/` resolve `$VAR` placeholders
+from your environment at startup.
+
+```bash
+cp .env.example .env
+# edit .env with your values, then source it:
+set -a && source .env && set +a
+```
+
 ## Quick start
 
 ### Run with the demo workflow
