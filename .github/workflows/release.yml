@@ -31,6 +31,14 @@ jobs:
       - name: Build embedded dashboard
         run: make build-dashboard
 
+      - name: Patch flake.nix version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sed -i "s/version = \".*\";/version = \"${version}\";/" flake.nix
+          sed -i "s/-X main.version=.*\"/-X main.version=${version}\"/" flake.nix
+          git add flake.nix
+          git commit -m "chore(release): bump flake.nix to ${GITHUB_REF_NAME}" || true
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
