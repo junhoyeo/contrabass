@@ -55,6 +55,29 @@ From a fresh clone, run `bun install` once before using the JS/landing build and
 brew install junhoyeo/contrabass/contrabass
 ```
 
+### Nix
+
+```bash
+# Run without installing
+nix --extra-experimental-features 'nix-command flakes' run github:junhoyeo/contrabass -- --help
+
+# Install to profile
+nix profile install github:junhoyeo/contrabass
+
+# Enter development shell (provides Go, Bun, etc.)
+nix develop github:junhoyeo/contrabass
+```
+
+For NixOS system-wide installation, add to your configuration:
+
+```nix
+{
+  inputs.contrabass.url = "github:junhoyeo/contrabass";
+  # ...
+  environment.systemPackages = [ inputs.contrabass.packages.${system}.default ];
+}
+```
+
 ### Download from GitHub Releases
 
 Pre-built binaries for macOS and Linux (amd64/arm64) are available on the
