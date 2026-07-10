@@ -20,7 +20,16 @@ function computeRuntimeSeconds(startTime: string | undefined): number {
 }
 
 function App() {
-  const { state, connected, error, queueEvents } = useSSE();
+  const {
+    state,
+    connected,
+    error,
+    teamSnapshot,
+    boardAvailable,
+    boardIssues,
+    agentLogs,
+    queueEvents,
+  } = useSSE();
   const [runtimeSeconds, setRuntimeSeconds] = useState(0);
   const startTime = state?.stats.StartTime;
 
@@ -73,6 +82,10 @@ function App() {
             state={state}
             connected={connected}
             runtimeLabel={runtimeLabel}
+            teamSnapshot={teamSnapshot}
+            boardAvailable={boardAvailable}
+            boardIssues={boardIssues}
+            agentLogs={agentLogs}
             queueEvents={queueEvents}
           />
         </div>

@@ -4,6 +4,7 @@ import type {
   BackoffEntry,
   BoardEvent,
   BoardIssue,
+  Issue,
   OrchestratorEvent,
   RunningEntry,
   StateSnapshot,
@@ -20,13 +21,16 @@ export interface SSEState {
   connected: boolean
   error: string | null
   teamSnapshot: TeamSnapshot | null
+  boardAvailable: boolean
   boardIssues: BoardIssue[]
   agentLogs: AgentLogEvent[]
   queueEvents: QueueEventPayload[]
+  streamWatermark: string | null
 }
 
 export type SSEAction =
-  | { type: 'snapshot'; data: StateSnapshot }
+  | { type: 'snapshot'; data: StateSnapshot; source?: 'stream' | 'refresh' }
+  | { type: 'board_snapshot'; data: BoardIssue[] }
   | { type: 'web_event'; data: WebEvent }
   | { type: 'connected' }
   | { type: 'disconnected' }
@@ -60,6 +64,18 @@ interface IssueReleasedData {
   Attempt: number
 }
 
+interface StreamableHTTPMessage {
+  jsonrpc: string
+  id?: string | number | null
+  method?: string
+  params?: unknown
+  result?: unknown
+  error?: {
+    code: number
+    message: string
+  }
+}
+
 export interface QueueEventPayload {
   issue_id: string
   identifier: string
@@ -71,9 +87,11 @@ export const INITIAL_STATE: SSEState = {
   connected: false,
   error: null,
   teamSnapshot: null,
+  boardAvailable: false,
   boardIssues: [],
   agentLogs: [],
   queueEvents: [],
+  streamWatermark: null,
 }
 
 const EMPTY_TEAM_SNAPSHOT: TeamSnapshot = {
@@ -96,12 +114,28 @@ const EMPTY_TEAM_SNAPSHOT: TeamSnapshot = {
   created_at: '',
 }
 
+const MAX_BUFFERED_ENTRIES = 1000
+const MAX_STREAM_BUFFER_BYTES = 1 << 20
+const STREAM_ENDPOINT = '/api/v1/stream'
+const STREAM_RECONNECT_BASE_DELAY_MS = 500
+const STREAM_RECONNECT_MAX_DELAY_MS = 5000
+const STREAM_SUBSCRIBE_REQUEST = {
+  jsonrpc: '2.0',
+  id: 'dashboard-subscribe',
+  method: 'dashboard.subscribe',
+}
+
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null) {
     return {}
   }
 
   return value as Record<string, unknown>
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function isWebEvent(value: unknown): value is WebEvent {
@@ -118,18 +152,210 @@ function isWebEvent(value: unknown): value is WebEvent {
   )
 }
 
-function isOrchestratorEvent(value: unknown): value is OrchestratorEvent {
+function isStats(value: unknown): value is Stats {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  return (
+    typeof value.Running === 'number' &&
+    typeof value.MaxAgents === 'number' &&
+    typeof value.TotalTokensIn === 'number' &&
+    typeof value.TotalTokensOut === 'number' &&
+    typeof value.StartTime === 'string' &&
+    typeof value.PollCount === 'number'
+  )
+}
+
+function isRunningEntry(value: unknown): value is RunningEntry {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  return (
+    typeof value.issue_id === 'string' &&
+    typeof value.attempt === 'number' &&
+    typeof value.pid === 'number' &&
+    typeof value.session_id === 'string' &&
+    typeof value.workspace === 'string' &&
+    typeof value.started_at === 'string' &&
+    typeof value.phase === 'number' &&
+    typeof value.tokens_in === 'number' &&
+    typeof value.tokens_out === 'number'
+  )
+}
+
+function isBackoffEntry(value: unknown): value is BackoffEntry {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  return (
+    typeof value.issue_id === 'string' &&
+    typeof value.attempt === 'number' &&
+    typeof value.retry_at === 'string' &&
+    typeof value.error === 'string'
+  )
+}
+
+function isNullableStringArray(value: unknown): boolean {
+  return value === null || (Array.isArray(value) && value.every((entry) => typeof entry === 'string'))
+}
+
+function isIssueRecord(value: unknown): value is Issue {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  return (
+    typeof value.id === 'string' &&
+    typeof value.title === 'string' &&
+    typeof value.description === 'string' &&
+    typeof value.state === 'number' &&
+    (!('identifier' in value) || typeof value.identifier === 'string') &&
+    (!('labels' in value) || isNullableStringArray(value.labels)) &&
+    (!('blocked_by' in value) || isNullableStringArray(value.blocked_by)) &&
+    (!('tracker_meta' in value) || value.tracker_meta === null || isRecord(value.tracker_meta))
+  )
+}
+
+function isIssueMap(value: unknown): value is StateSnapshot['issues'] {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  return Object.values(value).every(isIssueRecord)
+}
+
+function normalizeStateSnapshot(value: unknown): StateSnapshot | null {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  if (typeof value.generated_at !== 'string' || !isStats(value.stats)) {
+    return null
+  }
+
+  const running =
+    value.running === null ? [] : Array.isArray(value.running) && value.running.every(isRunningEntry) ? value.running : null
+  const backoff =
+    value.backoff === null ? [] : Array.isArray(value.backoff) && value.backoff.every(isBackoffEntry) ? value.backoff : null
+  const issues = value.issues === null ? {} : isIssueMap(value.issues) ? value.issues : null
+
+  if (!running || !backoff || !issues) {
+    return null
+  }
+
+  return {
+    ...value,
+    stats: value.stats,
+    running,
+    backoff,
+    issues,
+    generated_at: value.generated_at,
+  }
+}
+
+function isStreamableHTTPMessage(value: unknown): value is StreamableHTTPMessage {
   if (typeof value !== 'object' || value === null) {
     return false
   }
 
-  const candidate = value as Partial<OrchestratorEvent>
-  return (
-    typeof candidate.Type === 'number' &&
-    typeof candidate.IssueID === 'string' &&
-    'Data' in candidate &&
-    typeof candidate.Timestamp === 'string'
-  )
+  const candidate = value as Partial<StreamableHTTPMessage>
+  return candidate.jsonrpc === '2.0'
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function sseFrameData(frame: string): string | null {
+  const dataLines = frame
+    .split('\n')
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart())
+
+  if (dataLines.length === 0) {
+    return null
+  }
+
+  return dataLines.join('\n')
+}
+
+function streamBufferBytes(buffer: string): number {
+  return new TextEncoder().encode(buffer).byteLength
+}
+
+function consumeSSEBuffer(buffer: string, onMessage: (message: StreamableHTTPMessage) => void): string {
+  let nextBuffer = buffer.replace(/\r\n/g, '\n')
+  let boundary = nextBuffer.indexOf('\n\n')
+
+  while (boundary >= 0) {
+    const frame = nextBuffer.slice(0, boundary)
+    if (streamBufferBytes(frame) > MAX_STREAM_BUFFER_BYTES) {
+      throw new Error('stream frame is too large')
+    }
+    nextBuffer = nextBuffer.slice(boundary + 2)
+
+    const data = sseFrameData(frame)
+    if (data !== null) {
+      const parsed = JSON.parse(data) as unknown
+      if (!isStreamableHTTPMessage(parsed)) {
+        throw new Error('invalid streamable HTTP message')
+      }
+      onMessage(parsed)
+    }
+
+    boundary = nextBuffer.indexOf('\n\n')
+  }
+
+  if (streamBufferBytes(nextBuffer) > MAX_STREAM_BUFFER_BYTES) {
+    throw new Error('stream buffer is too large')
+  }
+
+  return nextBuffer
+}
+
+async function readStreamableHTTPResponse(
+  response: Response,
+  onMessage: (message: StreamableHTTPMessage) => void,
+): Promise<void> {
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (contentType.includes('application/json')) {
+    const parsed = (await response.json()) as unknown
+    if (!isStreamableHTTPMessage(parsed)) {
+      throw new Error('invalid streamable HTTP response')
+    }
+    onMessage(parsed)
+    return
+  }
+
+  if (!contentType.includes('text/event-stream')) {
+    throw new Error('unsupported streamable HTTP response content type')
+  }
+
+  if (!response.body) {
+    throw new Error('streamable HTTP response body is missing')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) {
+        break
+      }
+
+      buffer = consumeSSEBuffer(buffer + decoder.decode(value, { stream: true }), onMessage)
+    }
+
+    buffer = consumeSSEBuffer(buffer + decoder.decode(), onMessage)
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 function asTeamSnapshot(snapshot: TeamSnapshot | null): TeamSnapshot {
@@ -150,6 +376,42 @@ function resolveTeamEventPayload(webEvt: WebEvent): TeamEventPayload {
     data: nestedData,
     timestamp: typeof payload.timestamp === 'string' ? payload.timestamp : webEvt.timestamp,
   }
+}
+
+function appendAgentLog(state: SSEState, logEvent: AgentLogEvent): SSEState {
+  const logs = [...state.agentLogs, logEvent]
+  if (logs.length > MAX_BUFFERED_ENTRIES) {
+    logs.splice(0, logs.length - MAX_BUFFERED_ENTRIES)
+  }
+
+  return { ...state, agentLogs: logs }
+}
+
+function describeTeamEvent(teamEvent: TeamEventPayload): string {
+  const data = teamEvent.data
+  let toolName = ''
+  if (typeof data.tool_name === 'string') {
+    toolName = data.tool_name
+  } else if (typeof data.name === 'string') {
+    toolName = data.name
+  } else if (typeof data.tool === 'string') {
+    toolName = data.tool
+  }
+
+  if (teamEvent.type === 'tool_call' && toolName) {
+    return `tool_call: ${toolName}`
+  }
+
+  return teamEvent.type
+}
+
+function applyTeamLogEvent(state: SSEState, teamEvent: TeamEventPayload): SSEState {
+  return appendAgentLog(state, {
+    worker_id: teamEvent.team_name || 'team',
+    line: describeTeamEvent(teamEvent),
+    stream: 'team',
+    timestamp: teamEvent.timestamp,
+  })
 }
 
 function applyTeamEvent(state: SSEState, webEvt: WebEvent): SSEState {
@@ -265,7 +527,7 @@ function applyTeamEvent(state: SSEState, webEvt: WebEvent): SSEState {
     }
 
     default:
-      return state
+      return applyTeamLogEvent(state, teamEvent)
   }
 }
 
@@ -282,15 +544,17 @@ function applyBoardEvent(state: SSEState, webEvt: WebEvent): SSEState {
     case 'created':
       return {
         ...state,
+        boardAvailable: true,
         boardIssues: [...issues.filter((issue) => issue.identifier !== boardEvent.issue.identifier), boardEvent.issue],
       }
     case 'updated':
     case 'moved':
       if (!issues.some((issue) => issue.identifier === boardEvent.issue.identifier)) {
-        return { ...state, boardIssues: [...issues, boardEvent.issue] }
+        return { ...state, boardAvailable: true, boardIssues: [...issues, boardEvent.issue] }
       }
       return {
         ...state,
+        boardAvailable: true,
         boardIssues: issues.map((issue) =>
           issue.identifier === boardEvent.issue.identifier ? boardEvent.issue : issue,
         ),
@@ -306,12 +570,7 @@ function applyAgentLogEvent(state: SSEState, webEvt: WebEvent): SSEState {
     return state
   }
 
-  const logs = [...state.agentLogs, logEvent]
-  if (logs.length > 1000) {
-    logs.splice(0, logs.length - 1000)
-  }
-
-  return { ...state, agentLogs: logs }
+  return appendAgentLog(state, logEvent)
 }
 
 function applyQueueEvent(state: SSEState, webEvt: WebEvent): SSEState {
@@ -328,11 +587,55 @@ function applyQueueEvent(state: SSEState, webEvt: WebEvent): SSEState {
   }
 
   const queueEvents = [...state.queueEvents, entry]
-  if (queueEvents.length > 1000) {
-    queueEvents.splice(0, queueEvents.length - 1000)
+  if (queueEvents.length > MAX_BUFFERED_ENTRIES) {
+    queueEvents.splice(0, queueEvents.length - MAX_BUFFERED_ENTRIES)
   }
 
   return { ...state, queueEvents }
+}
+
+function boardIssueTimestamp(issue: BoardIssue): number {
+  const parsed = Date.parse(issue.updated_at)
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed
+}
+
+function mergeBoardSnapshot(current: BoardIssue[], snapshot: BoardIssue[]): BoardIssue[] {
+  const merged = new Map<string, BoardIssue>()
+
+  for (const issue of snapshot) {
+    merged.set(issue.identifier || issue.id, issue)
+  }
+
+  for (const issue of current) {
+    const key = issue.identifier || issue.id
+    const existing = merged.get(key)
+    if (existing && boardIssueTimestamp(issue) > boardIssueTimestamp(existing)) {
+      merged.set(key, issue)
+    }
+  }
+
+  return Array.from(merged.values())
+}
+
+function snapshotTimestamp(snapshot: StateSnapshot | null): number {
+  if (!snapshot?.generated_at) {
+    return Number.NEGATIVE_INFINITY
+  }
+  const parsed = Date.parse(snapshot.generated_at)
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed
+}
+
+function timestampFromString(value: string | null): number {
+  if (!value) {
+    return Number.NEGATIVE_INFINITY
+  }
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed
+}
+
+function shouldAcceptSnapshot(current: StateSnapshot | null, next: StateSnapshot, watermark: string | null): boolean {
+  const currentTimestamp = Math.max(snapshotTimestamp(current), timestampFromString(watermark))
+  return snapshotTimestamp(next) >= currentTimestamp
 }
 
 export function applyEvent(snapshot: StateSnapshot, event: OrchestratorEvent): StateSnapshot {
@@ -425,8 +728,26 @@ export function applyEvent(snapshot: StateSnapshot, event: OrchestratorEvent): S
 
 export function sseReducer(state: SSEState, action: SSEAction): SSEState {
   switch (action.type) {
-    case 'snapshot':
-      return { ...state, state: action.data, connected: true, error: null }
+    case 'snapshot': {
+      const streamSnapshot = action.source !== 'refresh'
+      const watermark = streamSnapshot ? null : state.streamWatermark
+      if (!shouldAcceptSnapshot(state.state, action.data, watermark)) {
+        return streamSnapshot ? { ...state, connected: true, error: null } : state
+      }
+      return {
+        ...state,
+        state: action.data,
+        connected: streamSnapshot ? true : state.connected,
+        error: streamSnapshot ? null : state.error,
+        streamWatermark: streamSnapshot ? action.data.generated_at : state.streamWatermark,
+      }
+    }
+    case 'board_snapshot':
+      return {
+        ...state,
+        boardAvailable: true,
+        boardIssues: mergeBoardSnapshot(state.boardIssues, action.data),
+      }
     case 'connected':
       return { ...state, connected: true, error: null }
     case 'disconnected':
@@ -444,7 +765,11 @@ export function sseReducer(state: SSEState, action: SSEAction): SSEState {
           if (!state.state) {
             return state
           }
-          return { ...state, state: applyEvent(state.state, webEvent.payload as OrchestratorEvent) }
+          return {
+            ...state,
+            state: applyEvent(state.state, webEvent.payload as OrchestratorEvent),
+            streamWatermark: webEvent.timestamp,
+          }
         case 'team':
           return applyTeamEvent(state, webEvent)
         case 'board':
@@ -460,123 +785,182 @@ export function sseReducer(state: SSEState, action: SSEAction): SSEState {
   }
 }
 
-const EVENT_NAMES = [
-  'StatusUpdate',
-  'AgentStarted',
-  'AgentFinished',
-  'BackoffEnqueued',
-  'IssueReleased',
-] as const
-
-const TEAM_EVENT_NAMES = [
-  'team_created',
-  'phase_started',
-  'phase_completed',
-  'worker_started',
-  'worker_updated',
-  'worker_stopped',
-  'task_created',
-  'task_updated',
-  'task_claimed',
-  'task_completed',
-  'task_failed',
-] as const
-
-const BOARD_EVENT_NAMES = ['board_issue_created', 'board_issue_updated', 'board_issue_moved'] as const
-
-const AGENT_LOG_EVENT_NAMES = ['agent_log'] as const
-
-const QUEUE_EVENT_NAMES = ['queue'] as const
-
-const WEB_EVENT_NAMES = [
-  ...EVENT_NAMES,
-  ...TEAM_EVENT_NAMES,
-  ...BOARD_EVENT_NAMES,
-  ...AGENT_LOG_EVENT_NAMES,
-  ...QUEUE_EVENT_NAMES,
-] as const
-
 export function useSSE() {
   const [sseState, dispatch] = useReducer(sseReducer, INITIAL_STATE)
-  const eventSourceRef = useRef<EventSource | null>(null)
+  const streamControllerRef = useRef<AbortController | null>(null)
+  const refreshControllerRef = useRef<AbortController | null>(null)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const reconnectAttemptRef = useRef(0)
+  const connectRef = useRef<() => void>(() => {})
 
-  const connect = useCallback(() => {
-    eventSourceRef.current?.close()
-
-    const eventSource = new EventSource('/api/v1/events')
-    eventSourceRef.current = eventSource
-
-    eventSource.addEventListener('snapshot', (event) => {
-      try {
-        const data = JSON.parse((event as MessageEvent).data) as StateSnapshot
-        dispatch({ type: 'snapshot', data })
-      } catch {
-        dispatch({ type: 'error', message: zhCN.errors.parseSnapshot })
-      }
-    })
-
-    for (const eventName of WEB_EVENT_NAMES) {
-      eventSource.addEventListener(eventName, (event) => {
-        try {
-          const payload = JSON.parse((event as MessageEvent).data) as unknown
-
-          if (isWebEvent(payload)) {
-            dispatch({ type: 'web_event', data: payload })
-            return
-          }
-
-          if (isOrchestratorEvent(payload)) {
-            dispatch({
-              type: 'web_event',
-              data: {
-                kind: 'orchestrator',
-                type: eventName,
-                payload,
-                timestamp: payload.Timestamp,
-              },
-            })
-            return
-          }
-
-          dispatch({ type: 'error', message: zhCN.errors.parseEvent(eventName) })
-        } catch {
-          dispatch({ type: 'error', message: zhCN.errors.parseEvent(eventName) })
-        }
-      })
-    }
-
-    eventSource.onopen = () => {
-      dispatch({ type: 'connected' })
-    }
-
-    eventSource.onerror = () => {
-      dispatch({ type: 'disconnected' })
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
     }
   }, [])
+
+  const scheduleReconnect = useCallback((controller: AbortController) => {
+    if (controller.signal.aborted || reconnectTimerRef.current !== null) {
+      return
+    }
+
+    const attempt = reconnectAttemptRef.current
+    reconnectAttemptRef.current += 1
+    const delay = Math.min(
+      STREAM_RECONNECT_BASE_DELAY_MS * 2 ** attempt,
+      STREAM_RECONNECT_MAX_DELAY_MS,
+    )
+
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null
+      if (!controller.signal.aborted) {
+        connectRef.current()
+      }
+    }, delay)
+  }, [])
+
+  const refreshBoardIssues = useCallback(async (signal: AbortSignal) => {
+    try {
+      const response = await fetch('/api/v1/board/issues', { signal })
+      if (response.status === 404) {
+        return
+      }
+      if (!response.ok) {
+        return
+      }
+      const data = (await response.json()) as BoardIssue[]
+      dispatch({ type: 'board_snapshot', data })
+    } catch (error) {
+      if (isAbortError(error)) {
+        return
+      }
+      // Board support is optional; stream connection state reports core dashboard health.
+    }
+  }, [])
+
+  const connect = useCallback(() => {
+    clearReconnectTimer()
+    streamControllerRef.current?.abort()
+    const controller = new AbortController()
+    streamControllerRef.current = controller
+
+    const handleMessage = (message: StreamableHTTPMessage) => {
+      if (message.error) {
+        dispatch({ type: 'error', message: message.error.message })
+        return
+      }
+
+      switch (message.method) {
+        case 'dashboard.snapshot':
+          {
+            const snapshot = normalizeStateSnapshot(message.params)
+            if (snapshot) {
+              dispatch({ type: 'snapshot', data: snapshot, source: 'stream' })
+            } else {
+              dispatch({ type: 'error', message: zhCN.errors.parseSnapshot })
+            }
+          }
+          return
+        case 'dashboard.event':
+          if (isWebEvent(message.params)) {
+            dispatch({ type: 'web_event', data: message.params })
+          } else {
+            dispatch({ type: 'error', message: zhCN.errors.parseEvent('dashboard.event') })
+          }
+          return
+        default:
+          // JSON-RPC responses to dashboard.subscribe/ping are acknowledgements.
+          return
+      }
+    }
+
+    void (async () => {
+      try {
+        const response = await fetch(STREAM_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json, text/event-stream',
+            'Content-Type': 'application/json',
+            'Mcp-Protocol-Version': '2025-06-18',
+          },
+          body: JSON.stringify(STREAM_SUBSCRIBE_REQUEST),
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          dispatch({ type: 'error', message: `stream failed (${response.status})` })
+          scheduleReconnect(controller)
+          return
+        }
+
+        dispatch({ type: 'connected' })
+        reconnectAttemptRef.current = 0
+        await readStreamableHTTPResponse(response, handleMessage)
+        dispatch({ type: 'disconnected' })
+        scheduleReconnect(controller)
+      } catch (error) {
+        if (isAbortError(error)) {
+          return
+        }
+        dispatch({ type: 'error', message: error instanceof Error ? error.message : 'stream failed' })
+        scheduleReconnect(controller)
+      } finally {
+        if (streamControllerRef.current === controller) {
+          streamControllerRef.current = null
+        }
+      }
+    })()
+  }, [clearReconnectTimer, scheduleReconnect])
+
+  useEffect(() => {
+    connectRef.current = connect
+  }, [connect])
 
   useEffect(() => {
     connect()
 
     return () => {
-      eventSourceRef.current?.close()
-      eventSourceRef.current = null
+      streamControllerRef.current?.abort()
+      streamControllerRef.current = null
+      clearReconnectTimer()
     }
-  }, [connect])
+  }, [connect, clearReconnectTimer])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void refreshBoardIssues(controller.signal)
+    return () => controller.abort()
+  }, [refreshBoardIssues])
 
   // Per-issue tokens (running[i].tokens_in/out) and diff stats are only
   // populated in the initial /api/v1/state snapshot — the StatusUpdate SSE
   // event carries top-level Stats only. Periodically refetch the full
   // snapshot so per-row numbers stay live without a manual page reload.
   const refresh = useCallback(async () => {
+    refreshControllerRef.current?.abort()
+    const controller = new AbortController()
+    refreshControllerRef.current = controller
+
     try {
-      const response = await fetch('/api/v1/state')
+      const response = await fetch('/api/v1/state', { signal: controller.signal })
       if (!response.ok) {
         return
       }
-      const data = (await response.json()) as StateSnapshot
-      dispatch({ type: 'snapshot', data })
-    } catch {
-      // Silent: SSE will surface connection issues separately.
+      const data = (await response.json()) as unknown
+      const snapshot = normalizeStateSnapshot(data)
+      if (snapshot) {
+        dispatch({ type: 'snapshot', data: snapshot, source: 'refresh' })
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        return
+      }
+      // Silent: stream will surface connection issues separately.
+    } finally {
+      if (refreshControllerRef.current === controller) {
+        refreshControllerRef.current = null
+      }
     }
   }, [])
 
@@ -584,7 +968,11 @@ export function useSSE() {
     const timer = window.setInterval(() => {
       void refresh()
     }, 5000)
-    return () => window.clearInterval(timer)
+    return () => {
+      window.clearInterval(timer)
+      refreshControllerRef.current?.abort()
+      refreshControllerRef.current = null
+    }
   }, [refresh])
 
   return { ...sseState, refresh }

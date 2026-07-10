@@ -296,3 +296,28 @@ export interface WebEvent {
   payload: unknown;
   timestamp: string;
 }
+
+export interface MCPAgentServerConfig {
+  type: string;
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export interface MCPAgentConfig {
+  mcpServers: Record<string, MCPAgentServerConfig>;
+}
+
+export interface MCPConfigResponse {
+  server_name: string;
+  transport: string;
+  url: string;
+  protocol_version: string;
+  token_required: boolean;
+  token?: string;
+  authorization_header?: string;
+  expires_at?: string;
+  generated_at: string;
+  expires_in_seconds?: number;
+  regenerate_endpoint: string;
+  config: MCPAgentConfig;
+}

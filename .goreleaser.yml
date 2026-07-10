@@ -3,10 +3,13 @@ version: 2
 before:
   hooks:
     - go mod tidy
+    - cd packages/dashboard && bun run build && touch dist/.gitkeep
 
 builds:
   - main: ./cmd/contrabass
     binary: contrabass
+    tags:
+      - dashboard_dist
     env:
       - CGO_ENABLED=0
     goos:

@@ -331,6 +331,9 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 
 		srv := web.NewServer(fmt.Sprintf("localhost:%d", port), orch, h, dashboardFS)
 		srv.SetAgentStopper(orch)
+		if boardProvider, ok := trackerClient.(web.BoardProvider); ok {
+			srv.SetBoardProvider(boardProvider)
+		}
 		if detailProvider, ok := trackerClient.(tracker.IssueDetailProvider); ok {
 			srv.SetIssueDetailProvider(detailProvider)
 		}

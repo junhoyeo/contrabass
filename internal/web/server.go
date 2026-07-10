@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/junhoyeo/contrabass/internal/hub"
@@ -52,6 +53,8 @@ type Server struct {
 	boardProvider    BoardProvider
 	detailProvider   tracker.IssueDetailProvider
 	timelineProvider TimelineProvider
+	mcpTokenMu       sync.Mutex
+	mcpTokens        map[string]mcpTokenRecord
 }
 
 func NewServer(
@@ -67,6 +70,7 @@ func NewServer(
 		dashboardFS:      dashboardFS,
 		listenAddr:       listenAddr,
 		snapshotProvider: provider,
+		mcpTokens:        make(map[string]mcpTokenRecord),
 	}
 }
 
@@ -166,6 +170,13 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 func (s *Server) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/state", s.withCORS(s.handleGetState))
+	mux.HandleFunc("GET /api/v1/mcp/config", s.withMCPAdminCORS(s.handleGetMCPConfig))
+	mux.HandleFunc("OPTIONS /api/v1/mcp/config", s.withMCPAdminCORS(s.handleGetMCPConfig))
+	mux.HandleFunc("POST /api/v1/mcp/token", s.withMCPAdminCORS(s.handleCreateMCPToken))
+	mux.HandleFunc("OPTIONS /api/v1/mcp/token", s.withMCPAdminCORS(s.handleCreateMCPToken))
+	mux.HandleFunc("GET /api/v1/mcp/stream", s.withMCPStreamCORS(s.withMCPTokenAuth(s.handleStreamableHTTP)))
+	mux.HandleFunc("POST /api/v1/mcp/stream", s.withMCPStreamCORS(s.withMCPTokenAuth(s.handleStreamableHTTP)))
+	mux.HandleFunc("OPTIONS /api/v1/mcp/stream", s.withMCPStreamCORS(s.withMCPTokenAuth(s.handleStreamableHTTP)))
 	mux.HandleFunc("GET /api/v1/issues/{issue_id}/details", s.withCORS(s.handleGetIssueDetails))
 	mux.HandleFunc("GET /api/v1/issues/{issue_id}/timeline", s.withCORS(s.handleGetIssueTimeline))
 	mux.HandleFunc("GET /api/v1/{identifier}", s.withCORS(s.handleGetIssue))
@@ -175,6 +186,9 @@ func (s *Server) newMux() *http.ServeMux {
 	mux.HandleFunc("PATCH /api/v1/board/issues/{identifier}", s.withCORS(s.handleUpdateBoardIssue))
 	mux.HandleFunc("POST /api/v1/running/{issue_id}/stop", s.withCORS(s.handleStopAgent))
 	mux.HandleFunc("POST /api/v1/refresh", s.withCORS(s.handleRefresh))
+	mux.HandleFunc("GET /api/v1/stream", s.withDashboardStreamCORS(s.handleStreamableHTTP))
+	mux.HandleFunc("POST /api/v1/stream", s.withDashboardStreamCORS(s.handleStreamableHTTP))
+	mux.HandleFunc("OPTIONS /api/v1/stream", s.withDashboardStreamCORS(s.handleStreamableHTTP))
 	mux.HandleFunc("GET /api/v1/events", s.withCORS(s.handleSSE))
 	mux.HandleFunc("/api/v1/", s.withCORS(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
@@ -189,7 +203,7 @@ func (s *Server) withCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, Mcp-Protocol-Version")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

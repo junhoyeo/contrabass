@@ -1,4 +1,4 @@
-import { Clock, Inbox, ListChecks, ListTree, Pause, Play, Settings } from 'lucide-react'
+import { Clock, Inbox, KeyRound, ListChecks, ListTree, Pause, Play } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -22,9 +22,11 @@ export type QueueId =
   | 'recent_done'
   | 'canceled'
 
+export type PageId = QueueId | 'mcp_config'
+
 interface AppSidebarProps {
-  active: QueueId
-  onSelect: (id: QueueId) => void
+  active: PageId
+  onSelect: (id: PageId) => void
   counts: Partial<Record<QueueId, number>>
   connected: boolean
   runtimeLabel: string
@@ -56,7 +58,7 @@ function NavGroup({
 }: {
   label: string
   items: NavItem[]
-  active: QueueId
+  active: PageId
   counts: Partial<Record<QueueId, number>>
   onSelect: (id: QueueId) => void
 }) {
@@ -128,9 +130,14 @@ export function AppSidebar({ active, onSelect, counts, connected, runtimeLabel }
       <SidebarFooter className="p-3">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton tooltip="Settings (TODO)" className="h-9 rounded-xl text-muted-foreground hover:text-foreground">
-              <Settings className="h-4 w-4" />
-              <span>设置</span>
+            <SidebarMenuButton
+              tooltip="复制 MCP 配置"
+              isActive={active === 'mcp_config'}
+              onClick={() => onSelect('mcp_config')}
+              className="h-9 rounded-xl text-muted-foreground hover:text-foreground data-active:text-foreground data-active:shadow-xs"
+            >
+              <KeyRound className="h-4 w-4" />
+              <span>MCP 配置</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

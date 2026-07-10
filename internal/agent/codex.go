@@ -161,9 +161,72 @@ func (r *CodexRunner) buildConfigOverrideArgs() []string {
 	add("model", r.options.Model)
 	add("approval_policy", r.options.ApprovalPolicy)
 	if sandbox, ok := r.options.Sandbox.(string); ok {
-		add("sandbox_mode", sandbox)
+		add("sandbox_mode", normalizeCodexSandboxMode(sandbox))
 	}
 	return args
+}
+
+func normalizeCodexSandboxMode(mode string) string {
+	trimmed := strings.TrimSpace(mode)
+	key := strings.ToLower(strings.NewReplacer("_", "-", " ", "-").Replace(trimmed))
+	switch key {
+	case "readonly", "read-only":
+		return "read-only"
+	case "workspacewrite", "workspace-write":
+		return "workspace-write"
+	case "dangerfullaccess", "danger-full-access", "full-access", "none":
+		return "danger-full-access"
+	default:
+		return trimmed
+	}
+}
+
+func sandboxPolicyFromMode(mode string) interface{} {
+	normalized := normalizeCodexSandboxMode(mode)
+	if normalized == "" {
+		return nil
+	}
+	switch normalized {
+	case "read-only":
+		return map[string]interface{}{
+			"type":          "readOnly",
+			"networkAccess": false,
+		}
+	case "workspace-write":
+		return map[string]interface{}{
+			"type":          "workspaceWrite",
+			"networkAccess": false,
+		}
+	case "danger-full-access":
+		return map[string]interface{}{
+			"type": "dangerFullAccess",
+		}
+	default:
+		return map[string]interface{}{
+			"type": lowerCamelSandboxType(normalized),
+		}
+	}
+}
+
+func lowerCamelSandboxType(mode string) string {
+	parts := strings.FieldsFunc(mode, func(r rune) bool {
+		return r == '-' || r == '_' || r == ' '
+	})
+	if len(parts) == 0 {
+		return mode
+	}
+	var b strings.Builder
+	b.WriteString(parts[0])
+	for _, part := range parts[1:] {
+		if part == "" {
+			continue
+		}
+		b.WriteString(strings.ToUpper(part[:1]))
+		if len(part) > 1 {
+			b.WriteString(part[1:])
+		}
+	}
+	return b.String()
 }
 
 // policyParams returns the approvalPolicy and sandboxPolicy values that
@@ -181,8 +244,8 @@ func (r *CodexRunner) policyParams() (approval string, sandbox interface{}) {
 	}
 	switch value := r.options.Sandbox.(type) {
 	case string:
-		if strings.TrimSpace(value) != "" {
-			sandbox = value
+		if policy := sandboxPolicyFromMode(value); policy != nil {
+			sandbox = policy
 		}
 	case map[string]interface{}:
 		if value != nil {
