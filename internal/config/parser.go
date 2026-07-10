@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"regexp"
@@ -50,12 +51,18 @@ func ParseWorkflow(path string) (*WorkflowConfig, error) {
 		return nil, ErrFrontMatterNotMap
 	}
 
-	if err := yaml.Unmarshal([]byte(frontMatter), config); err != nil {
+	decoder := yaml.NewDecoder(strings.NewReader(frontMatter))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(config); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidYAML, err)
 	}
+	if err := ensureSingleYAMLDocument(decoder); err != nil {
+		return nil, err
+	}
+	config.presentFields = collectPresentFields(parsed)
 
 	resolveEnvReferences(config)
-	if err := validateLinearConfig(config); err != nil {
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -66,11 +73,59 @@ func ParseWorkflow(path string) (*WorkflowConfig, error) {
 	return config, nil
 }
 
+func ensureSingleYAMLDocument(decoder *yaml.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); err == io.EOF {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidYAML, err)
+	}
+	return fmt.Errorf("%w: multiple YAML documents are not supported", ErrInvalidYAML)
+}
+
 func validateLinearConfig(cfg *WorkflowConfig) error {
 	if cfg == nil || !cfg.LinearSyncCommentsEnabled() {
 		return nil
 	}
-	return cfg.ValidateLinearSyncCommentsMode()
+	switch strings.TrimSpace(strings.ToLower(cfg.Linear.SyncComments.Mode)) {
+	case "", LinearSyncCommentsModeReplyThread, LinearSyncCommentsModeTopLevel:
+		return nil
+	default:
+		return fmt.Errorf("%w: valid values: reply_thread, top_level", ErrLinearSyncCommentsModeInvalid)
+	}
+}
+
+func collectPresentFields(value any) map[string]struct{} {
+	present := make(map[string]struct{})
+	var walk func(any, string)
+	walk = func(current any, prefix string) {
+		switch typed := current.(type) {
+		case map[string]any:
+			for key, nested := range typed {
+				path := key
+				if prefix != "" {
+					path = prefix + "." + key
+				}
+				present[path] = struct{}{}
+				walk(nested, path)
+			}
+		case map[any]any:
+			for key, nested := range typed {
+				keyString, ok := key.(string)
+				if !ok {
+					continue
+				}
+				path := keyString
+				if prefix != "" {
+					path = prefix + "." + keyString
+				}
+				present[path] = struct{}{}
+				walk(nested, path)
+			}
+		}
+	}
+	walk(value, "")
+	return present
 }
 
 func splitFrontMatter(content string) (frontMatter string, prompt string, hasFrontMatter bool, terminated bool) {
@@ -135,38 +190,52 @@ func resolveEnvReferencesValue(v reflect.Value) {
 		return
 	}
 
-	if v.Kind() == reflect.Pointer {
+	switch v.Kind() {
+	case reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		resolved := reflect.New(v.Elem().Type()).Elem()
+		resolved.Set(v.Elem())
+		resolveEnvReferencesValue(resolved)
+		v.Set(resolved)
+	case reflect.Pointer:
 		if v.IsNil() {
 			return
 		}
 		resolveEnvReferencesValue(v.Elem())
-		return
-	}
-
-	if v.Kind() != reflect.Struct {
-		return
-	}
-
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		if !field.CanSet() {
-			continue
-		}
-
-		fieldType := v.Type().Field(i)
-
-		if fieldType.Name == "PromptTemplate" {
-			continue
-		}
-
-		switch field.Kind() {
-		case reflect.String:
-			resolved, ok := resolveEnvToken(field.String())
+	case reflect.String:
+		if v.CanSet() {
+			resolved, ok := resolveEnvToken(v.String())
 			if ok {
-				field.SetString(resolved)
+				v.SetString(resolved)
 			}
-		case reflect.Struct, reflect.Pointer:
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			if !field.CanSet() {
+				continue
+			}
+			if v.Type().Field(i).Name == "PromptTemplate" {
+				continue
+			}
 			resolveEnvReferencesValue(field)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			resolveEnvReferencesValue(v.Index(i))
+		}
+	case reflect.Map:
+		if v.IsNil() {
+			return
+		}
+		iter := v.MapRange()
+		for iter.Next() {
+			value := reflect.New(iter.Value().Type()).Elem()
+			value.Set(iter.Value())
+			resolveEnvReferencesValue(value)
+			v.SetMapIndex(iter.Key(), value)
 		}
 	}
 }

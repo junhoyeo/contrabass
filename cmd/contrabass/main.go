@@ -113,7 +113,7 @@ progress in a terminal UI built with the Charm stack.`,
 
 	_ = cmd.MarkFlagRequired("config")
 
-	cmd.AddCommand(teamCmd, boardCmd)
+	cmd.AddCommand(teamCmd, boardCmd, newConfigCmd())
 
 	return cmd
 }

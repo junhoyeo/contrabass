@@ -103,6 +103,7 @@ var (
 )
 
 type WorkflowConfig struct {
+	SchemaVersionRaw     int                 `yaml:"schema_version"`
 	MaxConcurrencyRaw    int                 `yaml:"max_concurrency"`
 	PollIntervalMsRaw    int                 `yaml:"poll_interval_ms"`
 	MaxRetryBackoffMsRaw int                 `yaml:"max_retry_backoff_ms"`
@@ -125,6 +126,7 @@ type WorkflowConfig struct {
 	Timeline             TimelineConfig      `yaml:"timeline"`
 	Orchestrator         OrchestratorConfig  `yaml:"orchestrator"`
 	PromptTemplate       string              `yaml:"-"`
+	presentFields        map[string]struct{} `yaml:"-"`
 }
 
 type TrackerConfig struct {
@@ -321,6 +323,7 @@ func (c *WorkflowConfig) Clone() *WorkflowConfig {
 	cfg.OhMyOpenCode.Plugins = slices.Clone(c.OhMyOpenCode.Plugins)
 	cfg.OhMyOpenCode.Agents = maps.Clone(c.OhMyOpenCode.Agents)
 	cfg.OhMyOpenCode.Categories = maps.Clone(c.OhMyOpenCode.Categories)
+	cfg.presentFields = maps.Clone(c.presentFields)
 	if c.Linear.IssueDetails.Enabled != nil {
 		enabled := *c.Linear.IssueDetails.Enabled
 		cfg.Linear.IssueDetails.Enabled = &enabled

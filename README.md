@@ -150,6 +150,7 @@ contrabass team run --config workflow.md [flags]
 ### Runtime notes
 
 - `WORKFLOW.md` is watched with `fsnotify`; on parse errors, Contrabass keeps the last known good config.
+- Configuration fields are strictly validated; inspect resolved values and reload lifecycles with `contrabass config effective --config WORKFLOW.md`.
 - The Codex runner speaks newline-delimited JSON (`JSONL`) to `codex app-server` rather than `Content-Length` framed messages. See [`docs/codex-protocol.md`](docs/codex-protocol.md).
 - The Codex runner handles `-32001` server overload errors with exponential backoff retry (up to 5 attempts) and detects stalled streams via configurable read timeouts.
 - The workflow parser already accepts more Symphony-shaped fields than the runtime fully consumes today. For example, `workspace`, `hooks`, and some `codex` settings are parsed, but the current runtime mainly uses tracker selection, timeouts, retry settings, binary paths, and prompt/template fields.
@@ -233,6 +234,8 @@ Produce code and tests that satisfy the issue requirements.
 
 The complete orchestrator policy, including snapshot stage and ETA heuristics,
 is documented in [`docs/orchestrator-configuration.md`](docs/orchestrator-configuration.md).
+The complete parsing, validation, environment-reference, and effective-config
+behavior is documented in [`docs/configuration.md`](docs/configuration.md).
 
 ### Linear detail and timeline sync settings
 
