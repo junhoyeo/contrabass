@@ -59,3 +59,5 @@ packages/dashboard/dist/
 .contrabass/board/comments/CB-3.jsonl
 .contrabass/board/comments/CB-4.jsonl
 .gitnexus
+
+.claude/scheduled_tasks.lock
