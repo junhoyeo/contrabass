@@ -1031,6 +1031,7 @@ func TestOrchestrator_ReconcileForceRemovesBrokenDone(t *testing.T) {
 }
 
 func TestOrchestrator_IssueCacheEvictsOldest(t *testing.T) {
+	defaultCacheSize := runtimePolicyFromConfig(nil).issueCacheSize
 	tests := []struct {
 		name       string
 		prefill    int
@@ -1040,9 +1041,9 @@ func TestOrchestrator_IssueCacheEvictsOldest(t *testing.T) {
 	}{
 		{
 			name:       "evicts_oldest_when_exceeding_max",
-			prefill:    maxIssueCacheSize,
+			prefill:    defaultCacheSize,
 			insertID:   "ISS-OVERFLOW",
-			expectSize: maxIssueCacheSize,
+			expectSize: defaultCacheSize,
 			expectGone: "ISS-0",
 		},
 		{
@@ -1054,9 +1055,9 @@ func TestOrchestrator_IssueCacheEvictsOldest(t *testing.T) {
 		},
 		{
 			name:       "update_existing_key_does_not_grow",
-			prefill:    maxIssueCacheSize,
+			prefill:    defaultCacheSize,
 			insertID:   "ISS-0",
-			expectSize: maxIssueCacheSize,
+			expectSize: defaultCacheSize,
 			expectGone: "",
 		},
 	}
@@ -1116,7 +1117,7 @@ func TestOrchestrator_EmitEventDropLogged(t *testing.T) {
 			orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, logger)
 
 			// Fill the events channel to capacity
-			for i := 0; i < defaultEventBufferSize; i++ {
+			for i := 0; i < cap(orch.events); i++ {
 				orch.events <- OrchestratorEvent{Type: EventStatusUpdate}
 			}
 
@@ -1511,7 +1512,7 @@ func TestOrchestrator_EventBufferFull(t *testing.T) {
 	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, logger)
 
 	// Fill the events channel completely
-	for i := 0; i < defaultEventBufferSize; i++ {
+	for i := 0; i < cap(orch.events); i++ {
 		orch.events <- OrchestratorEvent{
 			Type: EventStatusUpdate,
 			Data: StatusUpdate{Stats: Stats{Running: i}},

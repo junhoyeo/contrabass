@@ -114,8 +114,13 @@ func (o *Orchestrator) completeRun(ctx context.Context, issueID string, doneErr 
 	})
 
 	if finalAttempt.Phase == types.Succeeded {
-		advanced, reason, err := verifyBranchAdvanced(
-			ctx, finalAttempt.WorkspacePath, entry.issue.BranchName, finalAttempt.ClaimHeadSha)
+		advanced, reason, err := verifyBranchAdvancedWithTimeout(
+			ctx,
+			finalAttempt.WorkspacePath,
+			entry.issue.BranchName,
+			finalAttempt.ClaimHeadSha,
+			o.runtimePolicy().gitCommandTimeout,
+		)
 		switch {
 		case advanced && reason == "":
 		case !advanced && reason == "branch_unchanged":
@@ -293,7 +298,7 @@ func (o *Orchestrator) enqueueBackoffFromRunResult(ctx context.Context, issue ty
 		o.emitIssueReleased(issue.ID, attempt.Attempt, releaseTimestamp)
 	}
 
-	delayMs := CalculateBackoff(issue.ID, attempt.Attempt, o.currentConfig().MaxRetryBackoffMs())
+	delayMs := o.backoffDelayMs(issue.ID, attempt.Attempt)
 	retryAt := time.Now().Add(time.Duration(delayMs) * time.Millisecond)
 	nextAttempt := attempt.Attempt + 1
 
@@ -401,7 +406,7 @@ func (o *Orchestrator) pauseUnverifiedSuccess(
 }
 
 func (o *Orchestrator) enqueueContinuation(issueID string, attempt int, message string) {
-	delayMs := CalculateBackoff(issueID, 0, o.currentConfig().MaxRetryBackoffMs())
+	delayMs := o.backoffDelayMs(issueID, 0)
 	retryAt := time.Now().Add(time.Duration(delayMs) * time.Millisecond)
 
 	entry := types.BackoffEntry{
@@ -436,6 +441,16 @@ func upsertBackoff(entries []types.BackoffEntry, next types.BackoffEntry) []type
 		}
 	}
 	return append(entries, next)
+}
+
+func (o *Orchestrator) backoffDelayMs(issueID string, attempt int) int {
+	cfg := o.currentConfig()
+	return calculateBackoffWithPolicy(
+		issueID,
+		attempt,
+		cfg.MaxRetryBackoffMs(),
+		runtimePolicyFromConfig(cfg).backoff,
+	)
 }
 
 func (o *Orchestrator) requeueBackoff(entry types.BackoffEntry) {
@@ -523,7 +538,8 @@ func (o *Orchestrator) stopRun(_ context.Context, issueID string) {
 	}
 
 	if entry.process != nil && entry.process.Done != nil {
-		graceTimer := time.NewTimer(5 * time.Second)
+		graceTimeout := o.runtimePolicy().stopGraceTimeout
+		graceTimer := time.NewTimer(graceTimeout)
 		select {
 		case _, ok := <-entry.process.Done:
 			if !ok {
@@ -534,7 +550,7 @@ func (o *Orchestrator) stopRun(_ context.Context, issueID string) {
 				o.logger,
 				"run_stop_timeout",
 				"issue_id", issueID,
-				"grace_timeout", "5s",
+				"grace_timeout", graceTimeout.String(),
 			)
 		}
 		if !graceTimer.Stop() {

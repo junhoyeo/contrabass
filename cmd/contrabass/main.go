@@ -433,7 +433,7 @@ func startSignalShutdownHook(
 		case <-ctx.Done():
 			return
 		case <-signalChan:
-			if shutdownErr := runGracefulShutdown(cancel, orch, orchestrator.DefaultShutdownConfig(), logger); shutdownErr != nil {
+			if shutdownErr := runGracefulShutdown(cancel, orch, orch.ShutdownConfig(), logger); shutdownErr != nil {
 				logger.Error("graceful shutdown failed", "err", shutdownErr)
 			}
 		}

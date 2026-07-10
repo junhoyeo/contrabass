@@ -113,6 +113,7 @@ func logTeamEvents(ctx context.Context, logger *slog.Logger, events <-chan types
 
 // createRunner creates an AgentRunner based on the workflow config.
 func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logger) (agent.AgentRunner, error) {
+	policy := runnerPolicyFromConfig(cfg)
 	if err := cfg.ValidateWorkerMode(); err != nil {
 		return nil, fmt.Errorf("invalid worker mode configuration: %w", err)
 	}
@@ -157,7 +158,7 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 			HeartbeatMonitor: heartbeat,
 			EventLogger:      eventLogger,
 			DispatchQueue:    dispatchQueue,
-			PollInterval:     2 * time.Second,
+			PollInterval:     policy.tmuxPollInterval,
 			Logger:           logger,
 		}), nil
 	}
@@ -168,7 +169,7 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 		if codexBin == "" {
 			codexBin = cfg.CodexBinaryPath()
 		}
-		runner := agent.NewCodexRunner(codexBin, 30*time.Second)
+		runner := agent.NewCodexRunner(codexBin, policy.startupTimeout)
 		if stallTimeoutMs := cfg.StallTimeoutMs(); stallTimeoutMs > 0 {
 			runner.WithStreamReadTimeout(time.Duration(stallTimeoutMs) * time.Millisecond)
 		}
@@ -196,7 +197,7 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 		if username == "" {
 			username = cfg.OpenCodeUsername()
 		}
-		return agent.NewOpenCodeRunner(opencodeBin, port, password, username, 30*time.Second), nil
+		return agent.NewOpenCodeRunner(opencodeBin, port, password, username, policy.startupTimeout), nil
 	case "omx":
 		omxBin := os.Getenv("OMX_BINARY")
 		if omxBin == "" {
@@ -204,7 +205,7 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 		}
 		omxCfg := cfg.Clone()
 		omxCfg.OMX.BinaryPath = omxBin
-		return agent.NewOMXRunner(omxCfg, 30*time.Second), nil
+		return agent.NewOMXRunner(omxCfg, 0), nil
 	case "omc":
 		omcBin := os.Getenv("OMC_BINARY")
 		if omcBin == "" {
@@ -212,11 +213,23 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 		}
 		omcCfg := cfg.Clone()
 		omcCfg.OMC.BinaryPath = omcBin
-		return agent.NewOMCRunner(omcCfg, 30*time.Second), nil
+		return agent.NewOMCRunner(omcCfg, 0), nil
 	case "oh-my-opencode":
-		return agent.NewOhMyOpenCodeRunner(cfg, 30*time.Second)
+		return agent.NewOhMyOpenCodeRunner(cfg, policy.startupTimeout)
 	default:
 		return nil, fmt.Errorf("unknown agent type: %q", cfg.AgentType())
+	}
+}
+
+type runnerPolicy struct {
+	startupTimeout   time.Duration
+	tmuxPollInterval time.Duration
+}
+
+func runnerPolicyFromConfig(cfg *config.WorkflowConfig) runnerPolicy {
+	return runnerPolicy{
+		startupTimeout:   time.Duration(cfg.AgentStartupTimeoutMs()) * time.Millisecond,
+		tmuxPollInterval: time.Duration(cfg.TeamWorkerPollIntervalMs()) * time.Millisecond,
 	}
 }
 

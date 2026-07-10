@@ -8,18 +8,14 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-const shutdownPollInterval = 10 * time.Millisecond
-
 type ShutdownConfig struct {
 	DrainTimeout   time.Duration
 	CleanupTimeout time.Duration
+	PollInterval   time.Duration
 }
 
 func DefaultShutdownConfig() ShutdownConfig {
-	return ShutdownConfig{
-		DrainTimeout:   30 * time.Second,
-		CleanupTimeout: 10 * time.Second,
-	}
+	return runtimePolicyFromConfig(nil).shutdown
 }
 
 func (o *Orchestrator) RunningCount() int {
@@ -48,7 +44,7 @@ func GracefulShutdown(
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), cfg.DrainTimeout)
 	defer drainCancel()
 
-	if !waitForDrain(drainCtx, orch) && logger != nil {
+	if !waitForDrain(drainCtx, orch, cfg.PollInterval) && logger != nil {
 		logger.Warn("drain timeout reached; forcing shutdown")
 	}
 
@@ -58,12 +54,12 @@ func GracefulShutdown(
 	return orch.gracefulShutdown(cleanupCtx)
 }
 
-func waitForDrain(ctx context.Context, orch *Orchestrator) bool {
+func waitForDrain(ctx context.Context, orch *Orchestrator, pollInterval time.Duration) bool {
 	if orch.RunningCount() == 0 {
 		return true
 	}
 
-	ticker := time.NewTicker(shutdownPollInterval)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -86,6 +82,9 @@ func normalizeShutdownConfig(cfg ShutdownConfig) ShutdownConfig {
 	}
 	if cfg.CleanupTimeout <= 0 {
 		cfg.CleanupTimeout = defaults.CleanupTimeout
+	}
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = defaults.PollInterval
 	}
 
 	return cfg

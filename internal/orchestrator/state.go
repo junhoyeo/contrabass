@@ -7,11 +7,6 @@ import (
 	"github.com/junhoyeo/contrabass/internal/types"
 )
 
-const (
-	continuationBackoffMs = 1_000
-	failureBackoffBaseMs  = 10_000
-)
-
 type InvalidTransitionError struct {
 	From any
 	To   any
@@ -84,29 +79,30 @@ func TransitionRunPhase(current, target types.RunPhase) error {
 }
 
 func CalculateBackoff(issueID string, attempt int, maxMs int) (delayMs int) {
+	return calculateBackoffWithPolicy(issueID, attempt, maxMs, runtimePolicyFromConfig(nil).backoff)
+}
+
+func calculateBackoffWithPolicy(issueID string, attempt int, maxMs int, policy backoffPolicy) (delayMs int) {
 	if maxMs <= 0 {
 		return 0
 	}
 
 	if attempt <= 0 {
-		if continuationBackoffMs > maxMs {
+		if policy.continuationMs > maxMs {
 			return maxMs
 		}
-		return continuationBackoffMs
+		return policy.continuationMs
 	}
 
-	baseDelay := calculateFailureBackoff(attempt, maxMs)
-	jitterRange := baseDelay / 10
+	baseDelay := calculateFailureBackoffWithPolicy(attempt, maxMs, policy)
+	jitterRange := int(int64(baseDelay) * int64(policy.jitterPercent) / 100)
 	if jitterRange <= 0 {
 		return baseDelay
 	}
 
 	offset := deterministicJitterOffset(issueID, attempt, maxMs, jitterRange)
 	delayMs = baseDelay + offset
-	minBackoffMs := continuationBackoffMs
-	if minBackoffMs <= 0 {
-		minBackoffMs = 1_000
-	}
+	minBackoffMs := policy.continuationMs
 	if minBackoffMs > maxMs {
 		minBackoffMs = maxMs
 	}
@@ -198,7 +194,26 @@ func deterministicBackoffSeed(issueID string, attempt, maxMs int) uint64 {
 }
 
 func calculateFailureBackoff(attempt int, maxMs int) int {
-	delay := failureBackoffBaseMs
+	return calculateFailureBackoffWithPolicy(attempt, maxMs, runtimePolicyFromConfig(nil).backoff)
+}
+
+func calculateFailureBackoffWithPolicy(attempt int, maxMs int, policy backoffPolicy) int {
+	delay := policy.failureBaseMs
+	if delay >= maxMs {
+		return maxMs
+	}
+
+	if policy.strategy == "linear" {
+		if attempt > maxMs/delay {
+			return maxMs
+		}
+		delay *= attempt
+		if delay > maxMs {
+			return maxMs
+		}
+		return delay
+	}
+
 	for step := 1; step < attempt; step++ {
 		if delay >= maxMs {
 			return maxMs
@@ -207,7 +222,14 @@ func calculateFailureBackoff(attempt int, maxMs int) int {
 			delay = maxMs
 			break
 		}
-		delay *= 2
+		if policy.multiplier <= 1 {
+			break
+		}
+		if delay > maxMs/policy.multiplier {
+			delay = maxMs
+			break
+		}
+		delay *= policy.multiplier
 	}
 
 	if delay > maxMs {

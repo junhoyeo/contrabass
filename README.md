@@ -200,8 +200,27 @@ linear:
     mode: reply_thread
 agent:
   type: codex
+  startup_timeout_ms: 30000
 codex:
   binary_path: codex app-server
+orchestrator:
+  event_buffer_size: 256
+  run_signal_buffer_size: 256
+  issue_cache_size: 1000
+  run_shutdown_timeout_ms: 5000
+  stop_grace_timeout_ms: 5000
+  git_command_timeout_ms: 2000
+  shutdown:
+    drain_timeout_ms: 30000
+    cleanup_timeout_ms: 10000
+    poll_interval_ms: 10
+  backoff:
+    continuation_ms: 1000
+    failure_base_ms: 10000
+    multiplier: 2
+    jitter_percent: 10
+  snapshot:
+    diff_timeout_ms: 1000
 ---
 # Workflow Prompt
 
@@ -211,6 +230,9 @@ Issue URL: {{ issue.url }}
 
 Produce code and tests that satisfy the issue requirements.
 ```
+
+The complete orchestrator policy, including snapshot stage and ETA heuristics,
+is documented in [`docs/orchestrator-configuration.md`](docs/orchestrator-configuration.md).
 
 ### Linear detail and timeline sync settings
 

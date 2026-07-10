@@ -71,6 +71,7 @@ type RunningEntry struct {
 // so mutations to the orchestrator after Snapshot() returns do not affect
 // the returned snapshot.
 func (o *Orchestrator) Snapshot() StateSnapshot {
+	policy := o.runtimePolicy().snapshot
 	o.mu.Lock()
 
 	// Copy stats (value type)
@@ -111,7 +112,11 @@ func (o *Orchestrator) Snapshot() StateSnapshot {
 
 	now := time.Now()
 	for i := range runningEntries {
-		added, removed, files, status := diffStat(context.Background(), runningEntries[i].Workspace)
+		added, removed, files, status := diffStatWithTimeout(
+			context.Background(),
+			runningEntries[i].Workspace,
+			policy.diffTimeout,
+		)
 		runningEntries[i].DiffAdded = added
 		runningEntries[i].DiffRemoved = removed
 		runningEntries[i].DiffFiles = files
@@ -137,8 +142,25 @@ func (o *Orchestrator) Snapshot() StateSnapshot {
 			if elapsedMin > 0 {
 				tokPerMin = float64(tokensTotal) / elapsedMin
 			}
-			stage, step = classifyAgentStage(&e.stageState, lastActivityKind, added, removed, tokPerMin, now)
-			etaAt, etaConf = estimateCompletionAt(startedAt, now, files, runningEntries[i].TokensIn, runningEntries[i].TokensOut, step, 0)
+			stage, step = classifyAgentStageWithPolicy(
+				&e.stageState,
+				lastActivityKind,
+				added,
+				removed,
+				tokPerMin,
+				now,
+				policy.stage,
+			)
+			etaAt, etaConf = estimateCompletionAtWithPolicy(
+				startedAt,
+				now,
+				files,
+				runningEntries[i].TokensIn,
+				runningEntries[i].TokensOut,
+				step,
+				0,
+				policy.eta,
+			)
 		}
 		o.mu.Unlock()
 
@@ -172,11 +194,15 @@ func (o *Orchestrator) SetBuildInfo(info BuildInfo) {
 // (added, removed, files, status). status is "ok" / "timeout" / "error".
 // On failure the int triple is zeroed and status carries the failure mode.
 func diffStat(ctx context.Context, workspace string) (added, removed, files int, status string) {
+	return diffStatWithTimeout(ctx, workspace, runtimePolicyFromConfig(nil).snapshot.diffTimeout)
+}
+
+func diffStatWithTimeout(ctx context.Context, workspace string, timeout time.Duration) (added, removed, files int, status string) {
 	if strings.TrimSpace(workspace) == "" {
 		return 0, 0, 0, "error"
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, time.Second)
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	output, err := diffStatCommand(cmdCtx, "git", "-C", workspace, "diff", "--shortstat", "HEAD").Output()
@@ -261,6 +287,25 @@ func classifyAgentStage(
 	tokensPerMin float64,
 	now time.Time,
 ) (string, int) {
+	return classifyAgentStageWithPolicy(
+		state,
+		lastActivityKind,
+		diffAdded,
+		diffRemoved,
+		tokensPerMin,
+		now,
+		runtimePolicyFromConfig(nil).snapshot.stage,
+	)
+}
+
+func classifyAgentStageWithPolicy(
+	state *agentStageState,
+	lastActivityKind string,
+	diffAdded, diffRemoved int,
+	tokensPerMin float64,
+	now time.Time,
+	policy stagePolicy,
+) (string, int) {
 	var stage string
 	var step int
 
@@ -273,9 +318,9 @@ func classifyAgentStage(
 		diffPlateaued := diffAdded == 0 && diffRemoved == 0
 
 		switch {
-		case diffPlateaued && elapsed > 60*time.Second && tokensPerMin < 50_000:
+		case diffPlateaued && elapsed > policy.reviewingAfter && tokensPerMin < policy.reviewingMaxTokensPerMinute:
 			stage, step = "Reviewing", 4
-		case diffPlateaued && elapsed > 30*time.Second:
+		case diffPlateaued && elapsed > policy.testingAfter:
 			stage, step = "Testing", 3
 		case diffChanged:
 			stage, step = "Editing", 2
@@ -324,24 +369,46 @@ func estimateCompletionAt(
 	stageStep int,
 	estimatedTotalFiles int,
 ) (string, string) {
+	return estimateCompletionAtWithPolicy(
+		startedAt,
+		now,
+		diffFiles,
+		tokensIn,
+		tokensOut,
+		stageStep,
+		estimatedTotalFiles,
+		runtimePolicyFromConfig(nil).snapshot.eta,
+	)
+}
+
+func estimateCompletionAtWithPolicy(
+	startedAt time.Time,
+	now time.Time,
+	diffFiles int,
+	tokensIn, tokensOut int64,
+	stageStep int,
+	estimatedTotalFiles int,
+	policy etaPolicy,
+) (string, string) {
+	elapsed := now.Sub(startedAt)
 	elapsedMin := now.Sub(startedAt).Minutes()
 
-	if elapsedMin < 3 {
+	if elapsed < policy.minElapsed {
 		return "", "low"
 	}
 
 	filesPerMin := float64(diffFiles) / elapsedMin
 	tokensPerMin := float64(tokensIn+tokensOut) / elapsedMin
 
-	if filesPerMin < 0.05 || tokensPerMin < 1000 {
+	if filesPerMin < policy.minFilesPerMinute || tokensPerMin < policy.minTokensPerMinute {
 		return "", "low"
 	}
 
 	// Determine confidence band.
 	var confidence string
-	if elapsedMin > 8 && stageStep >= 3 {
+	if elapsed > policy.highConfidenceAfter && stageStep >= policy.highConfidenceMinStage {
 		confidence = "high"
-	} else if elapsedMin > 5 {
+	} else if elapsed > policy.mediumConfidenceAfter {
 		confidence = "medium"
 	} else {
 		confidence = "low"
@@ -354,9 +421,9 @@ func estimateCompletionAt(
 	// Compute ETA.
 	currentFiles := diffFiles
 	if estimatedTotalFiles <= currentFiles {
-		estimated := float64(currentFiles) * 1.2
-		if estimated < 11 {
-			estimated = 11
+		estimated := float64(currentFiles) * policy.estimatedFilesMultiplier
+		if estimated < float64(policy.minEstimatedFiles) {
+			estimated = float64(policy.minEstimatedFiles)
 		}
 		estimatedTotalFiles = int(estimated)
 	}
@@ -365,10 +432,10 @@ func estimateCompletionAt(
 	if estimatedTotalFiles > currentFiles {
 		linearRemainingMin = float64(estimatedTotalFiles-currentFiles) / filesPerMin
 	} else {
-		linearRemainingMin = 5
+		linearRemainingMin = policy.fallbackRemainingMinutes
 	}
 
-	totalEstimateMin := elapsedMin + linearRemainingMin*1.35
+	totalEstimateMin := elapsedMin + linearRemainingMin*policy.uncertaintyMultiplier
 	etaAt := startedAt.Add(time.Duration(totalEstimateMin * float64(time.Minute)))
 
 	return etaAt.UTC().Format(time.RFC3339), confidence
