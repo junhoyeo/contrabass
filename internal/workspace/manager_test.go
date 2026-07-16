@@ -389,6 +389,30 @@ func TestManager_CleanupRemovesStalePlainDirInsideRepo(t *testing.T) {
 	assert.NoDirExists(t, workspacePath)
 }
 
+// TestManager_CreateRecoversRegisteredButMissingWorktree pins the prune-retry
+// path: when the workspace directory is deleted externally (rm -rf without
+// `git worktree remove`), the stale registration blocks every `worktree add`
+// at that path. Create must prune and retry instead of failing forever.
+func TestManager_CreateRecoversRegisteredButMissingWorktree(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+	ctx := context.Background()
+
+	issue := types.Issue{ID: "ISSUE-GONE", BranchName: "symphony/issue-gone"}
+	path, err := mgr.Create(ctx, issue)
+	require.NoError(t, err)
+
+	// Delete the directory without telling git — the registration remains.
+	require.NoError(t, os.RemoveAll(path))
+
+	secondPath, err := mgr.Create(ctx, issue)
+	require.NoError(t, err, "Create must prune the stale registration and retry")
+	assert.Equal(t, path, secondPath)
+	assert.DirExists(t, secondPath)
+}
+
 func TestManager_CleanupRejectsInvalidIssueID(t *testing.T) {
 	t.Parallel()
 

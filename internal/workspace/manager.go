@@ -111,19 +111,21 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 		branchName = issue.ID
 	}
 
-	// Primary: create-and-checkout a brand-new branch.
-	// Fallback: the branch already exists (retry after a partial run, resumed
-	// issue) — attach the worktree to it as-is so the agent's prior commits
-	// stay on the branch ref. Never fall back to `worktree add -B`: it
-	// re-creates the branch AT HEAD, silently discarding those commits and
-	// defeating branch-advance verification.
-	primaryOut, primaryErr := m.runGit(ctx, "worktree", "add", "-b", branchName, workspacePath)
-	if primaryErr != nil {
-		_, attachErr := m.runGit(ctx, "worktree", "add", workspacePath, branchName)
-		if attachErr != nil {
+	if err := m.addWorktree(ctx, branchName, workspacePath); err != nil {
+		// A worktree registration whose directory was deleted externally
+		// (rm -rf without `worktree remove`) blocks every `worktree add` at
+		// this path until pruned. Prune stale registrations once and retry
+		// before giving up — otherwise the issue is permanently undispatchable.
+		if _, pruneErr := m.runGit(ctx, "worktree", "prune"); pruneErr != nil {
 			return "", fmt.Errorf(
-				"create git worktree for issue %s on branch %s: primary -b failed: %v (output=%s); attach existing branch failed: %w",
-				issue.ID, branchName, primaryErr, primaryOut, attachErr,
+				"create git worktree for issue %s on branch %s: %w (git worktree prune also failed: %v)",
+				issue.ID, branchName, err, pruneErr,
+			)
+		}
+		if retryErr := m.addWorktree(ctx, branchName, workspacePath); retryErr != nil {
+			return "", fmt.Errorf(
+				"create git worktree for issue %s on branch %s (after prune): %w",
+				issue.ID, branchName, retryErr,
 			)
 		}
 	}
@@ -141,6 +143,26 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 	m.mu.Unlock()
 
 	return workspacePath, nil
+}
+
+// addWorktree creates the worktree on a brand-new branch, falling back to
+// attaching the existing branch as-is (retry after a partial run, resumed
+// issue) so the agent's prior commits stay on the branch ref. Never falls
+// back to `worktree add -B`: it re-creates the branch AT HEAD, silently
+// discarding those commits and defeating branch-advance verification.
+func (m *Manager) addWorktree(ctx context.Context, branchName, workspacePath string) error {
+	primaryOut, primaryErr := m.runGit(ctx, "worktree", "add", "-b", branchName, workspacePath)
+	if primaryErr == nil {
+		return nil
+	}
+	_, attachErr := m.runGit(ctx, "worktree", "add", workspacePath, branchName)
+	if attachErr != nil {
+		return fmt.Errorf(
+			"primary -b failed: %v (output=%s); attach existing branch failed: %w",
+			primaryErr, primaryOut, attachErr,
+		)
+	}
+	return nil
 }
 
 func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
@@ -161,7 +183,6 @@ func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
 		m.mu.Lock()
 		delete(m.active, issueID)
 		m.mu.Unlock()
-		m.issueLocks.Delete(issueID)
 		return nil
 	}
 
@@ -182,7 +203,6 @@ func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
 	m.mu.Lock()
 	delete(m.active, issueID)
 	m.mu.Unlock()
-	m.issueLocks.Delete(issueID)
 
 	return nil
 }
@@ -244,6 +264,11 @@ func (m *Manager) workspacePath(issueID string) string {
 	return filepath.Join(m.baseDir, "workspaces", issueID)
 }
 
+// lockIssue serializes Create/Cleanup per issue ID. Lock entries are never
+// deleted: removing one from Cleanup races a concurrent lockIssue that
+// already loaded the entry, letting two goroutines hold "the" lock for the
+// same issue at once. The map is bounded by the number of distinct issue IDs
+// seen in the process lifetime, which is small.
 func (m *Manager) lockIssue(issueID string) func() {
 	issueLock, _ := m.issueLocks.LoadOrStore(issueID, &sync.Mutex{})
 	mu := issueLock.(*sync.Mutex)
