@@ -28,7 +28,7 @@
           ldflags = [
             "-s"
             "-w"
-            "-X main.version=${version}"
+            "-X main.version=${self.shortRev or "dirty"}"
             "-X main.commit=${self.shortRev or "dirty"}"
           ];
 
