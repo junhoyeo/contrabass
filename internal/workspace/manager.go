@@ -87,12 +87,15 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 
 	// If the base directory is not a git repo, create a plain directory
 	// instead of a git worktree. This is needed for tests and ephemeral
-	// environments that do not have a git repository.
-	gitErr := m.runGitQuick(ctx, "rev-parse", "--git-dir")
+	// environments that do not have a git repository. Only a definitive
+	// "not a git repository" answer takes this path — any other rev-parse
+	// failure (transient IO error, canceled context) used to silently create
+	// a plain dir INSIDE a real repo, confusing worktree bookkeeping later.
+	notRepo, gitErr := m.isOutsideGitRepo(ctx)
 	if gitErr != nil {
-		if errors.Is(gitErr, exec.ErrNotFound) {
-			return "", fmt.Errorf("git executable not found: %w", gitErr)
-		}
+		return "", gitErr
+	}
+	if notRepo {
 		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 			return "", fmt.Errorf("create plain workspace dir for issue %s: %w", issue.ID, err)
 		}
@@ -317,21 +320,26 @@ func resolvedAbs(path string) string {
 	return abs
 }
 
-// isGitRepo returns true when the base directory is inside a git repository
-// and the git binary is available.
-func (m *Manager) isGitRepo(ctx context.Context) bool {
-	_, err := m.runGit(ctx, "rev-parse", "--git-dir")
-	return err == nil
-}
-
-// runGitQuick is like runGit but returns exec.ErrNotFound directly when the
-// git binary is missing, without wrapping, so callers can distinguish
-// "binary missing" from "command failed".
-func (m *Manager) runGitQuick(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, m.gitBinary, args...)
+// isOutsideGitRepo reports whether baseDir is definitively outside any git
+// repository. A missing git binary or any other rev-parse failure is returned
+// as an error rather than treated as "outside" — failing closed here keeps a
+// transient error inside a real repo from downgrading the workspace to a
+// plain directory.
+func (m *Manager) isOutsideGitRepo(ctx context.Context) (bool, error) {
+	cmd := exec.CommandContext(ctx, m.gitBinary, "rev-parse", "--git-dir")
 	cmd.Dir = m.baseDir
-	_, err := cmd.CombinedOutput()
-	return err
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return false, nil
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) && errors.Is(execErr.Err, exec.ErrNotFound) {
+		return false, fmt.Errorf("git executable not found: %w", err)
+	}
+	if strings.Contains(string(output), "not a git repository") {
+		return true, nil
+	}
+	return false, fmt.Errorf("git rev-parse --git-dir failed: %w; output: %s", err, strings.TrimSpace(string(output)))
 }
 
 func (m *Manager) runGit(ctx context.Context, args ...string) (string, error) {
