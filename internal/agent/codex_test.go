@@ -763,6 +763,7 @@ func startedExitedCodexProcessWithStdin(t *testing.T, ctx context.Context) (*cod
 		stdin:      stdin,
 		streamCtx:  ctx,
 		done:       make(chan error, 1),
+		exited:     make(chan struct{}),
 		stderr:     &safeBuffer{},
 		stderrDone: stderrDone,
 	}, stdin
@@ -832,6 +833,7 @@ func startedExitedCodexProcess(t *testing.T, ctx context.Context) *codexProcess 
 		cmd:        cmd,
 		streamCtx:  ctx,
 		done:       make(chan error, 1),
+		exited:     make(chan struct{}),
 		stderr:     &safeBuffer{},
 		stderrDone: stderrDone,
 	}

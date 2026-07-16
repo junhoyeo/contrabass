@@ -69,10 +69,17 @@ type CodexRunnerOptions struct {
 }
 
 type codexProcess struct {
-	cmd        *exec.Cmd
-	stdin      io.WriteCloser
-	streamCtx  context.Context
-	done       chan error
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	streamCtx context.Context
+	// done delivers the exit error to the AgentProcess.Done consumer (the
+	// orchestrator). It carries exactly one value; nothing else may receive
+	// from it, or the real exit error is swallowed and the consumer sees a
+	// nil from the closed channel instead.
+	done chan error
+	// exited is closed after done is populated. Internal waiters (Stop) block
+	// on this instead of done so they never steal the consumer's error.
+	exited     chan struct{}
 	stderr     *safeBuffer
 	stderrDone chan struct{}
 
@@ -114,6 +121,7 @@ func (p *codexProcess) finish(err error) {
 	p.doneOnce.Do(func() {
 		p.done <- err
 		close(p.done)
+		close(p.exited)
 	})
 }
 
@@ -297,6 +305,7 @@ func (r *CodexRunner) Start(ctx context.Context, issue types.Issue, workspace st
 		stdin:      stdin,
 		streamCtx:  ctx,
 		done:       make(chan error, 1),
+		exited:     make(chan struct{}),
 		stderr:     stderrBuf,
 		stderrDone: stderrDone,
 	}
@@ -416,11 +425,12 @@ func (r *CodexRunner) Stop(proc *AgentProcess) error {
 		return fmt.Errorf("%w: interrupt process: %w", errCodexStopFailed, err)
 	}
 
+	// Wait on exited, never on done: done carries the exit error for the
+	// AgentProcess.Done consumer, and receiving here would steal that value —
+	// the orchestrator would see a nil from the closed channel and record a
+	// failed run as clean.
 	select {
-	case doneErr := <-state.done:
-		if doneErr != nil && !errors.Is(doneErr, os.ErrProcessDone) {
-			r.logger.Warn("codex process exited with error during stop", "pid", proc.PID, "err", doneErr)
-		}
+	case <-state.exited:
 		return nil
 	case <-time.After(r.handshakeTimeout):
 		if state.cmd.Process == nil {
@@ -433,10 +443,7 @@ func (r *CodexRunner) Stop(proc *AgentProcess) error {
 			return fmt.Errorf("%w: kill process: %w", errCodexStopFailed, err)
 		}
 		select {
-		case doneErr := <-state.done:
-			if doneErr != nil && !errors.Is(doneErr, os.ErrProcessDone) {
-				r.logger.Warn("codex process exited with error after kill", "pid", proc.PID, "err", doneErr)
-			}
+		case <-state.exited:
 			return nil
 		case <-time.After(r.handshakeTimeout):
 			return fmt.Errorf("%w: timeout after kill", errCodexStopFailed)

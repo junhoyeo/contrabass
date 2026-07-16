@@ -628,6 +628,13 @@ func setSSEHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Send the headers immediately, as a real SSE server does: Start blocks
+	// prompt submission until the subscription response arrives, so a handler
+	// that defers WriteHeader until its first event would deadlock the test.
+	w.WriteHeader(http.StatusOK)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func writeSSEEvent(w http.ResponseWriter, eventType, data string) {

@@ -212,8 +212,22 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context, workDir string) (stri
 
 			if server.url != "" {
 				pid := serverPID(server)
+				url := server.url
 				r.mu.Unlock()
-				return server.url, pid, nil
+				if r.serverHealthy(ctx, url) {
+					return url, pid, nil
+				}
+				// The cached server died or wedged: without this reap its
+				// stale URL would be reused by every future Start, and each
+				// session would hang until timeout. Drop the entry, make sure
+				// the process is gone, and start a fresh server.
+				r.mu.Lock()
+				if current, ok := r.servers[key]; ok && current == server {
+					delete(r.servers, key)
+				}
+				r.mu.Unlock()
+				_ = r.stopServer(server)
+				continue
 			}
 
 			delete(r.servers, key)
@@ -362,6 +376,26 @@ func (r *OpenCodeRunner) startServer(
 	}
 }
 
+// serverHealthy reports whether the opencode server at url still accepts
+// connections. Any HTTP response — regardless of status code — counts as
+// healthy; the check only exists to detect a process that exited or stopped
+// serving entirely.
+func (r *OpenCodeRunner) serverHealthy(ctx context.Context, url string) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, url+"/", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return true
+}
+
 func isSignalError(err error) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
@@ -460,7 +494,24 @@ func (r *OpenCodeRunner) Start(ctx context.Context, _ types.Issue, workspace str
 		})
 	}
 
-	go r.streamSessionEvents(streamCtx, serverURL, sessionID, events, finish)
+	subscribed := make(chan struct{})
+	go r.streamSessionEvents(streamCtx, serverURL, sessionID, events, finish, subscribed)
+
+	// Wait for the SSE subscription to be established before submitting the
+	// prompt. Submitting first races the subscription: early events —
+	// including the terminal idle status for fast turns — are missed and the
+	// session hangs until timeout.
+	select {
+	case <-subscribed:
+	case doneErr := <-done:
+		if doneErr == nil {
+			doneErr = errors.New("opencode event stream closed before subscribing")
+		}
+		return nil, doneErr
+	case <-ctx.Done():
+		finish(ctx.Err())
+		return nil, ctx.Err()
+	}
 
 	if err := r.submitPrompt(ctx, serverURL, sessionID, prompt); err != nil {
 		cancelStream()
@@ -593,6 +644,7 @@ func (r *OpenCodeRunner) streamSessionEvents(
 	sessionID string,
 	events chan<- types.AgentEvent,
 	finish func(error),
+	subscribed chan<- struct{},
 ) {
 	defer finish(nil)
 
@@ -612,6 +664,10 @@ func (r *OpenCodeRunner) streamSessionEvents(
 		finish(fmt.Errorf("opencode event stream failed: status %d body=%q", resp.StatusCode, string(body)))
 		return
 	}
+
+	// The subscription is live: Start may now submit the prompt without
+	// racing early events.
+	close(subscribed)
 
 	reader := newSSEReader(resp.Body)
 	for {

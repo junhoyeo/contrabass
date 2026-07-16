@@ -252,7 +252,11 @@ func (r *teamCLIRunner) Start(ctx context.Context, issue types.Issue, workspace 
 	initialSnapshot, err := r.waitForTeamReady(startCtx, workspace, teamName)
 	if err != nil {
 		if !errors.Is(err, errTeamMissing) {
-			_ = r.shutdownTeam(context.Background(), workspace, teamName)
+			// Bounded: a hung `team shutdown` here would otherwise block this
+			// Start call (and its caller's dispatch slot) forever.
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_ = r.shutdownTeam(shutdownCtx, workspace, teamName)
+			shutdownCancel()
 		}
 		return nil, fmt.Errorf("wait for %s team %q readiness: %w", r.name, teamName, err)
 	}
