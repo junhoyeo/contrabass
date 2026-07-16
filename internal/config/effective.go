@@ -150,7 +150,7 @@ func Resolve(cfg *WorkflowConfig) (*ResolvedConfig, error) {
 	add("hooks.before_remove", cfg.HookBeforeRemove(), sourceFor(cfg.Hooks.BeforeRemove != ""), "hooks.before_remove", StartupOnly, false, "parsed but hook execution is not implemented")
 
 	add("codex.binary_path", cfg.CodexBinaryPath(), sourceFor(cfg.Codex.BinaryPath != ""), "codex.binary_path", StartupOnly, false, "runner process is constructed at startup")
-	add("codex.model", cfg.CodexModel(), codexModelSource(cfg), codexModelSourcePath(cfg), Reloadable, false, "")
+	add("codex.model", cfg.CodexModel(), codexModelSource(cfg), codexModelSourcePath(cfg), StartupOnly, false, "runner process is constructed at startup")
 	add("codex.approval_policy", cfg.CodexApprovalPolicy(), sourceFor(cfg.Codex.ApprovalPolicy != ""), "codex.approval_policy", StartupOnly, false, "runner process is constructed at startup")
 	add("codex.sandbox", cfg.CodexSandbox(), sourceFor(cfg.Codex.Sandbox != ""), "codex.sandbox", StartupOnly, false, "runner process is constructed at startup")
 	add("agent.type", cfg.AgentType(), sourceFor(cfg.Agent.Type != ""), "agent.type", StartupOnly, false, "runner implementation is selected at startup")

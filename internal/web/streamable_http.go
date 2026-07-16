@@ -145,7 +145,7 @@ func (s *Server) handleStreamableHTTPPost(w http.ResponseWriter, r *http.Request
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
-		writeJSONRPCResult(w, http.StatusOK, req.ID, mcpToolsListResult())
+		writeJSONRPCResult(w, http.StatusOK, req.ID, s.mcpToolsListResult())
 	case mcpMethodToolsCall:
 		if !acceptsResponseType(r, "application/json") {
 			writeJSONRPCError(w, http.StatusNotAcceptable, req.ID, -32000, "tools/call requires Accept: application/json")
@@ -226,10 +226,11 @@ func mcpInitializeResult() map[string]interface{} {
 	}
 }
 
-func mcpToolsListResult() map[string]interface{} {
-	return map[string]interface{}{
-		"tools": []map[string]interface{}{
-			{
+func (s *Server) mcpToolsListResult() map[string]interface{} {
+	tools := []map[string]interface{}{}
+	if s.supportsMCPDashboardSnapshot() {
+		tools = append(tools,
+			map[string]interface{}{
 				"name":        mcpToolDashboardSnapshot,
 				"title":       "Contrabass dashboard snapshot",
 				"description": "Return the current Contrabass dashboard state snapshot as JSON.",
@@ -238,8 +239,14 @@ func mcpToolsListResult() map[string]interface{} {
 					"additionalProperties": false,
 				},
 			},
-		},
+		)
 	}
+	return map[string]interface{}{"tools": tools}
+}
+
+func (s *Server) supportsMCPDashboardSnapshot() bool {
+	provider, ok := s.snapshotProvider.(MCPDashboardSnapshotProvider)
+	return !ok || provider.SupportsMCPDashboardSnapshot()
 }
 
 func (s *Server) handleMCPToolCall(w http.ResponseWriter, req streamableHTTPRequest) {
@@ -253,6 +260,10 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, req streamableHTTPRequ
 
 	switch params.Name {
 	case mcpToolDashboardSnapshot:
+		if !s.supportsMCPDashboardSnapshot() {
+			writeJSONRPCError(w, http.StatusOK, req.ID, -32602, "unknown tool")
+			return
+		}
 		if s.snapshotProvider == nil {
 			writeJSONRPCError(w, http.StatusOK, req.ID, -32000, "server is not ready")
 			return
