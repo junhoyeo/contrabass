@@ -112,19 +112,19 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 	}
 
 	// Primary: create-and-checkout a brand-new branch.
-	// Fallback 1: branch already exists (-B re-creates and points at HEAD).
-	// Fallback 2: branch exists and we want to attach existing branch as-is.
+	// Fallback: the branch already exists (retry after a partial run, resumed
+	// issue) — attach the worktree to it as-is so the agent's prior commits
+	// stay on the branch ref. Never fall back to `worktree add -B`: it
+	// re-creates the branch AT HEAD, silently discarding those commits and
+	// defeating branch-advance verification.
 	primaryOut, primaryErr := m.runGit(ctx, "worktree", "add", "-b", branchName, workspacePath)
 	if primaryErr != nil {
-		_, recreateErr := m.runGit(ctx, "worktree", "add", "-B", branchName, workspacePath)
-		if recreateErr != nil {
-			_, attachErr := m.runGit(ctx, "worktree", "add", workspacePath, branchName)
-			if attachErr != nil {
-				return "", fmt.Errorf(
-					"create git worktree for issue %s on branch %s: primary -b failed: %v (output=%s); -B retry failed: %v; attach existing branch failed: %w",
-					issue.ID, branchName, primaryErr, primaryOut, recreateErr, attachErr,
-				)
-			}
+		_, attachErr := m.runGit(ctx, "worktree", "add", workspacePath, branchName)
+		if attachErr != nil {
+			return "", fmt.Errorf(
+				"create git worktree for issue %s on branch %s: primary -b failed: %v (output=%s); attach existing branch failed: %w",
+				issue.ID, branchName, primaryErr, primaryOut, attachErr,
+			)
 		}
 	}
 
@@ -147,6 +147,11 @@ func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
 	if issueID == "" {
 		return nil
 	}
+	// Mirror Create's validation: issueID is joined into a filesystem path
+	// below and, on the plain-directory fallback, passed to os.RemoveAll.
+	if !issueIDPattern.MatchString(issueID) {
+		return fmt.Errorf("issue id %q contains invalid characters", issueID)
+	}
 
 	unlock := m.lockIssue(issueID)
 	defer unlock()
@@ -162,8 +167,15 @@ func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
 
 	output, err := m.runGit(ctx, "worktree", "remove", workspacePath, "--force")
 	if err != nil {
-		if !strings.Contains(output, "is not a working tree") {
+		if !isNotAWorktreeError(output) {
 			return fmt.Errorf("remove git worktree for issue %s: %w", issueID, err)
+		}
+		// Plain-directory workspace: created by the non-git fallback in
+		// Create, or a stale dir inside a repo. `git worktree remove` can't
+		// delete it, so remove it directly — otherwise these accumulate
+		// forever (and Cleanup errors every time in non-git mode).
+		if err := os.RemoveAll(workspacePath); err != nil {
+			return fmt.Errorf("remove plain workspace dir for issue %s: %w", issueID, err)
 		}
 	}
 
@@ -173,6 +185,15 @@ func (m *Manager) Cleanup(ctx context.Context, issueID string) error {
 	m.issueLocks.Delete(issueID)
 
 	return nil
+}
+
+// isNotAWorktreeError matches the two `git worktree remove` failures that mean
+// the path is a plain directory rather than a registered worktree: removing a
+// non-worktree path inside a repo ("is not a working tree") and running
+// outside any repo at all ("not a git repository", the non-git fallback mode).
+func isNotAWorktreeError(output string) bool {
+	return strings.Contains(output, "is not a working tree") ||
+		strings.Contains(output, "not a git repository")
 }
 
 // CleanupAll snapshots issue IDs tracked at the call start and cleans up only

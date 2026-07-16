@@ -312,6 +312,103 @@ func TestManager_CleanupNotAWorkingTree(t *testing.T) {
 	assert.False(t, mgr.Exists(issueID))
 }
 
+// TestManager_CreateReattachesExistingBranchWithCommits pins the retry
+// contract: when the per-issue branch already exists with commits from a
+// previous run, Create must attach the worktree to it as-is. The old `-B`
+// fallback re-created the branch at HEAD, silently discarding the agent's
+// commits and defeating branch-advance verification.
+func TestManager_CreateReattachesExistingBranchWithCommits(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+	ctx := context.Background()
+
+	issue := types.Issue{ID: "ISSUE-RETRY", BranchName: "symphony/issue-retry"}
+	path, err := mgr.Create(ctx, issue)
+	require.NoError(t, err)
+
+	// Simulate agent work: a commit on the issue branch inside the worktree.
+	workPath := filepath.Join(path, "work.txt")
+	require.NoError(t, os.WriteFile(workPath, []byte("agent progress"), 0o644))
+	runGit(t, path, "add", "work.txt")
+	runGit(t, path, "commit", "-m", "agent progress")
+
+	branchRevBefore := gitRevParse(t, path, "symphony/issue-retry")
+
+	// Worktree torn down (crash cleanup, resumed issue) — the branch survives.
+	require.NoError(t, mgr.Cleanup(ctx, issue.ID))
+	assert.NoDirExists(t, path)
+
+	secondPath, err := mgr.Create(ctx, issue)
+	require.NoError(t, err)
+	assert.Equal(t, path, secondPath)
+
+	branchRevAfter := gitRevParse(t, secondPath, "symphony/issue-retry")
+	assert.Equal(t, branchRevBefore, branchRevAfter,
+		"re-creating the workspace must not move the issue branch ref")
+	assert.FileExists(t, filepath.Join(secondPath, "work.txt"),
+		"the agent's prior commit must be checked out in the re-attached worktree")
+}
+
+// TestManager_CleanupRemovesPlainDirOutsideGitRepo pins the non-git fallback
+// contract: Cleanup must delete plain-directory workspaces instead of
+// erroring on `git worktree remove` and leaving them to accumulate forever.
+func TestManager_CleanupRemovesPlainDirOutsideGitRepo(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir() // not a git repository
+	mgr := NewManager(baseDir)
+	ctx := context.Background()
+
+	path, err := mgr.Create(ctx, types.Issue{ID: "ISSUE-PLAIN"})
+	require.NoError(t, err)
+	assert.DirExists(t, path)
+
+	require.NoError(t, mgr.Cleanup(ctx, "ISSUE-PLAIN"))
+	assert.NoDirExists(t, path)
+	assert.False(t, mgr.Exists("ISSUE-PLAIN"))
+}
+
+// TestManager_CleanupRemovesStalePlainDirInsideRepo covers the in-repo
+// variant: a bare directory at the workspace path (left by a crashed run) is
+// not a registered worktree, so `git worktree remove` refuses it — Cleanup
+// must still delete it.
+func TestManager_CleanupRemovesStalePlainDirInsideRepo(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	mgr := NewManager(repoDir)
+	ctx := context.Background()
+
+	workspacePath := filepath.Join(repoDir, "workspaces", "ISSUE-BARE")
+	require.NoError(t, os.MkdirAll(workspacePath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workspacePath, "leftover.txt"), []byte("x"), 0o644))
+
+	require.NoError(t, mgr.Cleanup(ctx, "ISSUE-BARE"))
+	assert.NoDirExists(t, workspacePath)
+}
+
+func TestManager_CleanupRejectsInvalidIssueID(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager(t.TempDir())
+
+	err := mgr.Cleanup(context.Background(), "../escape")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "invalid characters")
+}
+
+func gitRevParse(t *testing.T, dir string, ref string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", "rev-parse", ref)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git rev-parse %s failed: %s", ref, string(output))
+	return strings.TrimSpace(string(output))
+}
+
 func TestManager_CreateContextCancelled(t *testing.T) {
 	t.Parallel()
 
