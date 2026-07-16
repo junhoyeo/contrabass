@@ -413,6 +413,136 @@ func TestManager_CreateRecoversRegisteredButMissingWorktree(t *testing.T) {
 	assert.DirExists(t, secondPath)
 }
 
+func TestManager_CreateRebuildsRecreatedBareRegisteredWorktree(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	issue := types.Issue{ID: "ISSUE-RECREATED", BranchName: "symphony/issue-recreated"}
+	path, err := NewManager(repoDir).Create(context.Background(), issue)
+	require.NoError(t, err)
+
+	// Leave Git's registration behind, then recreate only a plain directory at
+	// the same path. A restarted manager must not accept it as a worktree.
+	require.NoError(t, os.RemoveAll(path))
+	require.NoError(t, os.MkdirAll(path, 0o755))
+	staleFile := filepath.Join(path, "stale.txt")
+	require.NoError(t, os.WriteFile(staleFile, []byte("not a worktree"), 0o644))
+
+	rebuiltPath, err := NewManager(repoDir).Create(context.Background(), issue)
+	require.NoError(t, err)
+	assert.Equal(t, path, rebuiltPath)
+	assert.NoFileExists(t, staleFile)
+	gitFile, err := os.ReadFile(filepath.Join(rebuiltPath, ".git"))
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(strings.TrimSpace(string(gitFile)), "gitdir: "))
+}
+
+func TestManager_CreateDoesNotDeleteWorkspaceOnRegistrationLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	issue := types.Issue{ID: "ISSUE-LOOKUP", BranchName: "symphony/issue-lookup"}
+	path, err := NewManager(repoDir).Create(context.Background(), issue)
+	require.NoError(t, err)
+	marker := filepath.Join(path, "uncommitted-work.txt")
+	require.NoError(t, os.WriteFile(marker, []byte("preserve me"), 0o644))
+
+	gitPath, err := exec.LookPath("git")
+	require.NoError(t, err)
+	fakeGitPath := filepath.Join(t.TempDir(), "fail-worktree-list.sh")
+	writeFakeGit(t, fakeGitPath, "#!/bin/sh\n"+
+		"if [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"list\" ]; then\n"+
+		"  echo \"temporary git failure\" >&2\n"+
+		"  exit 1\n"+
+		"fi\n"+
+		"exec \""+gitPath+"\" \"$@\"\n")
+
+	resumed := NewManager(repoDir)
+	resumed.gitBinary = fakeGitPath
+	_, err = resumed.Create(context.Background(), issue)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "verify existing workspace")
+	assert.FileExists(t, marker)
+}
+
+func TestManager_CreateCancelledDoesNotDeleteExistingWorkspace(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	issue := types.Issue{ID: "ISSUE-CANCELLED", BranchName: "symphony/issue-cancelled"}
+	path, err := NewManager(repoDir).Create(context.Background(), issue)
+	require.NoError(t, err)
+	marker := filepath.Join(path, "uncommitted-work.txt")
+	require.NoError(t, os.WriteFile(marker, []byte("preserve me"), 0o644))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = NewManager(repoDir).Create(ctx, issue)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.FileExists(t, marker)
+}
+
+func TestManager_CreateDoesNotPruneForUnrelatedAddFailure(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initGitRepo(t)
+	gitPath, err := exec.LookPath("git")
+	require.NoError(t, err)
+	pruneMarker := filepath.Join(t.TempDir(), "pruned")
+	fakeGitPath := filepath.Join(t.TempDir(), "fail-add.sh")
+	writeFakeGit(t, fakeGitPath, "#!/bin/sh\n"+
+		"if [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"add\" ]; then\n"+
+		"  echo \"synthetic add failure\" >&2\n"+
+		"  exit 1\n"+
+		"fi\n"+
+		"if [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"prune\" ]; then\n"+
+		"  touch \""+pruneMarker+"\"\n"+
+		"  exit 0\n"+
+		"fi\n"+
+		"exec \""+gitPath+"\" \"$@\"\n")
+
+	mgr := NewManager(repoDir)
+	mgr.gitBinary = fakeGitPath
+	_, err = mgr.Create(context.Background(), types.Issue{ID: "ISSUE-ADD-FAIL"})
+	require.Error(t, err)
+	assert.NoFileExists(t, pruneMarker)
+}
+
+func TestManager_LockIssueReclaimsIdleEntry(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager(t.TempDir())
+	unlock := mgr.lockIssue("ISSUE-LOCK")
+	mgr.issueLocksMu.Lock()
+	assert.Len(t, mgr.issueLocks, 1)
+	mgr.issueLocksMu.Unlock()
+
+	unlock()
+	mgr.issueLocksMu.Lock()
+	assert.Empty(t, mgr.issueLocks)
+	mgr.issueLocksMu.Unlock()
+}
+
+func TestManager_GitCommandsUseCLocale(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	fakeGitPath := filepath.Join(t.TempDir(), "locale-aware-git.sh")
+	writeFakeGit(t, fakeGitPath, "#!/bin/sh\n"+
+		"if [ \"$LC_ALL\" != \"C\" ] || [ \"$LANG\" != \"C\" ]; then\n"+
+		"  echo \"git: no es un repositorio\" >&2\n"+
+		"  exit 1\n"+
+		"fi\n"+
+		"echo \"fatal: not a git repository\" >&2\n"+
+		"exit 128\n")
+
+	mgr := NewManager(baseDir)
+	mgr.gitBinary = fakeGitPath
+	path, err := mgr.Create(context.Background(), types.Issue{ID: "ISSUE-LOCALE"})
+	require.NoError(t, err)
+	assert.DirExists(t, path)
+}
+
 func TestManager_CleanupRejectsInvalidIssueID(t *testing.T) {
 	t.Parallel()
 

@@ -23,16 +23,23 @@ type Manager struct {
 	baseDir   string
 	gitBinary string
 
-	mu         sync.RWMutex
-	active     map[string]string
-	issueLocks sync.Map
+	mu           sync.RWMutex
+	active       map[string]string
+	issueLocksMu sync.Mutex
+	issueLocks   map[string]*issueLockEntry
+}
+
+type issueLockEntry struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func NewManager(baseDir string) *Manager {
 	return &Manager{
-		baseDir:   baseDir,
-		gitBinary: "git",
-		active:    make(map[string]string),
+		baseDir:    baseDir,
+		gitBinary:  "git",
+		active:     make(map[string]string),
+		issueLocks: make(map[string]*issueLockEntry),
 	}
 }
 
@@ -46,6 +53,9 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 
 	unlock := m.lockIssue(issue.ID)
 	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 
 	workspacePath := m.workspacePath(issue.ID)
 
@@ -54,8 +64,17 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 	m.mu.RUnlock()
 	if tracked {
 		if info, err := os.Stat(trackedPath); err == nil && info.IsDir() {
-			return trackedPath, nil
+			registered, err := m.isRegisteredWorktree(ctx, trackedPath)
+			if err != nil {
+				return "", fmt.Errorf("verify tracked workspace for issue %s: %w", issue.ID, err)
+			}
+			if registered {
+				return trackedPath, nil
+			}
 		}
+		m.mu.Lock()
+		delete(m.active, issue.ID)
+		m.mu.Unlock()
 	}
 
 	// If the path already exists, only reuse it when it is a registered git
@@ -65,7 +84,11 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 	// looks like the parent repo's working tree and fails the
 	// `leader_workspace_dirty` check.
 	if info, err := os.Stat(workspacePath); err == nil && info.IsDir() {
-		if m.isRegisteredWorktree(ctx, workspacePath) {
+		registered, err := m.isRegisteredWorktree(ctx, workspacePath)
+		if err != nil {
+			return "", fmt.Errorf("verify existing workspace for issue %s: %w", issue.ID, err)
+		}
+		if registered {
 			m.mu.Lock()
 			m.active[issue.ID] = workspacePath
 			m.mu.Unlock()
@@ -78,11 +101,6 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 
 	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o755); err != nil {
 		return "", fmt.Errorf("create workspace parent directory: %w", err)
-	}
-
-	// Verify context is still valid before any I/O.
-	if err := ctx.Err(); err != nil {
-		return "", err
 	}
 
 	// If the base directory is not a git repo, create a plain directory
@@ -119,6 +137,13 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 		// (rm -rf without `worktree remove`) blocks every `worktree add` at
 		// this path until pruned. Prune stale registrations once and retry
 		// before giving up — otherwise the issue is permanently undispatchable.
+		prunable, lookupErr := m.hasPrunableWorktreeRegistration(ctx, workspacePath)
+		if lookupErr != nil {
+			return "", fmt.Errorf("inspect stale worktree registration for issue %s: %w", issue.ID, lookupErr)
+		}
+		if !prunable {
+			return "", fmt.Errorf("create git worktree for issue %s on branch %s: %w", issue.ID, branchName, err)
+		}
 		if _, pruneErr := m.runGit(ctx, "worktree", "prune"); pruneErr != nil {
 			return "", fmt.Errorf(
 				"create git worktree for issue %s on branch %s: %w (git worktree prune also failed: %v)",
@@ -134,7 +159,11 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 	}
 
 	// Verify the worktree actually registered before declaring success.
-	if !m.isRegisteredWorktree(ctx, workspacePath) {
+	registered, err := m.isRegisteredWorktree(ctx, workspacePath)
+	if err != nil {
+		return "", fmt.Errorf("verify created workspace for issue %s: %w", issue.ID, err)
+	}
+	if !registered {
 		return "", fmt.Errorf(
 			"git worktree add for issue %s reported success but path %s is not a registered worktree",
 			issue.ID, workspacePath,
@@ -267,19 +296,36 @@ func (m *Manager) workspacePath(issueID string) string {
 	return filepath.Join(m.baseDir, "workspaces", issueID)
 }
 
-// lockIssue serializes Create/Cleanup per issue ID. Lock entries are never
-// deleted: removing one from Cleanup races a concurrent lockIssue that
-// already loaded the entry, letting two goroutines hold "the" lock for the
-// same issue at once. The map is bounded by the number of distinct issue IDs
-// seen in the process lifetime, which is small.
+// lockIssue serializes Create/Cleanup per issue ID. References include both
+// holders and waiters, so an entry is only reclaimed after the final caller
+// releases it; this avoids the old delete/load race without retaining one
+// mutex for every issue ever seen.
 func (m *Manager) lockIssue(issueID string) func() {
-	issueLock, _ := m.issueLocks.LoadOrStore(issueID, &sync.Mutex{})
-	mu := issueLock.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+	m.issueLocksMu.Lock()
+	entry := m.issueLocks[issueID]
+	if entry == nil {
+		entry = &issueLockEntry{}
+		m.issueLocks[issueID] = entry
+	}
+	entry.refs++
+	m.issueLocksMu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		m.issueLocksMu.Lock()
+		entry.refs--
+		if entry.refs == 0 && m.issueLocks[issueID] == entry {
+			delete(m.issueLocks, issueID)
+		}
+		m.issueLocksMu.Unlock()
+	}
 }
 
-// isRegisteredWorktree returns true when path appears in `git worktree list`.
+// isRegisteredWorktree reports whether path is a non-prunable registered
+// worktree with Git's linked-worktree metadata in place. Lookup failures are
+// returned so Create never deletes a potentially valid workspace on uncertain
+// Git state.
 // Used to distinguish real worktrees from bare directories left by crashed
 // runs so Create knows which paths are safe to reuse vs. tear down.
 //
@@ -287,28 +333,74 @@ func (m *Manager) lockIssue(issueID string) func() {
 // path Go reports via `filepath.Abs` may differ from what git prints in
 // `worktree list --porcelain`. Symlink-resolve both sides before comparing
 // so test temp dirs and production paths match correctly.
-func (m *Manager) isRegisteredWorktree(ctx context.Context, path string) bool {
-	output, err := m.runGit(ctx, "worktree", "list", "--porcelain")
+func (m *Manager) isRegisteredWorktree(ctx context.Context, path string) (bool, error) {
+	registered, prunable, err := m.worktreeRegistration(ctx, path)
 	if err != nil {
-		return false
+		return false, err
 	}
-	abs := resolvedAbs(path)
-	for _, line := range strings.Split(output, "\n") {
-		rest, ok := strings.CutPrefix(line, "worktree ")
-		if !ok {
-			continue
-		}
-		entry := resolvedAbs(strings.TrimSpace(rest))
-		if entry == abs {
-			return true
-		}
+	if !registered || prunable {
+		return false, nil
 	}
-	return false
+
+	gitFile, err := os.ReadFile(filepath.Join(path, ".git"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read worktree metadata: %w", err)
+	}
+	return strings.HasPrefix(strings.TrimSpace(string(gitFile)), "gitdir: "), nil
 }
 
-// resolvedAbs returns the absolute, symlink-resolved form of path. Falls back
-// to the un-resolved absolute path (or the input verbatim) on any error so
-// callers always get a usable string.
+func (m *Manager) hasPrunableWorktreeRegistration(ctx context.Context, path string) (bool, error) {
+	registered, prunable, err := m.worktreeRegistration(ctx, path)
+	if err != nil || !registered {
+		return false, err
+	}
+	if prunable {
+		return true, nil
+	}
+	// Older Git versions do not always print a porcelain `prunable` line for
+	// a removed linked worktree, even though `worktree add` rejects the stale
+	// registration. The absent directory is equally definitive here.
+	_, statErr := os.Stat(path)
+	return errors.Is(statErr, os.ErrNotExist), nil
+}
+
+func (m *Manager) worktreeRegistration(ctx context.Context, path string) (bool, bool, error) {
+	output, err := m.runGit(ctx, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, false, err
+	}
+	target := resolvedAbs(path)
+	currentPath := ""
+	currentPrunable := false
+	matchCurrent := func() (bool, bool) {
+		return currentPath != "" && resolvedAbs(currentPath) == target, currentPrunable
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if rest, ok := strings.CutPrefix(line, "worktree "); ok {
+			if registered, prunable := matchCurrent(); registered {
+				return true, prunable, nil
+			}
+			currentPath = strings.TrimSpace(rest)
+			currentPrunable = false
+			continue
+		}
+		if strings.HasPrefix(line, "prunable") {
+			currentPrunable = true
+		}
+	}
+	registered, prunable := matchCurrent()
+	return registered, prunable, nil
+}
+
+// resolvedAbs returns the absolute, symlink-resolved form of path. When the
+// final path does not exist (as with a stale worktree), it resolves the
+// longest existing parent and appends the absent suffix. That preserves the
+// canonical /private/var form Git emits on macOS for a missing /var path.
+// Falls back to the un-resolved absolute path (or the input verbatim) on any
+// error so callers always get a usable string.
 func resolvedAbs(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -316,6 +408,18 @@ func resolvedAbs(path string) string {
 	}
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		return resolved
+	}
+
+	var suffix []string
+	for parent := abs; ; parent = filepath.Dir(parent) {
+		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+			return filepath.Join(append([]string{resolved}, suffix...)...)
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			break
+		}
+		suffix = append([]string{filepath.Base(parent)}, suffix...)
 	}
 	return abs
 }
@@ -326,8 +430,7 @@ func resolvedAbs(path string) string {
 // transient error inside a real repo from downgrading the workspace to a
 // plain directory.
 func (m *Manager) isOutsideGitRepo(ctx context.Context) (bool, error) {
-	cmd := exec.CommandContext(ctx, m.gitBinary, "rev-parse", "--git-dir")
-	cmd.Dir = m.baseDir
+	cmd := m.gitCommand(ctx, "rev-parse", "--git-dir")
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return false, nil
@@ -343,8 +446,7 @@ func (m *Manager) isOutsideGitRepo(ctx context.Context) (bool, error) {
 }
 
 func (m *Manager) runGit(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, m.gitBinary, args...)
-	cmd.Dir = m.baseDir
+	cmd := m.gitCommand(ctx, args...)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return string(output), nil
@@ -356,4 +458,18 @@ func (m *Manager) runGit(ctx context.Context, args ...string) (string, error) {
 	}
 
 	return string(output), fmt.Errorf("git %s failed: %w; output: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+}
+
+func (m *Manager) gitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, m.gitBinary, args...)
+	cmd.Dir = m.baseDir
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "LC_ALL=") || strings.HasPrefix(entry, "LANG=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	cmd.Env = append(env, "LC_ALL=C", "LANG=C")
+	return cmd
 }
