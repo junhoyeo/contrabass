@@ -3,7 +3,8 @@ version: 2
 before:
   hooks:
     - go mod tidy
-    - cd packages/dashboard && bun run build && touch dist/.gitkeep
+    - bun run --cwd packages/dashboard build
+    - touch packages/dashboard/dist/.gitkeep
 
 builds:
   - main: ./cmd/contrabass
