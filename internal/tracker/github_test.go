@@ -168,7 +168,7 @@ func TestGitHubFetchIssues_AssigneeClaimSafety(t *testing.T) {
 				"body":   "",
 				"state":  "open",
 				"assignees": []interface{}{
-					map[string]interface{}{"login": "bot-user"},
+					map[string]interface{}{"login": "BOT-USER"},
 				},
 			},
 			map[string]interface{}{
@@ -198,7 +198,7 @@ func TestGitHubFetchIssues_AssigneeClaimSafety(t *testing.T) {
 	issues, err := client.FetchIssues(context.Background())
 
 	require.NoError(t, err)
-	require.Len(t, issues, 3)
+	require.Len(t, issues, 2)
 
 	assert.Equal(t, "1", issues[0].ID)
 	assert.Equal(t, types.Unclaimed, issues[0].State)
@@ -206,10 +206,7 @@ func TestGitHubFetchIssues_AssigneeClaimSafety(t *testing.T) {
 
 	assert.Equal(t, "2", issues[1].ID)
 	assert.Equal(t, types.Claimed, issues[1].State)
-	assert.Equal(t, []string{"bot-user"}, issues[1].TrackerMeta["github_assignees"])
-
-	assert.Equal(t, "4", issues[2].ID)
-	assert.Equal(t, types.Claimed, issues[2].State)
+	assert.Equal(t, []string{"BOT-USER"}, issues[1].TrackerMeta["github_assignees"])
 }
 
 func TestGitHubFetchIssues_FiltersPullRequests(t *testing.T) {
@@ -390,6 +387,7 @@ func TestGitHubClaimIssue(t *testing.T) {
 		wantErr    bool
 	}{
 		{name: "happy path", statusCode: http.StatusCreated, respBody: issueWithAssignees("bot-user"), wantErr: false},
+		{name: "canonical login casing accepted", statusCode: http.StatusCreated, respBody: issueWithAssignees("BOT-USER"), wantErr: false},
 		{name: "assignee silently ignored", statusCode: http.StatusCreated, respBody: issueWithAssignees(), wantErr: true},
 		{name: "response without assignees rejected", statusCode: http.StatusCreated, respBody: map[string]interface{}{"ok": true}, wantErr: true},
 		{name: "wrong success status", statusCode: http.StatusOK, wantErr: true},
@@ -427,6 +425,31 @@ func TestGitHubClaimIssue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGitHubClaimIssue_RejectsMalformedVerificationResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `not-json`)
+	}))
+	defer server.Close()
+
+	client := testGitHubClient(t, server.URL)
+	err := client.ClaimIssue(context.Background(), "42")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode GitHub claim response")
+}
+
+func TestNewGitHubClient_RequiresAssignee(t *testing.T) {
+	_, err := NewGitHubClient(GitHubConfig{
+		APIToken: "ghp_test_token",
+		Owner:    "octocat",
+		Repo:     "hello-world",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github assignee required")
 }
 
 func TestGitHubReleaseIssue(t *testing.T) {

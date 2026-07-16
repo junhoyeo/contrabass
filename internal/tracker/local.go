@@ -95,10 +95,11 @@ type LocalIssueCreateOptions struct {
 }
 
 type LocalTracker struct {
-	boardDir    string
-	issuePrefix string
-	actor       string
-	mu          sync.Mutex
+	boardDir         string
+	issuePrefix      string
+	actor            string
+	mu               sync.Mutex
+	activeClaimLocks map[string]*fileLock
 }
 
 var _ Tracker = (*LocalTracker)(nil)
@@ -118,9 +119,10 @@ func NewLocalTracker(cfg LocalConfig) *LocalTracker {
 	}
 
 	return &LocalTracker{
-		boardDir:    filepath.Clean(boardDir),
-		issuePrefix: sanitizeLocalIssuePrefix(cfg.IssuePrefix),
-		actor:       actor,
+		boardDir:         filepath.Clean(boardDir),
+		issuePrefix:      sanitizeLocalIssuePrefix(cfg.IssuePrefix),
+		actor:            actor,
+		activeClaimLocks: make(map[string]*fileLock),
 	}
 }
 
@@ -139,6 +141,34 @@ func (t *LocalTracker) lockBoardFile() (func(), error) {
 		return nil, fmt.Errorf("lock board: %w", err)
 	}
 	return func() { _ = lock.Unlock() }, nil
+}
+
+// tryLockIssueClaim takes a process-lifetime lock for one actively claimed
+// issue. Unlike the board mutation lock, this lock remains held while the
+// agent runs, so another daemon cannot mistake the live claim for an orphan.
+// flock is released by the OS if the claiming process crashes.
+func (t *LocalTracker) tryLockIssueClaim(issueID string) (*fileLock, error) {
+	lock := newFileLock(filepath.Join(t.boardDir, "claims", issueID))
+	acquired, err := lock.TryLock()
+	if err != nil {
+		return nil, fmt.Errorf("lock claim for issue %s: %w", issueID, err)
+	}
+	if !acquired {
+		return nil, fmt.Errorf("local board issue %q is already claimed by another process", issueID)
+	}
+	return lock, nil
+}
+
+func (t *LocalTracker) releaseIssueClaimLocked(issueID string) error {
+	lock, ok := t.activeClaimLocks[issueID]
+	if !ok {
+		return nil
+	}
+	delete(t.activeClaimLocks, issueID)
+	if err := lock.Unlock(); err != nil {
+		return fmt.Errorf("unlock claim for issue %s: %w", issueID, err)
+	}
+	return nil
 }
 
 func ParseLocalBoardState(raw string) (LocalBoardState, error) {
@@ -183,6 +213,12 @@ func (t *LocalTracker) InitBoard(ctx context.Context) (*LocalBoardManifest, erro
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	return t.ensureBoardLocked()
 }
 
@@ -204,6 +240,9 @@ func (t *LocalTracker) ClaimIssue(ctx context.Context, issueID string) error {
 	if err := checkLocalTrackerContext(ctx); err != nil {
 		return err
 	}
+	if !localIssueIDPattern.MatchString(issueID) {
+		return fmt.Errorf("local board issue id %q contains invalid characters", issueID)
+	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -217,19 +256,39 @@ func (t *LocalTracker) ClaimIssue(ctx context.Context, issueID string) error {
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return err
 	}
+	if _, claimed := t.activeClaimLocks[issueID]; claimed {
+		return fmt.Errorf("local board issue %q is already claimed by this process", issueID)
+	}
+
+	claimLock, err := t.tryLockIssueClaim(issueID)
+	if err != nil {
+		return err
+	}
+	releaseClaimLock := true
+	defer func() {
+		if releaseClaimLock {
+			_ = claimLock.Unlock()
+		}
+	}()
 
 	issue, err := t.loadIssueLocked(issueID)
 	if err != nil {
 		return err
 	}
-
-	if issue.State != LocalBoardStateDone {
-		issue.State = LocalBoardStateInProgress
+	if issue.State == LocalBoardStateDone {
+		return fmt.Errorf("local board issue %q is already done", issueID)
 	}
+
+	issue.State = LocalBoardStateInProgress
 	issue.ClaimedBy = t.actor
 	issue.UpdatedAt = time.Now().UTC()
 
-	return writeJSONAtomic(t.issuePath(issueID), issue)
+	if err := writeJSONAtomic(t.issuePath(issueID), issue); err != nil {
+		return err
+	}
+	t.activeClaimLocks[issueID] = claimLock
+	releaseClaimLock = false
+	return nil
 }
 
 func (t *LocalTracker) ReleaseIssue(ctx context.Context, issueID string) error {
@@ -258,7 +317,10 @@ func (t *LocalTracker) ReleaseIssue(ctx context.Context, issueID string) error {
 	issue.ClaimedBy = ""
 	issue.UpdatedAt = time.Now().UTC()
 
-	return writeJSONAtomic(t.issuePath(issueID), issue)
+	if err := writeJSONAtomic(t.issuePath(issueID), issue); err != nil {
+		return err
+	}
+	return t.releaseIssueClaimLocked(issueID)
 }
 
 func (t *LocalTracker) UpdateIssueState(ctx context.Context, issueID string, state types.IssueState) error {
@@ -295,7 +357,13 @@ func (t *LocalTracker) UpdateIssueState(ctx context.Context, issueID string, sta
 	}
 	issue.UpdatedAt = time.Now().UTC()
 
-	return writeJSONAtomic(t.issuePath(issueID), issue)
+	if err := writeJSONAtomic(t.issuePath(issueID), issue); err != nil {
+		return err
+	}
+	if issue.State != LocalBoardStateInProgress {
+		return t.releaseIssueClaimLocked(issueID)
+	}
+	return nil
 }
 
 func (t *LocalTracker) PostComment(ctx context.Context, issueID string, body string) error {

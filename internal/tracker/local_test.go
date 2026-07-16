@@ -164,6 +164,34 @@ func TestLocalTrackerConcurrentInstancesMintUniqueIDs(t *testing.T) {
 	}
 }
 
+func TestLocalTrackerClaimIsExclusiveAcrossInstances(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	boardDir := filepath.Join(t.TempDir(), "board")
+	trackerA := NewLocalTracker(LocalConfig{BoardDir: boardDir, Actor: "daemon"})
+	trackerB := NewLocalTracker(LocalConfig{BoardDir: boardDir, Actor: "cli"})
+
+	issue, err := trackerA.CreateIssue(ctx, "exclusive claim", "", nil)
+	require.NoError(t, err)
+	require.NoError(t, trackerA.ClaimIssue(ctx, issue.ID))
+
+	err = trackerB.ClaimIssue(ctx, issue.ID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already claimed by another process")
+
+	current, err := trackerA.GetIssue(ctx, issue.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "daemon", current.ClaimedBy)
+
+	// Terminal state releases the process-lifetime claim lock. A later caller
+	// must still reject the completed issue rather than launch duplicate work.
+	require.NoError(t, trackerA.UpdateIssueState(ctx, issue.ID, types.Released))
+	err = trackerB.ClaimIssue(ctx, issue.ID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already done")
+}
+
 // TestLocalBoardInProgressMapsToClaimed pins the crash-recovery contract: an
 // in_progress issue left behind by a crashed run must surface as Claimed so
 // the orchestrator's orphan-claim recovery (which only looks at Claimed)

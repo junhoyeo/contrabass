@@ -53,6 +53,9 @@ func NewGitHubClient(cfg GitHubConfig) (*GitHubClient, error) {
 	if strings.TrimSpace(cfg.Repo) == "" {
 		return nil, errors.New("github repo required")
 	}
+	if strings.TrimSpace(cfg.Assignee) == "" {
+		return nil, errors.New("github assignee required")
+	}
 
 	endpoint := cfg.Endpoint
 	if endpoint == "" {
@@ -74,7 +77,7 @@ func NewGitHubClient(cfg GitHubConfig) (*GitHubClient, error) {
 		owner:      cfg.Owner,
 		repo:       cfg.Repo,
 		labels:     cfg.Labels,
-		assignee:   cfg.Assignee,
+		assignee:   strings.TrimSpace(cfg.Assignee),
 		endpoint:   strings.TrimSuffix(endpoint, "/"),
 		httpClient: httpClient,
 		pageSize:   pageSize,
@@ -169,12 +172,10 @@ func (c *GitHubClient) ClaimIssue(ctx context.Context, issueID string) error {
 	// it never owned.
 	var updated githubIssue
 	if err := json.Unmarshal(body, &updated); err != nil {
-		// Response shape changed under us — the 201 already signalled intent,
-		// so don't fail the claim over an unparseable body.
-		return nil
+		return fmt.Errorf("decode GitHub claim response: %w", err)
 	}
 	for _, user := range updated.Assignees {
-		if user.Login == c.assignee {
+		if strings.EqualFold(user.Login, c.assignee) {
 			return nil
 		}
 	}
@@ -359,7 +360,7 @@ func (c *GitHubClient) normalizeIssue(item githubIssue) types.Issue {
 			continue
 		}
 		assigneeLogins = append(assigneeLogins, user.Login)
-		if c.assignee != "" && user.Login == c.assignee {
+		if strings.EqualFold(user.Login, c.assignee) {
 			state = types.Claimed
 		}
 	}
@@ -386,21 +387,18 @@ func (c *GitHubClient) normalizeIssue(item githubIssue) types.Issue {
 	}
 }
 
-// isAssignedToOther reports whether the issue is assigned exclusively to
-// users other than the configured assignee. Such issues belong to humans (or
-// other bots) and must not be dispatched or "recovered" by orphan-claim
-// recovery — the POST /assignees claim is additive, so claiming them would
-// silently succeed and start an agent on someone else's work. When no
-// assignee is configured, ownership cannot be established and nothing is
-// filtered.
+// isAssignedToOther reports whether any assignee is not the configured bot.
+// GitHub's additive assignment API makes a co-assigned issue unsafe too: a
+// human's assignment must keep the issue out of the dispatch queue even when
+// the bot is also listed. GitHub logins are case-insensitive.
 func (c *GitHubClient) isAssignedToOther(item githubIssue) bool {
-	if c.assignee == "" || len(item.Assignees) == 0 {
+	if len(item.Assignees) == 0 {
 		return false
 	}
 	for _, user := range item.Assignees {
-		if user.Login == c.assignee {
-			return false
+		if !strings.EqualFold(user.Login, c.assignee) {
+			return true
 		}
 	}
-	return true
+	return false
 }

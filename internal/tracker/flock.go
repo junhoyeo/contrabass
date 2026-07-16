@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +43,32 @@ func (l *fileLock) Lock() error {
 	}
 
 	return nil
+}
+
+// TryLock acquires an exclusive lock without waiting. It returns false, nil
+// when another process currently holds the lock.
+func (l *fileLock) TryLock() (bool, error) {
+	dir := filepath.Dir(l.path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, fmt.Errorf("create lock dir: %w", err)
+	}
+
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return false, fmt.Errorf("open lock file %s: %w", l.path, err)
+	}
+
+	l.file = f
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		l.file = nil
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return false, nil
+		}
+		return false, fmt.Errorf("flock %s: %w", l.path, err)
+	}
+
+	return true, nil
 }
 
 // Unlock releases the lock.

@@ -223,8 +223,8 @@ func (o *Orchestrator) runCycle(ctx context.Context, supervisor *errgroup.Group,
 	openIDs := buildOpenIDSet(issues)
 
 	o.dispatchReadyBackoff(ctx, supervisorCtxOr(ctx), cfg, issuesByID, supervisor, runSignals)
-	o.recoverOrphanedClaims(issues)
-	o.dispatchUnclaimedIssues(ctx, supervisorCtxOr(ctx), cfg, issues, openIDs, supervisor, runSignals)
+	recoveredAttempts := o.recoverOrphanedClaims(issues)
+	o.dispatchUnclaimedIssues(ctx, supervisorCtxOr(ctx), cfg, issues, openIDs, recoveredAttempts, supervisor, runSignals)
 	o.releaseBlockedRunning(ctx, issuesByID, openIDs)
 	o.emitStatusUpdate()
 }
@@ -304,6 +304,7 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 	cfg *config.WorkflowConfig,
 	issues []types.Issue,
 	openIDs map[string]struct{},
+	recoveredAttempts map[string]int,
 	supervisor *errgroup.Group,
 	runSignals chan<- runSignal,
 ) {
@@ -324,7 +325,11 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 			continue
 		}
 
-		o.dispatchIssue(ctx, watchCtx, cfg, issue, 1, supervisor, runSignals)
+		attemptNumber := 1
+		if recoveredAttempt, recovered := recoveredAttempts[issue.ID]; recovered {
+			attemptNumber = recoveredAttempt
+		}
+		o.dispatchIssue(ctx, watchCtx, cfg, issue, attemptNumber, supervisor, runSignals)
 	}
 }
 
@@ -337,7 +342,8 @@ func (o *Orchestrator) dispatchUnclaimedIssues(
 // The orphan_claim_recovered log event is emitted at most once per issue per
 // orchestrator lifetime (tracked via recoveredSet) to prevent log spam when
 // dispatch is deferred across multiple ticks (e.g. max concurrency reached).
-func (o *Orchestrator) recoverOrphanedClaims(issues []types.Issue) {
+func (o *Orchestrator) recoverOrphanedClaims(issues []types.Issue) map[string]int {
+	recoveredAttempts := make(map[string]int)
 	o.mu.Lock()
 	managed := make(map[string]struct{}, len(o.running)+len(o.paused))
 	for id := range o.running {
@@ -356,6 +362,10 @@ func (o *Orchestrator) recoverOrphanedClaims(issues []types.Issue) {
 			continue
 		}
 		issues[i].State = types.Unclaimed
+		// A durable tracker claim proves that a prior run already started. The
+		// replacement agent cannot resume its dead process, but it must be
+		// represented as a recovery attempt rather than a new attempt 1.
+		recoveredAttempts[issue.ID] = 2
 
 		o.mu.Lock()
 		_, alreadyLogged := o.recoveredSet[issue.ID]
@@ -369,6 +379,8 @@ func (o *Orchestrator) recoverOrphanedClaims(issues []types.Issue) {
 				"identifier", issue.Identifier)
 		}
 	}
+
+	return recoveredAttempts
 }
 
 // releaseBlockedRunning re-evaluates BlockedBy for every currently-managed
