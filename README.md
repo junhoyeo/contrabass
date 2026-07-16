@@ -68,6 +68,10 @@ nix profile install github:junhoyeo/contrabass
 nix develop github:junhoyeo/contrabass
 ```
 
+The Nix package is a headless CLI build: it does not embed the web dashboard.
+Use a source build (`bun install && make build`) when you need the `--port`
+dashboard server.
+
 For NixOS system-wide installation, add to your configuration:
 
 ```nix

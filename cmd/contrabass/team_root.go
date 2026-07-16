@@ -90,14 +90,17 @@ func runTeamExecutionApp(
 }
 
 func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int) (chan<- web.WebEvent, error) {
+	dashboardFS, err := fs.Sub(contrabass.DashboardDistFS, "packages/dashboard/dist")
+	if err != nil {
+		return nil, fmt.Errorf("web dashboard assets are unavailable in this build; rebuild with the dashboard_dist tag: %w", err)
+	}
+	if _, err := fs.Stat(dashboardFS, "index.html"); err != nil {
+		return nil, fmt.Errorf("web dashboard assets are unavailable in this build; rebuild with the dashboard_dist tag: %w", err)
+	}
+
 	webEvents := make(chan web.WebEvent, 256)
 	h := hub.NewHub(webEvents)
 	go h.Run(ctx)
-
-	dashboardFS, err := fs.Sub(contrabass.DashboardDistFS, "packages/dashboard/dist")
-	if err != nil {
-		return nil, fmt.Errorf("sub dashboard dist fs: %w", err)
-	}
 
 	provider := web.NewTeamSnapshotProvider()
 	srv := web.NewServer(fmt.Sprintf("localhost:%d", port), provider, h, dashboardFS)

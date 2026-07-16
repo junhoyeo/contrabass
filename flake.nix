@@ -13,7 +13,7 @@
 
         contrabass = pkgs.buildGoModule {
           pname = "contrabass";
-          version = "0.4.1";
+          version = self.shortRev or "dirty";
           src = ./.;
 
           # Empty string disables vendor hash checking
@@ -28,7 +28,7 @@
           ldflags = [
             "-s"
             "-w"
-            "-X main.version=0.4.1"
+            "-X main.version=${self.shortRev or "dirty"}"
             "-X main.commit=${self.shortRev or "dirty"}"
           ];
 
