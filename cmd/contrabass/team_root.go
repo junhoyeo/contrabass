@@ -62,19 +62,23 @@ func runTeamExecutionApp(
 		go func() {
 			defer close(out)
 			for evt := range teamEvents {
-				webSink <- web.NewTeamWebEvent(evt)
-				out <- evt
+				publishTeamWebEvent(ctx, webSink, evt)
+				select {
+				case <-ctx.Done():
+					return
+				case out <- evt:
+				}
 			}
 		}()
 		return out
 	}
 
 	if dryRun {
-		return runTeamExecutionLoop(ctx, cfgPath, watcher, nil, true)
+		return runTeamExecutionLoopWithWeb(ctx, cfgPath, watcher, webSink, true)
 	}
 
 	if noTUI {
-		return runTeamExecutionLoop(ctx, cfgPath, watcher, nil, false)
+		return runTeamExecutionLoopWithWeb(ctx, cfgPath, watcher, webSink, false)
 	}
 
 	teamEvents := make(chan types.TeamEvent, teamEventBufferSize)
@@ -112,6 +116,77 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 	fmt.Fprintf(os.Stderr, "Web dashboard available at http://localhost:%d\n", port)
 	return webEvents, nil
 }
+
+func runTeamExecutionLoopWithWeb(
+	ctx context.Context,
+	cfgPath string,
+	watcher *config.Watcher,
+	webSink chan<- web.WebEvent,
+	singlePoll bool,
+) error {
+	if webSink == nil {
+		return runTeamExecutionLoop(ctx, cfgPath, watcher, nil, singlePoll)
+	}
+
+	teamEvents := make(chan types.TeamEvent, teamEventBufferSize)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for evt := range teamEvents {
+			publishTeamWebEvent(ctx, webSink, evt)
+		}
+	}()
+
+	err := runTeamExecutionLoop(ctx, cfgPath, watcher, teamEvents, singlePoll)
+	close(teamEvents)
+	<-done
+	return err
+}
+
+func publishTeamWebEvent(ctx context.Context, sink chan<- web.WebEvent, event types.TeamEvent) {
+	if sink == nil {
+		return
+	}
+
+	webEvent := web.NewTeamWebEvent(event)
+	if isCriticalTeamWebEvent(event.Type) {
+		select {
+		case <-ctx.Done():
+			return
+		case sink <- webEvent:
+		}
+		return
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case sink <- webEvent:
+	default:
+	}
+}
+
+func isCriticalTeamWebEvent(eventType string) bool {
+	switch eventType {
+	case "team_created",
+		"phase_started",
+		"phase_completed",
+		"worker_started",
+		"worker_updated",
+		"worker_stopped",
+		"task_created",
+		"task_updated",
+		"task_claimed",
+		"task_completed",
+		"task_failed",
+		"pipeline_started",
+		"pipeline_completed":
+		return true
+	default:
+		return false
+	}
+}
+
 func runTeamExecutionLoop(
 	ctx context.Context,
 	cfgPath string,

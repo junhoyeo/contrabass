@@ -3,10 +3,12 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestParseWorkflow(t *testing.T) {
@@ -393,6 +395,179 @@ func TestResolveEnvToken_InvalidPattern(t *testing.T) {
 			if ok {
 				assert.Equal(t, tt.want, result)
 			}
+		})
+	}
+}
+
+func TestParseWorkflow_StrictYAMLFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content string
+		field   string
+	}{
+		{
+			name: "rejects unknown top-level field",
+			content: `---
+max_concurency: 4
+---
+prompt
+`,
+			field: "max_concurency",
+		},
+		{
+			name: "rejects unknown nested field",
+			content: `---
+orchestrator:
+  shutdown:
+    drain_timout_ms: 1000
+---
+prompt
+`,
+			field: "drain_timout_ms",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o644))
+
+			cfg, err := ParseWorkflow(path)
+			require.Error(t, err)
+			assert.Nil(t, cfg)
+			assert.ErrorIs(t, err, ErrInvalidYAML)
+			assert.Contains(t, err.Error(), tt.field)
+		})
+	}
+}
+
+func TestParseWorkflow_ResolvesEnvironmentReferencesInCollections(t *testing.T) {
+	t.Setenv("OMOC_PLUGIN", "oh-my-opencode@4")
+	t.Setenv("OMOC_AGENT_MODEL", "openai/gpt-5.5")
+	t.Setenv("OMOC_CATEGORY_MODEL", "anthropic/claude-opus")
+	t.Setenv("OMOC_API_KEY", "secret-api-key")
+
+	content := `---
+oh_my_opencode:
+  plugins:
+    - $OMOC_PLUGIN
+  agents:
+    reviewer:
+      model: $OMOC_AGENT_MODEL
+  categories:
+    frontend:
+      model: $OMOC_CATEGORY_MODEL
+  provider:
+    api_key: $OMOC_API_KEY
+---
+Keep $PROMPT_VARIABLE literal.
+`
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	cfg, err := ParseWorkflow(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"oh-my-opencode@4"}, cfg.OhMyOpenCode.Plugins)
+	assert.Equal(t, "openai/gpt-5.5", cfg.OhMyOpenCode.Agents["reviewer"].Model)
+	assert.Equal(t, "anthropic/claude-opus", cfg.OhMyOpenCode.Categories["frontend"].Model)
+	assert.Equal(t, "secret-api-key", cfg.OhMyOpenCode.Provider.APIKey)
+	assert.Contains(t, cfg.PromptTemplate, "$PROMPT_VARIABLE")
+}
+
+func TestParseWorkflow_SchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		versionLine string
+		wantVersion int
+		wantErr     error
+	}{
+		{name: "legacy workflow stays on legacy schema", wantVersion: LegacySchemaVersion},
+		{name: "accepts current schema", versionLine: "schema_version: 1\n", wantVersion: CurrentSchemaVersion},
+		{name: "rejects explicit zero", versionLine: "schema_version: 0\n", wantErr: ErrUnsupportedSchemaVersion},
+		{name: "rejects future schema", versionLine: "schema_version: 2\n", wantErr: ErrUnsupportedSchemaVersion},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "---\n" + tt.versionLine + "---\nprompt\n"
+			path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+			cfg, err := ParseWorkflow(path)
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantVersion, cfg.SchemaVersion())
+		})
+	}
+}
+
+func TestParseWorkflow_ValidationErrorsDoNotLeakEnvironmentValues(t *testing.T) {
+	t.Setenv("SECRET_WORKER_MODE", "do-not-print-this-secret")
+
+	content := `---
+team:
+  worker_mode: $SECRET_WORKER_MODE
+---
+prompt
+`
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := ParseWorkflow(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "team.worker_mode")
+	assert.NotContains(t, err.Error(), "do-not-print-this-secret")
+}
+
+func TestEnsureSingleYAMLDocument(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "rejects populated second document", input: "first: 1\n---\nsecond: 2\n"},
+		{name: "rejects empty second document", input: "first: 1\n---\n"},
+		{name: "rejects malformed second document", input: "first: 1\n---\nsecond: [\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decoder := yaml.NewDecoder(strings.NewReader(tt.input))
+			var first any
+			require.NoError(t, decoder.Decode(&first))
+
+			err := ensureSingleYAMLDocument(decoder)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidYAML)
+		})
+	}
+}
+
+func TestParseWorkflow_AllWorkflowFixtures(t *testing.T) {
+	t.Parallel()
+
+	fixtures, err := filepath.Glob(filepath.Join("..", "..", "testdata", "workflow*.md"))
+	require.NoError(t, err)
+	require.NotEmpty(t, fixtures)
+
+	for _, fixture := range fixtures {
+		fixture := fixture
+		t.Run(filepath.Base(fixture), func(t *testing.T) {
+			t.Parallel()
+			cfg, err := ParseWorkflow(fixture)
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
 		})
 	}
 }

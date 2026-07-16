@@ -13,7 +13,7 @@ build-landing:
 
 # Build the Go binary with embedded dashboard
 build: build-dashboard
-	go build -ldflags "-X main.version=dev -X main.commit=$$(git rev-parse --short HEAD 2>/dev/null || echo none) -X main.date=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o contrabass ./cmd/contrabass
+	go build -tags dashboard_dist -ldflags "-X main.version=dev -X main.commit=$$(git rev-parse --short HEAD 2>/dev/null || echo none) -X main.date=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o contrabass ./cmd/contrabass
 
 # Start Vite dev server for dashboard development (with hot reload)
 dev-dashboard:

@@ -20,9 +20,6 @@ import (
 	"github.com/junhoyeo/contrabass/internal/types"
 )
 
-const defaultEventBufferSize = 256
-const maxIssueCacheSize = 1000
-
 // ErrAgentNotRunning is returned by StopAgent when no managed run exists for
 // the given issue ID — typically because the agent already finished or the
 // caller's snapshot is stale.
@@ -79,8 +76,10 @@ type Orchestrator struct {
 	eventsClosed atomic.Bool
 	stats        Stats
 
-	issueCache      map[string]types.Issue
-	issueCacheOrder []string
+	issueCache          map[string]types.Issue
+	issueCacheOrder     []string
+	issueCacheSize      int
+	runSignalBufferSize int
 
 	// recoveredSet tracks issue IDs for which orphan_claim_recovered has
 	// already been logged since the last process start. It is populated by
@@ -118,19 +117,22 @@ func NewOrchestrator(
 	if configProvider != nil && configProvider.GetConfig() != nil {
 		cfg = configProvider.GetConfig()
 	}
+	policy := runtimePolicyFromConfig(cfg)
 
 	return &Orchestrator{
-		tracker:      tracker,
-		workspace:    workspace,
-		agent:        agentRunner,
-		config:       configProvider,
-		logger:       logger,
-		running:      make(map[string]*runEntry),
-		backoff:      []types.BackoffEntry{},
-		paused:       make(map[string]string),
-		events:       make(chan OrchestratorEvent, defaultEventBufferSize),
-		issueCache:   make(map[string]types.Issue),
-		recoveredSet: make(map[string]struct{}),
+		tracker:             tracker,
+		workspace:           workspace,
+		agent:               agentRunner,
+		config:              configProvider,
+		logger:              logger,
+		running:             make(map[string]*runEntry),
+		backoff:             []types.BackoffEntry{},
+		paused:              make(map[string]string),
+		events:              make(chan OrchestratorEvent, policy.eventBufferSize),
+		issueCache:          make(map[string]types.Issue),
+		issueCacheSize:      policy.issueCacheSize,
+		runSignalBufferSize: policy.runSignalBufferSize,
+		recoveredSet:        make(map[string]struct{}),
 		stats: Stats{
 			MaxAgents: cfg.MaxConcurrency(),
 			StartTime: time.Now(),
@@ -148,9 +150,6 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 
 	pollInterval := time.Duration(o.currentConfig().PollIntervalMs()) * time.Millisecond
-	if pollInterval <= 0 {
-		pollInterval = time.Second
-	}
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -163,7 +162,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		o.mu.Unlock()
 	}()
 
-	runSignals := make(chan runSignal, defaultEventBufferSize)
+	runSignalBufferSize := o.runSignalBufferSize
+	if runSignalBufferSize <= 0 {
+		runSignalBufferSize = runtimePolicyFromConfig(nil).runSignalBufferSize
+	}
+	runSignals := make(chan runSignal, runSignalBufferSize)
 	supervisor, supervisorCtx := errgroup.WithContext(ctx)
 
 	o.runCycle(supervisorCtx, supervisor, runSignals)
@@ -171,7 +174,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), o.runtimePolicy().runShutdownTimeout)
 			if err := o.gracefulShutdown(shutdownCtx); err != nil {
 				o.logger.Warn("orchestrator", "event", "graceful_shutdown_failed", "err", err)
 			}
@@ -498,7 +501,7 @@ func (o *Orchestrator) dispatchIssue(
 		return
 	}
 	runAttempt.WorkspacePath = workspacePath
-	sha, err := workspaceHeadSHA(ctx, workspacePath)
+	sha, err := workspaceHeadSHAWithTimeout(ctx, workspacePath, o.runtimePolicy().gitCommandTimeout)
 	if err != nil {
 		o.logger.Warn("claim_head_sha_unavailable",
 			"issue_id", issue.ID, "err", err)
@@ -629,13 +632,21 @@ func (o *Orchestrator) claimIssue(ctx context.Context, issue types.Issue) error 
 // branch. Caller logs/handles the error and falls back to an empty SHA, which
 // the verifier will treat as "unknown".
 func workspaceHeadSHA(ctx context.Context, workspace string) (string, error) {
-	return workspaceRevParse(ctx, workspace, "HEAD", 2*time.Second)
+	return workspaceHeadSHAWithTimeout(ctx, workspace, runtimePolicyFromConfig(nil).gitCommandTimeout)
+}
+
+func workspaceHeadSHAWithTimeout(ctx context.Context, workspace string, timeout time.Duration) (string, error) {
+	return workspaceRevParse(ctx, workspace, "HEAD", timeout)
 }
 
 // verifyBranchAdvanced compares the workspace branch's current HEAD against
 // the claim-time SHA. Git lookup failures fail open so a transient verifier
 // issue does not discard an otherwise successful run.
 func verifyBranchAdvanced(ctx context.Context, workspace, branch, claimHead string) (bool, string, error) {
+	return verifyBranchAdvancedWithTimeout(ctx, workspace, branch, claimHead, runtimePolicyFromConfig(nil).gitCommandTimeout)
+}
+
+func verifyBranchAdvancedWithTimeout(ctx context.Context, workspace, branch, claimHead string, timeout time.Duration) (bool, string, error) {
 	if strings.TrimSpace(claimHead) == "" {
 		return true, "no_claim_head", nil
 	}
@@ -645,7 +656,7 @@ func verifyBranchAdvanced(ctx context.Context, workspace, branch, claimHead stri
 		rev = "HEAD"
 	}
 
-	currentHead, err := workspaceRevParse(ctx, workspace, rev, 2*time.Second)
+	currentHead, err := workspaceRevParse(ctx, workspace, rev, timeout)
 	if err != nil {
 		return true, "git_error", err
 	}
@@ -712,14 +723,18 @@ func (o *Orchestrator) sendRunSignal(ctx context.Context, runSignals chan<- runS
 }
 
 // putIssueCacheLocked inserts or updates an entry in the issue cache.
-// If the cache exceeds maxIssueCacheSize, the oldest entry is evicted.
+// If the cache exceeds the configured limit, the oldest entries are evicted.
 // Caller must hold o.mu.
 func (o *Orchestrator) putIssueCacheLocked(id string, issue types.Issue) {
 	if _, exists := o.issueCache[id]; exists {
 		o.issueCache[id] = issue
 		return
 	}
-	if len(o.issueCache) >= maxIssueCacheSize {
+	maxSize := o.issueCacheSize
+	if maxSize <= 0 {
+		maxSize = runtimePolicyFromConfig(nil).issueCacheSize
+	}
+	for len(o.issueCache) >= maxSize && len(o.issueCacheOrder) > 0 {
 		oldest := o.issueCacheOrder[0]
 		o.issueCacheOrder = o.issueCacheOrder[1:]
 		delete(o.issueCache, oldest)

@@ -63,6 +63,58 @@ func TestCodexRunner_PolicyOverride_OnWire(t *testing.T) {
 	assertDoneEventually(t, proc.Done)
 }
 
+func TestCodexRunner_PolicyStringOverride_OnWire(t *testing.T) {
+	cases := []struct {
+		name    string
+		sandbox string
+		want    map[string]interface{}
+	}{
+		{
+			name:    "read only",
+			sandbox: "read-only",
+			want:    map[string]interface{}{"type": "readOnly", "networkAccess": false},
+		},
+		{
+			name:    "workspace write",
+			sandbox: "workspace-write",
+			want:    map[string]interface{}{"type": "workspaceWrite", "networkAccess": false},
+		},
+		{
+			name:    "workspace write with space",
+			sandbox: "workspace write",
+			want:    map[string]interface{}{"type": "workspaceWrite", "networkAccess": false},
+		},
+		{
+			name:    "danger full access",
+			sandbox: "danger-full-access",
+			want:    map[string]interface{}{"type": "dangerFullAccess"},
+		},
+		{
+			name:    "legacy none alias",
+			sandbox: "none",
+			want:    map[string]interface{}{"type": "dangerFullAccess"},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			runner := NewCodexRunner(helperCommand(t, "capture-wire"), 2*time.Second)
+			runner.ConfigureCodex(CodexRunnerOptions{Sandbox: c.sandbox})
+
+			proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
+			require.NoError(t, err)
+
+			event := waitForEventType(t, proc.Events, "helper/requests")
+			threadParams := eventDataMap(t, event, "threadStart")
+			turnParams := eventDataMap(t, event, "turnStart")
+
+			assert.Equal(t, c.want, threadParams["sandboxPolicy"])
+			assert.Equal(t, c.want, turnParams["sandboxPolicy"])
+			assertDoneEventually(t, proc.Done)
+		})
+	}
+}
+
 func TestCodexRunner_OverloadRetried(t *testing.T) {
 	runner := NewCodexRunner(helperCommand(t, "overload-once"), 2*time.Second)
 	runner.overloadStartDelay = 0
@@ -1063,6 +1115,11 @@ func TestCodexRunner_BuildConfigOverrideArgs(t *testing.T) {
 			name: "whitespace-only fields are skipped",
 			opts: CodexRunnerOptions{Model: "  ", ApprovalPolicy: "never", Sandbox: ""},
 			want: []string{"-c", `approval_policy="never"`},
+		},
+		{
+			name: "legacy none sandbox aliases danger full access",
+			opts: CodexRunnerOptions{Sandbox: "none"},
+			want: []string{"-c", `sandbox_mode="danger-full-access"`},
 		},
 		{
 			name: "values with spaces are quoted",

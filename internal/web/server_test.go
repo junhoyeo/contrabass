@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,10 +51,10 @@ func TestServerRoutes(t *testing.T) {
 		},
 	}
 
-			s := &Server{snapshotProvider: provider, dashboardFS: nil}
-			h := s.newMux()
+	s := &Server{snapshotProvider: provider, dashboardFS: nil}
+	h := s.newMux()
 
-			tests := []struct {
+	tests := []struct {
 		name         string
 		method       string
 		target       string
@@ -90,6 +91,13 @@ func TestServerRoutes(t *testing.T) {
 			status: http.StatusAccepted,
 		},
 		{
+			name:         "post_stream_ping_returns_json_rpc",
+			method:       http.MethodPost,
+			target:       "/api/v1/stream",
+			status:       http.StatusOK,
+			wantJSONKeys: []string{"jsonrpc", "id", "result"},
+		},
+		{
 			name:    "unknown_api_path_returns_json_404",
 			method:  http.MethodGet,
 			target:  "/api/v1/does-not-exist/path",
@@ -102,12 +110,21 @@ func TestServerRoutes(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.target, nil)
+			if tt.target == "/api/v1/stream" {
+				req = newLocalWebRequest(tt.method, tt.target, strings.NewReader(`{"jsonrpc":"2.0","id":"ping-1","method":"dashboard.ping"}`))
+				req.Header.Set("Accept", "application/json, text/event-stream")
+				req.Header.Set("Content-Type", "application/json")
+			}
 			rec := httptest.NewRecorder()
 
 			h.ServeHTTP(rec, req)
 
 			assert.Equal(t, tt.status, rec.Code)
-			assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
+			if tt.target == "/api/v1/stream" {
+				assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+			} else {
+				assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
+			}
 
 			if tt.status != http.StatusAccepted {
 				assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
@@ -150,7 +167,7 @@ func TestServerCORSPreflight(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
 	assert.Equal(t, "GET, POST, PATCH, OPTIONS", rec.Header().Get("Access-Control-Allow-Methods"))
-	assert.Equal(t, "Content-Type", rec.Header().Get("Access-Control-Allow-Headers"))
+	assert.Equal(t, "Accept, Authorization, Content-Type, Mcp-Protocol-Version", rec.Header().Get("Access-Control-Allow-Headers"))
 }
 
 func TestNormalizeListenAddr(t *testing.T) {

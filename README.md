@@ -173,6 +173,7 @@ contrabass team run --config workflow.md [flags]
 ### Runtime notes
 
 - `WORKFLOW.md` is watched with `fsnotify`; on parse errors, Contrabass keeps the last known good config.
+- Configuration fields are strictly validated; inspect resolved values and reload lifecycles with `contrabass config effective --config WORKFLOW.md`.
 - The Codex runner speaks newline-delimited JSON (`JSONL`) to `codex app-server` rather than `Content-Length` framed messages. See [`docs/codex-protocol.md`](docs/codex-protocol.md).
 - The Codex runner handles `-32001` server overload errors with exponential backoff retry (up to 5 attempts) and detects stalled streams via configurable read timeouts.
 - The workflow parser already accepts more Symphony-shaped fields than the runtime fully consumes today. For example, `workspace`, `hooks`, and some `codex` settings are parsed, but the current runtime mainly uses tracker selection, timeouts, retry settings, binary paths, and prompt/template fields.
@@ -223,8 +224,27 @@ linear:
     mode: reply_thread
 agent:
   type: codex
+  startup_timeout_ms: 30000
 codex:
   binary_path: codex app-server
+orchestrator:
+  event_buffer_size: 256
+  run_signal_buffer_size: 256
+  issue_cache_size: 1000
+  run_shutdown_timeout_ms: 5000
+  stop_grace_timeout_ms: 5000
+  git_command_timeout_ms: 2000
+  shutdown:
+    drain_timeout_ms: 30000
+    cleanup_timeout_ms: 10000
+    poll_interval_ms: 10
+  backoff:
+    continuation_ms: 1000
+    failure_base_ms: 10000
+    multiplier: 2
+    jitter_percent: 10
+  snapshot:
+    diff_timeout_ms: 1000
 ---
 # Workflow Prompt
 
@@ -234,6 +254,11 @@ Issue URL: {{ issue.url }}
 
 Produce code and tests that satisfy the issue requirements.
 ```
+
+The complete orchestrator policy, including snapshot stage and ETA heuristics,
+is documented in [`docs/orchestrator-configuration.md`](docs/orchestrator-configuration.md).
+The complete parsing, validation, environment-reference, and effective-config
+behavior is documented in [`docs/configuration.md`](docs/configuration.md).
 
 ### Linear detail and timeline sync settings
 
@@ -452,11 +477,51 @@ Key capabilities:
 | `PATCH` | `/api/v1/board/issues/{identifier}` | Update board issue (title, description, state, assignee) |
 | `POST` | `/api/v1/running/{issue_id}/stop` | Terminate running agent and release issue |
 | `POST` | `/api/v1/refresh` | Trigger refresh (202 Accepted) |
-| `GET` | `/api/v1/events` | SSE event stream |
+| `GET` | `/api/v1/mcp/config` | Copyable MCP Agent config metadata |
+| `POST` | `/api/v1/mcp/token` | Generate an in-memory 24h MCP bearer token and config JSON |
+| `POST` | `/api/v1/mcp/stream` | Token-protected Streamable HTTP JSON-RPC endpoint for external MCP Agents |
+| `GET` | `/api/v1/mcp/stream` | Token-protected server-to-client message stream for external MCP Agents |
+| `POST` | `/api/v1/stream` | Streamable HTTP JSON-RPC endpoint (`dashboard.subscribe`, `dashboard.snapshot`, `dashboard.ping`) |
+| `GET` | `/api/v1/stream` | Optional Streamable HTTP server-to-client message stream |
+| `GET` | `/api/v1/events` | Legacy SSE event stream kept for compatibility |
 
-### SSE event stream
+The Web dashboard includes an **MCP 配置** page in the sidebar. Use it to generate a
+short-lived token and copy a ready-to-send Agent config:
 
-Connect to `/api/v1/events` for real-time updates. The initial event is a full `snapshot`, followed by incremental events:
+```json
+{
+  "mcpServers": {
+    "contrabass": {
+      "type": "streamable_http",
+      "url": "http://localhost:8080/api/v1/mcp/stream",
+      "headers": {
+        "Authorization": "Bearer mcp_..."
+      }
+    }
+  }
+}
+```
+
+Generated MCP tokens are held in the running Contrabass Web process and expire
+after 24 hours. Restarting the process clears them. The dashboard's existing
+`/api/v1/stream` endpoint remains tokenless for backward-compatible browser use;
+external Agents should use `/api/v1/mcp/stream`.
+
+### Streamable HTTP event stream
+
+The dashboard connects to `/api/v1/stream` with a JSON-RPC `POST` request:
+
+```json
+{"jsonrpc":"2.0","id":"dashboard-subscribe","method":"dashboard.subscribe"}
+```
+
+Use `Accept: application/json, text/event-stream` and `Content-Type: application/json`.
+The response is `text/event-stream` with `event: message` frames containing JSON-RPC messages:
+
+- `dashboard.snapshot` — full orchestrator snapshot
+- `dashboard.event` — incremental `WebEvent`
+
+The legacy `/api/v1/events` SSE endpoint remains available for compatibility. It sends a full `snapshot` event first, followed by incremental events:
 
 | Kind | Events |
 |------|--------|

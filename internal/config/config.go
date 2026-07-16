@@ -27,31 +27,61 @@ const (
 	// set them, so codex falls back to whatever lives in
 	// ~/.codex/config.toml. Operators opt in via codex.approval_policy and
 	// codex.sandbox in their workflow file.
-	defaultApprovalPolicy      = ""
-	defaultSandbox             = ""
-	defaultAgentType           = "codex"
-	defaultOpenCodeBinaryPath  = "opencode serve"
-	defaultOMXBinaryPath       = "omx"
-	defaultOMXTeamSpec         = "1:executor"
-	defaultOMXPollIntervalMs   = 1000
-	defaultOMXStartupTimeoutMs = 15000
-	defaultOMCBinaryPath       = "omc"
-	defaultOMCTeamSpec         = "1:claude"
-	defaultOMCPollIntervalMs   = 1000
-	defaultOMCStartupTimeoutMs = 15000
-	defaultGitHubEndpoint      = "https://api.github.com"
-	defaultLocalBoardDir       = ".contrabass/board"
-	defaultLocalIssuePrefix    = "CB"
+	defaultApprovalPolicy        = ""
+	defaultSandbox               = ""
+	defaultAgentType             = "codex"
+	defaultAgentStartupTimeoutMs = 30_000
+	defaultOpenCodeBinaryPath    = "opencode serve"
+	defaultOMXBinaryPath         = "omx"
+	defaultOMXTeamSpec           = "1:executor"
+	defaultOMXPollIntervalMs     = 1000
+	defaultOMXStartupTimeoutMs   = 15000
+	defaultOMCBinaryPath         = "omc"
+	defaultOMCTeamSpec           = "1:claude"
+	defaultOMCPollIntervalMs     = 1000
+	defaultOMCStartupTimeoutMs   = 15000
+	defaultGitHubEndpoint        = "https://api.github.com"
+	defaultLocalBoardDir         = ".contrabass/board"
+	defaultLocalIssuePrefix      = "CB"
 
 	defaultOhMyOpenCodePluginVersion = "oh-my-opencode"
 
-	defaultTeamMaxWorkers        = 5
-	defaultTeamMaxFixLoops       = 3
-	defaultTeamClaimLeaseSeconds = 300
-	defaultTeamStateDir          = ".contrabass/state/team"
-	defaultTeamExecutionMode     = TeamExecutionModeTeam
-	defaultTeamWorkerMode        = "tmux"
-	defaultWorkflowTimelineDir   = ".contrabass/state/workflow-timeline"
+	defaultTeamMaxWorkers           = 5
+	defaultTeamMaxFixLoops          = 3
+	defaultTeamClaimLeaseSeconds    = 300
+	defaultTeamStateDir             = ".contrabass/state/team"
+	defaultTeamExecutionMode        = TeamExecutionModeTeam
+	defaultTeamWorkerMode           = "tmux"
+	defaultTeamWorkerPollIntervalMs = 2_000
+	defaultWorkflowTimelineDir      = ".contrabass/state/workflow-timeline"
+
+	defaultOrchestratorEventBufferSize                  = 256
+	defaultOrchestratorRunSignalBufferSize              = 256
+	defaultOrchestratorIssueCacheSize                   = 1000
+	defaultOrchestratorRunShutdownTimeoutMs             = 5_000
+	defaultOrchestratorStopGraceTimeoutMs               = 5_000
+	defaultOrchestratorGitCommandTimeoutMs              = 2_000
+	defaultOrchestratorShutdownDrainTimeoutMs           = 30_000
+	defaultOrchestratorShutdownCleanupTimeoutMs         = 10_000
+	defaultOrchestratorShutdownPollIntervalMs           = 10
+	defaultOrchestratorContinuationBackoffMs            = 1_000
+	defaultOrchestratorFailureBackoffBaseMs             = 10_000
+	defaultOrchestratorFailureBackoffMultiplier         = 2
+	defaultOrchestratorBackoffJitterPercent             = 10
+	defaultOrchestratorSnapshotDiffTimeoutMs            = 1_000
+	defaultOrchestratorStageTestingAfterMs              = 30_000
+	defaultOrchestratorStageReviewingAfterMs            = 60_000
+	defaultOrchestratorStageReviewingMaxTokensPerMinute = 50_000.0
+	defaultOrchestratorETAMinElapsedMs                  = 180_000
+	defaultOrchestratorETAMinFilesPerMinute             = 0.05
+	defaultOrchestratorETAMinTokensPerMinute            = 1_000.0
+	defaultOrchestratorETAMediumConfidenceAfterMs       = 300_000
+	defaultOrchestratorETAHighConfidenceAfterMs         = 480_000
+	defaultOrchestratorETAHighConfidenceMinStage        = 3
+	defaultOrchestratorETAEstimatedFilesMultiplier      = 1.2
+	defaultOrchestratorETAMinEstimatedFiles             = 11
+	defaultOrchestratorETAFallbackRemainingMinutes      = 5.0
+	defaultOrchestratorETAUncertaintyMultiplier         = 1.35
 )
 
 const (
@@ -73,6 +103,7 @@ var (
 )
 
 type WorkflowConfig struct {
+	SchemaVersionRaw     int                 `yaml:"schema_version"`
 	MaxConcurrencyRaw    int                 `yaml:"max_concurrency"`
 	PollIntervalMsRaw    int                 `yaml:"poll_interval_ms"`
 	MaxRetryBackoffMsRaw int                 `yaml:"max_retry_backoff_ms"`
@@ -93,7 +124,9 @@ type WorkflowConfig struct {
 	OhMyOpenCode         OhMyOpenCodeConfig  `yaml:"oh_my_opencode"`
 	Team                 TeamSectionConfig   `yaml:"team"`
 	Timeline             TimelineConfig      `yaml:"timeline"`
+	Orchestrator         OrchestratorConfig  `yaml:"orchestrator"`
 	PromptTemplate       string              `yaml:"-"`
+	presentFields        map[string]struct{} `yaml:"-"`
 }
 
 type TrackerConfig struct {
@@ -120,6 +153,58 @@ type PollingConfig struct {
 	BackoffStrategy string `yaml:"backoff_strategy"`
 }
 
+// OrchestratorConfig contains operator-tunable runtime policy. Protocol
+// vocabulary and state-machine invariants intentionally remain code-defined.
+type OrchestratorConfig struct {
+	EventBufferSize      int                        `yaml:"event_buffer_size"`
+	RunSignalBufferSize  int                        `yaml:"run_signal_buffer_size"`
+	IssueCacheSize       int                        `yaml:"issue_cache_size"`
+	RunShutdownTimeoutMs int                        `yaml:"run_shutdown_timeout_ms"`
+	StopGraceTimeoutMs   int                        `yaml:"stop_grace_timeout_ms"`
+	GitCommandTimeoutMs  int                        `yaml:"git_command_timeout_ms"`
+	Shutdown             OrchestratorShutdownConfig `yaml:"shutdown"`
+	Backoff              OrchestratorBackoffConfig  `yaml:"backoff"`
+	Snapshot             OrchestratorSnapshotConfig `yaml:"snapshot"`
+}
+
+type OrchestratorShutdownConfig struct {
+	DrainTimeoutMs   int `yaml:"drain_timeout_ms"`
+	CleanupTimeoutMs int `yaml:"cleanup_timeout_ms"`
+	PollIntervalMs   int `yaml:"poll_interval_ms"`
+}
+
+type OrchestratorBackoffConfig struct {
+	ContinuationMs int  `yaml:"continuation_ms"`
+	FailureBaseMs  int  `yaml:"failure_base_ms"`
+	Multiplier     int  `yaml:"multiplier"`
+	JitterPercent  *int `yaml:"jitter_percent"`
+}
+
+type OrchestratorSnapshotConfig struct {
+	DiffTimeoutMs int                     `yaml:"diff_timeout_ms"`
+	Stage         OrchestratorStageConfig `yaml:"stage"`
+	ETA           OrchestratorETAConfig   `yaml:"eta"`
+}
+
+type OrchestratorStageConfig struct {
+	TestingAfterMs              int     `yaml:"testing_after_ms"`
+	ReviewingAfterMs            int     `yaml:"reviewing_after_ms"`
+	ReviewingMaxTokensPerMinute float64 `yaml:"reviewing_max_tokens_per_minute"`
+}
+
+type OrchestratorETAConfig struct {
+	MinElapsedMs             int     `yaml:"min_elapsed_ms"`
+	MinFilesPerMinute        float64 `yaml:"min_files_per_minute"`
+	MinTokensPerMinute       float64 `yaml:"min_tokens_per_minute"`
+	MediumConfidenceAfterMs  int     `yaml:"medium_confidence_after_ms"`
+	HighConfidenceAfterMs    int     `yaml:"high_confidence_after_ms"`
+	HighConfidenceMinStage   int     `yaml:"high_confidence_min_stage"`
+	EstimatedFilesMultiplier float64 `yaml:"estimated_files_multiplier"`
+	MinEstimatedFiles        int     `yaml:"min_estimated_files"`
+	FallbackRemainingMinutes float64 `yaml:"fallback_remaining_minutes"`
+	UncertaintyMultiplier    float64 `yaml:"uncertainty_multiplier"`
+}
+
 type WorkspaceConfig struct {
 	BaseDir      string `yaml:"base_dir"`
 	BranchPrefix string `yaml:"branch_prefix"`
@@ -141,7 +226,8 @@ type CodexConfig struct {
 }
 
 type AgentConfig struct {
-	Type string `yaml:"type"`
+	Type             string `yaml:"type"`
+	StartupTimeoutMs int    `yaml:"startup_timeout_ms"`
 }
 
 type OpenCodeConfig struct {
@@ -189,12 +275,13 @@ type LinearSyncCommentsConfig struct {
 
 // TeamSectionConfig holds settings for multi-agent team coordination.
 type TeamSectionConfig struct {
-	MaxWorkers        int    `yaml:"max_workers"`
-	MaxFixLoops       int    `yaml:"max_fix_loops"`
-	ClaimLeaseSeconds int    `yaml:"claim_lease_seconds"`
-	StateDir          string `yaml:"state_dir"`
-	ExecutionMode     string `yaml:"execution_mode"`
-	WorkerMode        string `yaml:"worker_mode"`
+	MaxWorkers           int    `yaml:"max_workers"`
+	MaxFixLoops          int    `yaml:"max_fix_loops"`
+	ClaimLeaseSeconds    int    `yaml:"claim_lease_seconds"`
+	StateDir             string `yaml:"state_dir"`
+	ExecutionMode        string `yaml:"execution_mode"`
+	WorkerMode           string `yaml:"worker_mode"`
+	WorkerPollIntervalMs int    `yaml:"worker_poll_interval_ms"`
 }
 
 // OhMyOpenCodeConfig holds settings for the oh-my-opencode agent runner which
@@ -236,9 +323,14 @@ func (c *WorkflowConfig) Clone() *WorkflowConfig {
 	cfg.OhMyOpenCode.Plugins = slices.Clone(c.OhMyOpenCode.Plugins)
 	cfg.OhMyOpenCode.Agents = maps.Clone(c.OhMyOpenCode.Agents)
 	cfg.OhMyOpenCode.Categories = maps.Clone(c.OhMyOpenCode.Categories)
+	cfg.presentFields = maps.Clone(c.presentFields)
 	if c.Linear.IssueDetails.Enabled != nil {
 		enabled := *c.Linear.IssueDetails.Enabled
 		cfg.Linear.IssueDetails.Enabled = &enabled
+	}
+	if c.Orchestrator.Backoff.JitterPercent != nil {
+		jitter := *c.Orchestrator.Backoff.JitterPercent
+		cfg.Orchestrator.Backoff.JitterPercent = &jitter
 	}
 	return &cfg
 }
@@ -379,6 +471,13 @@ func (c *WorkflowConfig) AgentType() string {
 		return defaultAgentType
 	}
 	return c.Agent.Type
+}
+
+func (c *WorkflowConfig) AgentStartupTimeoutMs() int {
+	if c == nil {
+		return defaultAgentStartupTimeoutMs
+	}
+	return positiveInt(c.Agent.StartupTimeoutMs, defaultAgentStartupTimeoutMs)
 }
 
 func (c *WorkflowConfig) OpenCodeBinaryPath() string {
@@ -621,6 +720,13 @@ func (c *WorkflowConfig) TeamClaimLeaseSeconds() int {
 	return c.Team.ClaimLeaseSeconds
 }
 
+func (c *WorkflowConfig) TeamWorkerPollIntervalMs() int {
+	if c == nil {
+		return defaultTeamWorkerPollIntervalMs
+	}
+	return positiveInt(c.Team.WorkerPollIntervalMs, defaultTeamWorkerPollIntervalMs)
+}
+
 func (c *WorkflowConfig) TeamStateDir() string {
 	if c == nil || c.Team.StateDir == "" {
 		return defaultTeamStateDir
@@ -759,6 +865,229 @@ func (c *WorkflowConfig) StallTimeoutMs() int {
 		return defaultStallTimeoutMs
 	}
 	return c.StallTimeoutMsRaw
+}
+
+func (c *WorkflowConfig) PollingBackoffStrategy() string {
+	if c == nil {
+		return defaultBackoffStrategy
+	}
+	strategy := strings.TrimSpace(strings.ToLower(c.Polling.BackoffStrategy))
+	switch strategy {
+	case "linear", defaultBackoffStrategy:
+		return strategy
+	default:
+		return defaultBackoffStrategy
+	}
+}
+
+func (c *WorkflowConfig) OrchestratorEventBufferSize() int {
+	if c == nil {
+		return defaultOrchestratorEventBufferSize
+	}
+	return positiveInt(c.Orchestrator.EventBufferSize, defaultOrchestratorEventBufferSize)
+}
+
+func (c *WorkflowConfig) OrchestratorRunSignalBufferSize() int {
+	if c == nil {
+		return defaultOrchestratorRunSignalBufferSize
+	}
+	return positiveInt(c.Orchestrator.RunSignalBufferSize, defaultOrchestratorRunSignalBufferSize)
+}
+
+func (c *WorkflowConfig) OrchestratorIssueCacheSize() int {
+	if c == nil {
+		return defaultOrchestratorIssueCacheSize
+	}
+	return positiveInt(c.Orchestrator.IssueCacheSize, defaultOrchestratorIssueCacheSize)
+}
+
+func (c *WorkflowConfig) OrchestratorRunShutdownTimeoutMs() int {
+	if c == nil {
+		return defaultOrchestratorRunShutdownTimeoutMs
+	}
+	return positiveInt(c.Orchestrator.RunShutdownTimeoutMs, defaultOrchestratorRunShutdownTimeoutMs)
+}
+
+func (c *WorkflowConfig) OrchestratorStopGraceTimeoutMs() int {
+	if c == nil {
+		return defaultOrchestratorStopGraceTimeoutMs
+	}
+	return positiveInt(c.Orchestrator.StopGraceTimeoutMs, defaultOrchestratorStopGraceTimeoutMs)
+}
+
+func (c *WorkflowConfig) OrchestratorGitCommandTimeoutMs() int {
+	if c == nil {
+		return defaultOrchestratorGitCommandTimeoutMs
+	}
+	return positiveInt(c.Orchestrator.GitCommandTimeoutMs, defaultOrchestratorGitCommandTimeoutMs)
+}
+
+func (c *WorkflowConfig) OrchestratorShutdownDrainTimeoutMs() int {
+	if c == nil {
+		return defaultOrchestratorShutdownDrainTimeoutMs
+	}
+	return positiveInt(c.Orchestrator.Shutdown.DrainTimeoutMs, defaultOrchestratorShutdownDrainTimeoutMs)
+}
+
+func (c *WorkflowConfig) OrchestratorShutdownCleanupTimeoutMs() int {
+	if c == nil {
+		return defaultOrchestratorShutdownCleanupTimeoutMs
+	}
+	return positiveInt(c.Orchestrator.Shutdown.CleanupTimeoutMs, defaultOrchestratorShutdownCleanupTimeoutMs)
+}
+
+func (c *WorkflowConfig) OrchestratorShutdownPollIntervalMs() int {
+	if c == nil {
+		return defaultOrchestratorShutdownPollIntervalMs
+	}
+	return positiveInt(c.Orchestrator.Shutdown.PollIntervalMs, defaultOrchestratorShutdownPollIntervalMs)
+}
+
+func (c *WorkflowConfig) OrchestratorContinuationBackoffMs() int {
+	if c == nil {
+		return defaultOrchestratorContinuationBackoffMs
+	}
+	return positiveInt(c.Orchestrator.Backoff.ContinuationMs, defaultOrchestratorContinuationBackoffMs)
+}
+
+func (c *WorkflowConfig) OrchestratorFailureBackoffBaseMs() int {
+	if c == nil {
+		return defaultOrchestratorFailureBackoffBaseMs
+	}
+	return positiveInt(c.Orchestrator.Backoff.FailureBaseMs, defaultOrchestratorFailureBackoffBaseMs)
+}
+
+func (c *WorkflowConfig) OrchestratorFailureBackoffMultiplier() int {
+	if c == nil {
+		return defaultOrchestratorFailureBackoffMultiplier
+	}
+	return positiveInt(c.Orchestrator.Backoff.Multiplier, defaultOrchestratorFailureBackoffMultiplier)
+}
+
+func (c *WorkflowConfig) OrchestratorBackoffJitterPercent() int {
+	if c == nil || c.Orchestrator.Backoff.JitterPercent == nil {
+		return defaultOrchestratorBackoffJitterPercent
+	}
+	jitter := *c.Orchestrator.Backoff.JitterPercent
+	if jitter < 0 {
+		return defaultOrchestratorBackoffJitterPercent
+	}
+	if jitter > 100 {
+		return 100
+	}
+	return jitter
+}
+
+func (c *WorkflowConfig) OrchestratorSnapshotDiffTimeoutMs() int {
+	if c == nil {
+		return defaultOrchestratorSnapshotDiffTimeoutMs
+	}
+	return positiveInt(c.Orchestrator.Snapshot.DiffTimeoutMs, defaultOrchestratorSnapshotDiffTimeoutMs)
+}
+
+func (c *WorkflowConfig) OrchestratorStageTestingAfterMs() int {
+	if c == nil {
+		return defaultOrchestratorStageTestingAfterMs
+	}
+	return positiveInt(c.Orchestrator.Snapshot.Stage.TestingAfterMs, defaultOrchestratorStageTestingAfterMs)
+}
+
+func (c *WorkflowConfig) OrchestratorStageReviewingAfterMs() int {
+	if c == nil {
+		return defaultOrchestratorStageReviewingAfterMs
+	}
+	return positiveInt(c.Orchestrator.Snapshot.Stage.ReviewingAfterMs, defaultOrchestratorStageReviewingAfterMs)
+}
+
+func (c *WorkflowConfig) OrchestratorStageReviewingMaxTokensPerMinute() float64 {
+	if c == nil {
+		return defaultOrchestratorStageReviewingMaxTokensPerMinute
+	}
+	return positiveFloat(c.Orchestrator.Snapshot.Stage.ReviewingMaxTokensPerMinute, defaultOrchestratorStageReviewingMaxTokensPerMinute)
+}
+
+func (c *WorkflowConfig) OrchestratorETAMinElapsedMs() int {
+	if c == nil {
+		return defaultOrchestratorETAMinElapsedMs
+	}
+	return positiveInt(c.Orchestrator.Snapshot.ETA.MinElapsedMs, defaultOrchestratorETAMinElapsedMs)
+}
+
+func (c *WorkflowConfig) OrchestratorETAMinFilesPerMinute() float64 {
+	if c == nil {
+		return defaultOrchestratorETAMinFilesPerMinute
+	}
+	return positiveFloat(c.Orchestrator.Snapshot.ETA.MinFilesPerMinute, defaultOrchestratorETAMinFilesPerMinute)
+}
+
+func (c *WorkflowConfig) OrchestratorETAMinTokensPerMinute() float64 {
+	if c == nil {
+		return defaultOrchestratorETAMinTokensPerMinute
+	}
+	return positiveFloat(c.Orchestrator.Snapshot.ETA.MinTokensPerMinute, defaultOrchestratorETAMinTokensPerMinute)
+}
+
+func (c *WorkflowConfig) OrchestratorETAMediumConfidenceAfterMs() int {
+	if c == nil {
+		return defaultOrchestratorETAMediumConfidenceAfterMs
+	}
+	return positiveInt(c.Orchestrator.Snapshot.ETA.MediumConfidenceAfterMs, defaultOrchestratorETAMediumConfidenceAfterMs)
+}
+
+func (c *WorkflowConfig) OrchestratorETAHighConfidenceAfterMs() int {
+	if c == nil {
+		return defaultOrchestratorETAHighConfidenceAfterMs
+	}
+	return positiveInt(c.Orchestrator.Snapshot.ETA.HighConfidenceAfterMs, defaultOrchestratorETAHighConfidenceAfterMs)
+}
+
+func (c *WorkflowConfig) OrchestratorETAHighConfidenceMinStage() int {
+	if c == nil {
+		return defaultOrchestratorETAHighConfidenceMinStage
+	}
+	return positiveInt(c.Orchestrator.Snapshot.ETA.HighConfidenceMinStage, defaultOrchestratorETAHighConfidenceMinStage)
+}
+
+func (c *WorkflowConfig) OrchestratorETAEstimatedFilesMultiplier() float64 {
+	if c == nil {
+		return defaultOrchestratorETAEstimatedFilesMultiplier
+	}
+	return positiveFloat(c.Orchestrator.Snapshot.ETA.EstimatedFilesMultiplier, defaultOrchestratorETAEstimatedFilesMultiplier)
+}
+
+func (c *WorkflowConfig) OrchestratorETAMinEstimatedFiles() int {
+	if c == nil {
+		return defaultOrchestratorETAMinEstimatedFiles
+	}
+	return positiveInt(c.Orchestrator.Snapshot.ETA.MinEstimatedFiles, defaultOrchestratorETAMinEstimatedFiles)
+}
+
+func (c *WorkflowConfig) OrchestratorETAFallbackRemainingMinutes() float64 {
+	if c == nil {
+		return defaultOrchestratorETAFallbackRemainingMinutes
+	}
+	return positiveFloat(c.Orchestrator.Snapshot.ETA.FallbackRemainingMinutes, defaultOrchestratorETAFallbackRemainingMinutes)
+}
+
+func (c *WorkflowConfig) OrchestratorETAUncertaintyMultiplier() float64 {
+	if c == nil {
+		return defaultOrchestratorETAUncertaintyMultiplier
+	}
+	return positiveFloat(c.Orchestrator.Snapshot.ETA.UncertaintyMultiplier, defaultOrchestratorETAUncertaintyMultiplier)
+}
+
+func positiveInt(value, fallback int) int {
+	if value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func positiveFloat(value, fallback float64) float64 {
+	if value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func (c *WorkflowConfig) Model() (string, error) {

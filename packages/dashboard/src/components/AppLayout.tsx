@@ -6,24 +6,36 @@ import {
 } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
 import type {
+  AgentLogEvent,
   BackoffEntry,
+  BoardIssue,
   DetailSelection,
   DetailSelectionKind,
   Issue,
   RunningEntry,
   SheetData,
   StateSnapshot,
+  TeamSnapshot,
 } from "../types";
 import type { QueueEventPayload } from "../hooks/useSSE";
-import { AppSidebar, type QueueId } from "./AppSidebar";
+import { AgentLogs } from "./AgentLogs";
+import { AppSidebar, type PageId, type QueueId } from "./AppSidebar";
+import { BoardView } from "./BoardView";
 import { IssueDataTable } from "./IssueDataTable";
 import { IssueDetailSheet } from "./IssueDetailSheet";
+import { MCPConfigPage } from "./MCPConfigPage";
 import { QueuePanel } from "./QueuePanel";
+import { TeamTable } from "./TeamTable";
+import { WorkerTable } from "./WorkerTable";
 
 interface AppLayoutProps {
   state: StateSnapshot;
   connected: boolean;
   runtimeLabel: string;
+  teamSnapshot: TeamSnapshot | null;
+  boardAvailable: boolean;
+  boardIssues: BoardIssue[];
+  agentLogs: AgentLogEvent[];
   queueEvents?: QueueEventPayload[];
 }
 
@@ -96,13 +108,28 @@ function queueIdToKind(qid: QueueId): DetailSelectionKind {
   }
 }
 
+function isQueueId(id: PageId): id is QueueId {
+  return (
+    id === "running" ||
+    id === "backoff" ||
+    id === "todo" ||
+    id === "backlog" ||
+    id === "recent_done" ||
+    id === "canceled"
+  );
+}
+
 export function AppLayout({
   state,
   connected,
   runtimeLabel,
+  teamSnapshot,
+  boardAvailable,
+  boardIssues,
+  agentLogs,
   queueEvents = [],
 }: AppLayoutProps) {
-  const [active, setActive] = useState<QueueId>("running");
+  const [active, setActive] = useState<PageId>("running");
   const [selection, setSelection] = useState<DetailSelection | null>(null);
   const lastKnownSheetRef = useRef<SheetData | null>(null);
 
@@ -194,10 +221,15 @@ export function AppLayout({
     if (sheetData) lastKnownSheetRef.current = sheetData;
   }, [sheetData]);
 
-  const currentQueue = queues[active];
+  const activeQueue = isQueueId(active) ? active : "running";
+  const showingMCPConfig = active === "mcp_config";
+  const currentQueue = queues[activeQueue];
   const queuedTotal =
     (counts.backoff ?? 0) + (counts.todo ?? 0) + (counts.backlog ?? 0);
   const doneTotal = (counts.recent_done ?? 0) + (counts.canceled ?? 0);
+  const showTeamTelemetry =
+    teamSnapshot !== null || agentLogs.length > 0 || boardAvailable;
+  const visibleBoardIssues = useMemo(() => boardIssues, [boardIssues]);
 
   return (
     <SidebarProvider className="h-full min-h-0 bg-transparent">
@@ -220,14 +252,16 @@ export function AppLayout({
           />
           <div className="min-w-0">
             <p className="text-[0.65rem] font-semibold uppercase tracking-[0.26em] text-primary/90">
-              Control Queue
+              {showingMCPConfig ? "Agent Connection" : "Control Queue"}
             </p>
             <h2 className="truncate text-lg font-semibold leading-tight text-foreground">
-              {currentQueue.title}
+              {showingMCPConfig ? "MCP 配置" : currentQueue.title}
             </h2>
           </div>
           <span className="ml-auto rounded-full border border-border/70 bg-card px-3 py-1 text-xs font-medium text-muted-foreground shadow-xs">
-            {currentQueue.rows.length} 项
+            {showingMCPConfig
+              ? "Streamable HTTP"
+              : `${currentQueue.rows.length} 项`}
           </span>
           {state.build_info && state.build_info.commit ? (
             <span
@@ -239,44 +273,70 @@ export function AppLayout({
           ) : null}
         </header>
         <div className="min-h-0 flex-1 overflow-hidden p-3 sm:p-4 lg:p-6">
-          <div className="mx-auto flex h-full max-w-[1600px] min-w-0 flex-col gap-4">
-            <section
-              className="grid grid-cols-2 gap-3 lg:grid-cols-4"
-              aria-label="队列摘要"
-            >
-              <OverviewCard
-                label="连接"
-                value={connected ? "在线" : "离线"}
-                tone={connected ? "live" : "warn"}
-              />
-              <OverviewCard
-                label="运行负载"
-                value={`${state.stats.Running}/${state.stats.MaxAgents}`}
-              />
-              <OverviewCard label="待处理" value={queuedTotal} />
-              <OverviewCard
-                label="归档"
-                value={doneTotal}
-                subtle={runtimeLabel}
-              />
-            </section>
+          {showingMCPConfig ? (
+            <MCPConfigPage />
+          ) : (
+            <div className="mx-auto flex h-full max-w-[1600px] min-w-0 flex-col gap-4">
+              <section
+                className="grid grid-cols-2 gap-3 lg:grid-cols-4"
+                aria-label="队列摘要"
+              >
+                <OverviewCard
+                  label="连接"
+                  value={connected ? "在线" : "离线"}
+                  tone={connected ? "live" : "warn"}
+                />
+                <OverviewCard
+                  label="运行负载"
+                  value={`${state.stats.Running}/${state.stats.MaxAgents}`}
+                />
+                <OverviewCard label="待处理" value={queuedTotal} />
+                <OverviewCard
+                  label="归档"
+                  value={doneTotal}
+                  subtle={runtimeLabel}
+                />
+              </section>
 
-            <QueuePanel events={queueEvents} />
+              <QueuePanel events={queueEvents} />
 
-            <section className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border/70 bg-card/80 shadow-lg ring-1 ring-white/5">
-              <IssueDataTable
-                entries={currentQueue.rows}
-                emptyText={currentQueue.emptyText}
-                onSelect={(entry) =>
-                  setSelection({
-                    kind: queueIdToKind(active),
-                    issueId: entry.issue_id,
-                  })
-                }
-                selectedId={selection?.issueId ?? null}
-              />
-            </section>
-          </div>
+              {showTeamTelemetry ? (
+                <section
+                  className="grid max-h-[45%] min-h-0 gap-4 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.75fr)]"
+                  aria-label="团队执行遥测"
+                >
+                  <div className="min-w-0 space-y-4 rounded-2xl border border-border/70 bg-card/80 p-4 shadow-lg ring-1 ring-white/5">
+                    <TeamTable snapshot={teamSnapshot} />
+                    {teamSnapshot ? (
+                      <WorkerTable workers={teamSnapshot.workers} />
+                    ) : null}
+                  </div>
+                  <div className="min-w-0 rounded-2xl border border-border/70 bg-card/80 p-4 shadow-lg ring-1 ring-white/5">
+                    <AgentLogs logs={agentLogs} />
+                  </div>
+                  {boardAvailable ? (
+                    <div className="min-w-0 rounded-2xl border border-border/70 bg-card/80 p-4 shadow-lg ring-1 ring-white/5 xl:col-span-2">
+                      <BoardView issues={visibleBoardIssues} />
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
+              <section className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border/70 bg-card/80 shadow-lg ring-1 ring-white/5">
+                <IssueDataTable
+                  entries={currentQueue.rows}
+                  emptyText={currentQueue.emptyText}
+                  onSelect={(entry) =>
+                    setSelection({
+                      kind: queueIdToKind(activeQueue),
+                      issueId: entry.issue_id,
+                    })
+                  }
+                  selectedId={selection?.issueId ?? null}
+                />
+              </section>
+            </div>
+          )}
         </div>
       </SidebarInset>
       <IssueDetailSheet
