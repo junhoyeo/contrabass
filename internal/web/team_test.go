@@ -11,12 +11,14 @@ import (
 )
 
 var _ SnapshotProvider = (*TeamSnapshotProvider)(nil)
+var _ MCPDashboardSnapshotProvider = (*TeamSnapshotProvider)(nil)
 
 func TestTeamSnapshotProviderSnapshotReturnsEmptySnapshot(t *testing.T) {
 	provider := NewTeamSnapshotProvider()
 	snapshot := provider.Snapshot()
 
 	assert.Equal(t, orchestrator.StateSnapshot{}, snapshot)
+	assert.False(t, provider.SupportsMCPDashboardSnapshot())
 }
 
 func TestNewServerWithTeamSnapshotProvider(t *testing.T) {

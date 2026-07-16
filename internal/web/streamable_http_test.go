@@ -158,6 +158,28 @@ func TestHandleMCPInitializeAndTools(t *testing.T) {
 	assert.Contains(t, textContent["text"], `"stats"`)
 }
 
+func TestMCPHidesOrchestratorSnapshotToolForTeamProvider(t *testing.T) {
+	s := &Server{snapshotProvider: NewTeamSnapshotProvider(), dashboardFS: nil}
+	token, _, err := s.createMCPToken(time.Now().UTC())
+	require.NoError(t, err)
+	h := s.newMux()
+
+	tools := mustPostMCPJSONRPC(t, h, token, `{"jsonrpc":"2.0","id":"tools-1","method":"tools/list"}`)
+	assert.Equal(t, http.StatusOK, tools.Code)
+	toolsMessage := mustJSONRPCMessage(t, tools)
+	toolsResult, ok := toolsMessage.Result.(map[string]interface{})
+	require.True(t, ok)
+	assert.Empty(t, toolsResult["tools"])
+
+	call := mustPostMCPJSONRPC(t, h, token, `{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"contrabass.dashboard_snapshot","arguments":{}}}`)
+	assert.Equal(t, http.StatusOK, call.Code)
+	var callMessage streamableHTTPMessage
+	require.NoError(t, json.Unmarshal(call.Body.Bytes(), &callMessage))
+	require.NotNil(t, callMessage.Error)
+	assert.Equal(t, -32602, callMessage.Error.Code)
+	assert.Equal(t, "unknown tool", callMessage.Error.Message)
+}
+
 func TestHandleMCPMethodsRequireTokenProtectedMCPPath(t *testing.T) {
 	provider := fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{
 		Stats:       orchestrator.Stats{Running: 1},

@@ -178,7 +178,7 @@ func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logg
 		// inheriting whatever is in ~/.codex/config.toml. Empty fields are not
 		// injected — codex falls back to its own defaults.
 		runner.ConfigureCodex(agent.CodexRunnerOptions{
-			Model:          cfg.Codex.Model,
+			Model:          cfg.CodexModel(),
 			ApprovalPolicy: cfg.Codex.ApprovalPolicy,
 			Sandbox:        cfg.Codex.Sandbox,
 		})
