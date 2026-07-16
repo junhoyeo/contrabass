@@ -754,16 +754,25 @@ func getTime(m map[string]interface{}, key string) time.Time {
 	return t
 }
 
-// parseRetryAfter parses the Retry-After header value as seconds.
+// parseRetryAfter parses the Retry-After header value. RFC 9110 allows both
+// delta-seconds and an HTTP-date; treating a date as "no delay" would hammer
+// a rate-limited API in a tight retry loop.
 func parseRetryAfter(val string) time.Duration {
 	if val == "" {
 		return 0
 	}
-	seconds, err := strconv.Atoi(val)
-	if err != nil {
-		return 0
+	if seconds, err := strconv.Atoi(val); err == nil {
+		if seconds < 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
 	}
-	return time.Duration(seconds) * time.Second
+	if at, err := http.ParseTime(val); err == nil {
+		if delay := time.Until(at); delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 // truncateBody truncates a response body for error messages.

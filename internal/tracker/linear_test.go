@@ -1088,9 +1088,9 @@ func TestParseRetryAfter_NonNumeric(t *testing.T) {
 		{"empty string", "", 0},
 		{"non-numeric text", "not-a-number", 0},
 		{"float value", "3.14", 0},
-		{"negative number", "-5", -5 * time.Second},
+		{"negative number clamps to zero", "-5", 0},
 		{"valid seconds", "60", 60 * time.Second},
-		{"HTTP date format", "Wed, 21 Oct 2025 07:28:00 GMT", 0},
+		{"HTTP date in the past", "Wed, 21 Oct 2015 07:28:00 GMT", 0},
 	}
 
 	for _, tt := range tests {
@@ -1099,6 +1099,15 @@ func TestParseRetryAfter_NonNumeric(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+
+	// RFC 9110 also allows an HTTP-date; a future date must yield a positive
+	// delay instead of 0 (which would hammer a rate-limited API).
+	t.Run("HTTP date in the future", func(t *testing.T) {
+		future := time.Now().Add(90 * time.Second).UTC().Format(http.TimeFormat)
+		got := parseRetryAfter(future)
+		assert.Greater(t, got, 60*time.Second)
+		assert.LessOrEqual(t, got, 90*time.Second)
+	})
 }
 
 // --- FetchIssues Missing Data Field Test ---

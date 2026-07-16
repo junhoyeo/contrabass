@@ -30,6 +30,12 @@ const (
 var localBoardPrefixPattern = regexp.MustCompile(`[^A-Za-z0-9]+`)
 var localBoardTeamPattern = regexp.MustCompile(`[^a-z0-9]+`)
 
+// localIssueIDPattern restricts issue IDs to filename-safe characters.
+// Issue IDs arrive from the CLI and the web API and are joined into
+// filesystem paths (issues/<id>.json, comments/<id>.jsonl); this prevents
+// path traversal via "../" or other metacharacters.
+var localIssueIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
 type LocalConfig struct {
 	BoardDir    string
 	IssuePrefix string
@@ -734,6 +740,10 @@ func (t *LocalTracker) ensureBoardLocked() (*LocalBoardManifest, error) {
 }
 
 func (t *LocalTracker) loadIssueLocked(issueID string) (LocalBoardIssue, error) {
+	if !localIssueIDPattern.MatchString(issueID) {
+		return LocalBoardIssue{}, fmt.Errorf("local board issue id %q contains invalid characters", issueID)
+	}
+
 	var issue LocalBoardIssue
 	if err := readJSONFile(t.issuePath(issueID), &issue); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

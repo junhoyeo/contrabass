@@ -154,7 +154,7 @@ func (c *GitHubClient) ClaimIssue(ctx context.Context, issueID string) error {
 	}
 
 	path := fmt.Sprintf("/repos/%s/%s/issues/%s/assignees", c.owner, c.repo, issueID)
-	_, _, statusCode, err := c.doRequestWithStatus(ctx, http.MethodPost, path, payload)
+	body, _, statusCode, err := c.doRequestWithStatus(ctx, http.MethodPost, path, payload)
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,25 @@ func (c *GitHubClient) ClaimIssue(ctx context.Context, issueID string) error {
 		return fmt.Errorf("github API error: expected status 201, got %d", statusCode)
 	}
 
-	return nil
+	// GitHub returns 201 even when it silently ignores an assignee the token
+	// user cannot assign (no push/triage access, or an unknown login). Verify
+	// the claim actually landed so the orchestrator doesn't dispatch an issue
+	// it never owned.
+	var updated githubIssue
+	if err := json.Unmarshal(body, &updated); err != nil {
+		// Response shape changed under us — the 201 already signalled intent,
+		// so don't fail the claim over an unparseable body.
+		return nil
+	}
+	for _, user := range updated.Assignees {
+		if user.Login == c.assignee {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"github accepted the assignee request but %q is not among the issue's assignees (does the token user have triage access to %s/%s?)",
+		c.assignee, c.owner, c.repo,
+	)
 }
 
 func (c *GitHubClient) ReleaseIssue(ctx context.Context, issueID string) error {
