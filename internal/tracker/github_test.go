@@ -147,6 +147,71 @@ func TestGitHubFetchIssues_ParsesDependencies(t *testing.T) {
 	assert.Equal(t, []string{"10", "11", "9"}, issues[2].BlockedBy)
 }
 
+// TestGitHubFetchIssues_AssigneeClaimSafety exercises the claim-safety rules:
+// issues assigned exclusively to other users never reach the orchestrator
+// (the additive POST /assignees claim would silently hijack them), and issues
+// already assigned to the configured assignee come back Claimed — not
+// hardcoded Unclaimed — so a restart routes them through orphan-claim
+// recovery instead of re-dispatching in-flight work from attempt 1.
+func TestGitHubFetchIssues_AssigneeClaimSafety(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondGitHubJSON(w, http.StatusOK, []interface{}{
+			map[string]interface{}{
+				"number": 1,
+				"title":  "Unassigned",
+				"body":   "",
+				"state":  "open",
+			},
+			map[string]interface{}{
+				"number": 2,
+				"title":  "Assigned to bot",
+				"body":   "",
+				"state":  "open",
+				"assignees": []interface{}{
+					map[string]interface{}{"login": "bot-user"},
+				},
+			},
+			map[string]interface{}{
+				"number": 3,
+				"title":  "Assigned to a human",
+				"body":   "",
+				"state":  "open",
+				"assignees": []interface{}{
+					map[string]interface{}{"login": "human-dev"},
+				},
+			},
+			map[string]interface{}{
+				"number": 4,
+				"title":  "Assigned to bot and a human",
+				"body":   "",
+				"state":  "open",
+				"assignees": []interface{}{
+					map[string]interface{}{"login": "human-dev"},
+					map[string]interface{}{"login": "bot-user"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testGitHubClient(t, server.URL) // configured with Assignee "bot-user"
+	issues, err := client.FetchIssues(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, issues, 3)
+
+	assert.Equal(t, "1", issues[0].ID)
+	assert.Equal(t, types.Unclaimed, issues[0].State)
+	assert.Equal(t, []string{}, issues[0].TrackerMeta["github_assignees"])
+
+	assert.Equal(t, "2", issues[1].ID)
+	assert.Equal(t, types.Claimed, issues[1].State)
+	assert.Equal(t, []string{"bot-user"}, issues[1].TrackerMeta["github_assignees"])
+
+	assert.Equal(t, "4", issues[2].ID)
+	assert.Equal(t, types.Claimed, issues[2].State)
+}
+
 func TestGitHubFetchIssues_FiltersPullRequests(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		respondGitHubJSON(w, http.StatusOK, []interface{}{

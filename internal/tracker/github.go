@@ -88,10 +88,15 @@ type githubIssue struct {
 	Body        string                 `json:"body"`
 	State       string                 `json:"state"`
 	Labels      []githubIssueLabel     `json:"labels"`
+	Assignees   []githubUser           `json:"assignees"`
 	HTMLURL     string                 `json:"html_url"`
 	CreatedAt   string                 `json:"created_at"`
 	UpdatedAt   string                 `json:"updated_at"`
 	PullRequest map[string]interface{} `json:"pull_request"`
+}
+
+type githubUser struct {
+	Login string `json:"login"`
 }
 
 type githubIssueLabel struct {
@@ -123,6 +128,9 @@ func (c *GitHubClient) FetchIssues(ctx context.Context) ([]types.Issue, error) {
 
 		for _, item := range pageItems {
 			if item.PullRequest != nil {
+				continue
+			}
+			if c.isAssignedToOther(item) {
 				continue
 			}
 			issues = append(issues, c.normalizeIssue(item))
@@ -320,12 +328,30 @@ func (c *GitHubClient) normalizeIssue(item githubIssue) types.Issue {
 
 	blockedBy := parseDependencies(item.Body)
 
+	// Preserve the claim in the normalized state when the issue is already
+	// assigned to the configured assignee. Hardcoding Unclaimed here would make
+	// the bot's own in-flight issues look freshly unclaimed after a restart, so
+	// they would be re-dispatched from attempt 1 instead of going through
+	// orphan-claim recovery. Mirrors the Linear adapter's started→Claimed
+	// mapping.
+	assigneeLogins := make([]string, 0, len(item.Assignees))
+	state := types.Unclaimed
+	for _, user := range item.Assignees {
+		if user.Login == "" {
+			continue
+		}
+		assigneeLogins = append(assigneeLogins, user.Login)
+		if c.assignee != "" && user.Login == c.assignee {
+			state = types.Claimed
+		}
+	}
+
 	return types.Issue{
 		ID:            numberString,
 		Identifier:    fmt.Sprintf("%s/%s#%d", c.owner, c.repo, item.Number),
 		Title:         item.Title,
 		Description:   item.Body,
-		State:         types.Unclaimed,
+		State:         state,
 		Priority:      0,
 		Labels:        labels,
 		URL:           item.HTMLURL,
@@ -335,8 +361,28 @@ func (c *GitHubClient) normalizeIssue(item githubIssue) types.Issue {
 		CreatedAt:     createdAt,
 		UpdatedAt:     updatedAt,
 		TrackerMeta: map[string]interface{}{
-			"github_node_id": item.NodeID,
-			"github_state":   item.State,
+			"github_node_id":   item.NodeID,
+			"github_state":     item.State,
+			"github_assignees": assigneeLogins,
 		},
 	}
+}
+
+// isAssignedToOther reports whether the issue is assigned exclusively to
+// users other than the configured assignee. Such issues belong to humans (or
+// other bots) and must not be dispatched or "recovered" by orphan-claim
+// recovery — the POST /assignees claim is additive, so claiming them would
+// silently succeed and start an agent on someone else's work. When no
+// assignee is configured, ownership cannot be established and nothing is
+// filtered.
+func (c *GitHubClient) isAssignedToOther(item githubIssue) bool {
+	if c.assignee == "" || len(item.Assignees) == 0 {
+		return false
+	}
+	for _, user := range item.Assignees {
+		if user.Login == c.assignee {
+			return false
+		}
+	}
+	return true
 }

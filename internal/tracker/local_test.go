@@ -112,6 +112,36 @@ func TestLocalTrackerLifecycle(t *testing.T) {
 	assert.Equal(t, LocalBoardStateDone, allIssues[0].State)
 }
 
+// TestLocalBoardInProgressMapsToClaimed pins the crash-recovery contract: an
+// in_progress issue left behind by a crashed run must surface as Claimed so
+// the orchestrator's orphan-claim recovery (which only looks at Claimed)
+// re-dispatches it. Mapping it to Running strands the issue forever.
+func TestLocalBoardInProgressMapsToClaimed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	localTracker := NewLocalTracker(LocalConfig{
+		BoardDir: filepath.Join(t.TempDir(), "board"),
+		Actor:    "bot",
+	})
+
+	issue, err := localTracker.CreateIssue(ctx, "Crashes mid-run", "", nil)
+	require.NoError(t, err)
+	require.NoError(t, localTracker.ClaimIssue(ctx, issue.ID))
+
+	// Simulate an orchestrator restart: nothing is in the managed set, and
+	// FetchIssues reports the board as-is.
+	fetched, err := localTracker.FetchIssues(ctx)
+	require.NoError(t, err)
+	require.Len(t, fetched, 1)
+	assert.Equal(t, types.Claimed, fetched[0].State)
+
+	assert.Equal(t, types.Claimed, LocalBoardStateInProgress.IssueState())
+	assert.Equal(t, types.RetryQueued, LocalBoardStateRetry.IssueState())
+	assert.Equal(t, types.Released, LocalBoardStateDone.IssueState())
+	assert.Equal(t, types.Unclaimed, LocalBoardStateTodo.IssueState())
+}
+
 func TestLocalTrackerUpdateIssue(t *testing.T) {
 	t.Parallel()
 

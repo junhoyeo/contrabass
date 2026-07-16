@@ -137,10 +137,16 @@ func ParseLocalBoardState(raw string) (LocalBoardState, error) {
 	}
 }
 
+// IssueState maps a board state to the orchestrator's claim state.
+// in_progress maps to Claimed (not Running) so that a crashed run — which
+// leaves the issue in_progress with no live agent — is picked up by
+// orphan-claim recovery instead of being stranded forever. This mirrors the
+// Linear adapter's started→Claimed mapping; the orchestrator itself decides
+// what is actively Running from its in-memory managed set.
 func (s LocalBoardState) IssueState() types.IssueState {
 	switch s {
 	case LocalBoardStateInProgress:
-		return types.Running
+		return types.Claimed
 	case LocalBoardStateRetry:
 		return types.RetryQueued
 	case LocalBoardStateDone:

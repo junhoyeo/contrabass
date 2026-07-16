@@ -114,6 +114,145 @@ func TestFetchIssues_ParsesResponse(t *testing.T) {
 	assert.Equal(t, "Backlog", issues[1].TrackerMeta["linear_state"])
 }
 
+// TestFetchIssues_FiltersIssuesAssignedToOthers exercises the claim-safety
+// guard: an issue assigned to a different Linear user must never reach the
+// orchestrator. Before this filter, a teammate's In Progress issue mapped to
+// Claimed, was "recovered" as orphaned (no local agent runs it), re-assigned
+// to the bot, and an agent started working on it.
+func TestFetchIssues_FiltersIssuesAssignedToOthers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := parseGQLRequest(t, r)
+		assert.Contains(t, req.Query, "assignee { id }")
+
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issues": map[string]interface{}{
+					"nodes": []interface{}{
+						map[string]interface{}{
+							"id":     "unassigned-todo",
+							"title":  "Unassigned Todo",
+							"state":  map[string]interface{}{"name": "Todo", "type": "unstarted"},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+						},
+						map[string]interface{}{
+							"id":       "own-in-progress",
+							"title":    "Bot's own in-flight issue",
+							"state":    map[string]interface{}{"name": "In Progress", "type": "started"},
+							"assignee": map[string]interface{}{"id": "user-123"},
+							"labels":   map[string]interface{}{"nodes": []interface{}{}},
+						},
+						map[string]interface{}{
+							"id":       "teammate-in-progress",
+							"title":    "Teammate's in-flight issue",
+							"state":    map[string]interface{}{"name": "In Progress", "type": "started"},
+							"assignee": map[string]interface{}{"id": "human-456"},
+							"labels":   map[string]interface{}{"nodes": []interface{}{}},
+						},
+						map[string]interface{}{
+							"id":       "teammate-todo",
+							"title":    "Todo already assigned to a teammate",
+							"state":    map[string]interface{}{"name": "Todo", "type": "unstarted"},
+							"assignee": map[string]interface{}{"id": "human-456"},
+							"labels":   map[string]interface{}{"nodes": []interface{}{}},
+						},
+					},
+					"pageInfo": map[string]interface{}{"hasNextPage": false},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL) // configured with AssigneeID "user-123"
+	issues, err := client.FetchIssues(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, issues, 2)
+
+	assert.Equal(t, "unassigned-todo", issues[0].ID)
+	assert.Equal(t, types.Unclaimed, issues[0].State)
+	assert.Equal(t, "", issues[0].TrackerMeta["linear_assignee_id"])
+
+	// The bot's own claim survives a restart as Claimed so orphan recovery,
+	// not fresh dispatch, decides what happens to it.
+	assert.Equal(t, "own-in-progress", issues[1].ID)
+	assert.Equal(t, types.Claimed, issues[1].State)
+	assert.Equal(t, "user-123", issues[1].TrackerMeta["linear_assignee_id"])
+}
+
+// TestFetchIssues_NoAssigneeConfiguredSkipsFilter pins the fallback: without a
+// configured assignee ID, ownership cannot be established, so assigned issues
+// are not filtered (pre-filter behavior).
+func TestFetchIssues_NoAssigneeConfiguredSkipsFilter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issues": map[string]interface{}{
+					"nodes": []interface{}{
+						map[string]interface{}{
+							"id":       "assigned-elsewhere",
+							"title":    "Assigned to someone",
+							"state":    map[string]interface{}{"name": "Todo", "type": "unstarted"},
+							"assignee": map[string]interface{}{"id": "human-456"},
+							"labels":   map[string]interface{}{"nodes": []interface{}{}},
+						},
+					},
+					"pageInfo": map[string]interface{}{"hasNextPage": false},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewLinearClient(LinearConfig{
+		APIKey:      "test-api-key",
+		ProjectSlug: "test-project",
+		Endpoint:    server.URL,
+	})
+	require.NoError(t, err)
+
+	issues, err := client.FetchIssues(context.Background())
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.Equal(t, "assigned-elsewhere", issues[0].ID)
+}
+
+// TestFetchIssues_FiltersTriageState pins the triage exclusion: issues still
+// in Linear's Triage inbox must not be dispatched before a human accepts them.
+func TestFetchIssues_FiltersTriageState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondJSON(w, 200, map[string]interface{}{
+			"data": map[string]interface{}{
+				"issues": map[string]interface{}{
+					"nodes": []interface{}{
+						map[string]interface{}{
+							"id":     "triage-issue",
+							"title":  "Untriaged report",
+							"state":  map[string]interface{}{"name": "Triage", "type": "triage"},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+						},
+						map[string]interface{}{
+							"id":     "todo-issue",
+							"title":  "Accepted Todo",
+							"state":  map[string]interface{}{"name": "Todo", "type": "unstarted"},
+							"labels": map[string]interface{}{"nodes": []interface{}{}},
+						},
+					},
+					"pageInfo": map[string]interface{}{"hasNextPage": false},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testClient(t, server.URL)
+	issues, err := client.FetchIssues(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.Equal(t, "todo-issue", issues[0].ID)
+}
+
 func TestFetchIssues_EmptyResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 200, map[string]interface{}{
