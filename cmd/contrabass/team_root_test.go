@@ -164,6 +164,15 @@ Prompt.
 	}
 }
 
+func TestRunTeamExecutionWebServerExplainsMissingDashboardAssets(t *testing.T) {
+	webEvents, err := runTeamExecutionWebServer(context.Background(), nil, 0)
+
+	require.Error(t, err)
+	assert.Nil(t, webEvents)
+	assert.ErrorContains(t, err, "web dashboard assets are unavailable in this build")
+	assert.ErrorContains(t, err, "dashboard_dist")
+}
+
 func TestPublishTeamWebEventGuaranteesCriticalEvents(t *testing.T) {
 	ctx := context.Background()
 	webEvents := make(chan web.WebEvent, 1)
