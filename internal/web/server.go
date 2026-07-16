@@ -23,6 +23,13 @@ type SnapshotProvider interface {
 	Snapshot() orchestrator.StateSnapshot
 }
 
+// MCPDashboardSnapshotProvider reports whether the generic orchestrator
+// snapshot tool is meaningful for this server's current snapshot source.
+// Providers that do not implement it retain the legacy supported behavior.
+type MCPDashboardSnapshotProvider interface {
+	SupportsMCPDashboardSnapshot() bool
+}
+
 // AgentStopper is implemented by the orchestrator so the dashboard can
 // terminate a running agent via the stop endpoint without coupling the
 // HTTP layer to process-lifecycle details.

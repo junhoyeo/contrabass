@@ -38,6 +38,7 @@ func TestResolveConfigBuildsCanonicalRuntimeValues(t *testing.T) {
 	assert.Equal(t, ConfigSourceDeprecatedAlias, resolved.Metadata["polling.interval_ms"].Source)
 	assert.Equal(t, StartupOnly, resolved.Metadata["polling.interval_ms"].ReloadPolicy)
 	assert.Equal(t, StartupOnly, resolved.Metadata["tracker.type"].ReloadPolicy)
+	assert.Equal(t, StartupOnly, resolved.Metadata["codex.model"].ReloadPolicy)
 	assert.Contains(t, resolved.Warnings, "codex.model falls back to model; configure codex.model to make the runner model explicit")
 	assert.Contains(t, resolved.Warnings, "tracker.project_url falls back to project_url; configure tracker.project_url to make tracker scope explicit")
 
