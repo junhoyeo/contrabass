@@ -529,6 +529,54 @@ func TestOpenCodeRunner_EnsureServerStartsWorkspacesInParallel(t *testing.T) {
 	}, []string{res1.url, res2.url})
 }
 
+// TestOpenCodeRunner_DrainsServerStdoutAfterStartup pins the pipe-drain
+// contract: after the "listening on" line, nothing used to read the server's
+// stdout, so once the OS pipe buffer (~64KB) filled, the server's log writes
+// blocked and the whole server froze — every session on it stalled. The fake
+// server emits ~512KB of log output (8x the pipe buffer) after startup and
+// then writes a marker file; the marker is only reachable if startServer
+// keeps draining the pipe.
+func TestOpenCodeRunner_DrainsServerStdoutAfterStartup(t *testing.T) {
+	stateDir := t.TempDir()
+	scriptPath := filepath.Join(stateDir, "chatty-opencode.sh")
+	script := `#!/bin/sh
+set -eu
+state_dir="${TEST_STATE_DIR:?TEST_STATE_DIR is required}"
+echo "listening on http://127.0.0.1:4545"
+i=0
+while [ "$i" -lt 512 ]; do
+  printf '%01023d\n' "$i"
+  i=$((i+1))
+done
+touch "$state_dir/drained"
+sleep 30
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+
+	runner := NewOpenCodeRunner(scriptPath, 0, "", "", 5*time.Second)
+	runner.SetExtraEnv([]string{"TEST_STATE_DIR=" + stateDir})
+	t.Cleanup(func() {
+		require.NoError(t, runner.Close())
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	workspace := filepath.Join(stateDir, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0o755))
+
+	url, pid, err := runner.ensureServer(ctx, workspace)
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:4545", url)
+	assert.NotZero(t, pid)
+
+	assert.Eventually(t, func() bool {
+		_, statErr := os.Stat(filepath.Join(stateDir, "drained"))
+		return statErr == nil
+	}, 8*time.Second, 50*time.Millisecond,
+		"server blocked writing to its undrained stdout pipe")
+}
+
 func newTestOpenCodeRunner(serverURL string) *OpenCodeRunner {
 	r := NewOpenCodeRunner("opencode serve", 0, "", "", 2*time.Second)
 	primeTestOpenCodeServer(r, "", serverURL, 4242)

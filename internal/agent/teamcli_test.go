@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,59 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestRunTeamAPI_ToleratesStderrNoise pins the stdout/stderr split: omx/omc
+// are Node CLIs whose runtime warnings (ExperimentalWarning, deprecations)
+// land on stderr. When runCommand returned CombinedOutput, one warning line
+// corrupted the JSON envelope, and three consecutive decode failures in
+// monitorProcess shut down a perfectly healthy team.
+func TestRunTeamAPI_ToleratesStderrNoise(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := filepath.Join(t.TempDir(), "noisy-cli.sh")
+	script := `#!/bin/sh
+echo '(node:12345) ExperimentalWarning: fake runtime warning' >&2
+echo '(node:12345) [DEP0040] DeprecationWarning: punycode is deprecated' >&2
+echo '{"ok":true,"operation":"get-summary","data":{"value":42}}'
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+
+	runner := &teamCLIRunner{name: "omx", binaryPath: scriptPath}
+
+	var target struct {
+		Value int `json:"value"`
+	}
+	err := runner.runTeamAPI(context.Background(), t.TempDir(), "get-summary", map[string]string{}, &target)
+	require.NoError(t, err)
+	assert.Equal(t, 42, target.Value)
+}
+
+func TestRunCommand_SplitsStdoutAndStderr(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := filepath.Join(t.TempDir(), "split-cli.sh")
+	script := `#!/bin/sh
+echo 'stdout line'
+echo 'stderr line' >&2
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+
+	runner := &teamCLIRunner{name: "omx", binaryPath: scriptPath}
+
+	stdout, stderr, err := runner.runCommand(context.Background(), t.TempDir(), "anything")
+	require.NoError(t, err)
+	assert.Equal(t, "stdout line\n", string(stdout))
+	assert.Equal(t, "stderr line\n", string(stderr))
+}
+
+func TestCombineStreams(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "out", string(combineStreams([]byte("out\n"), nil)))
+	assert.Equal(t, "err", string(combineStreams(nil, []byte("err\n"))))
+	assert.Equal(t, "out\nerr", string(combineStreams([]byte("out\n"), []byte("err\n"))))
+	assert.Empty(t, combineStreams(nil, nil))
+}
 
 func TestParseTeamNameFromOutput(t *testing.T) {
 	tests := []struct {

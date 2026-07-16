@@ -320,6 +320,12 @@ func (r *OpenCodeRunner) startServer(
 			if strings.Contains(line, "listening on http://") || strings.Contains(line, "listening on https://") {
 				if url := extractListeningURL(line); url != "" {
 					urlCh <- url
+					// Keep draining stdout for the server's lifetime. Nothing
+					// else reads this pipe: once the server has logged enough
+					// to fill it (~64KB), its writes block and the whole
+					// server freezes, stalling every session on it. Exits on
+					// EOF when the server process ends.
+					_, _ = io.Copy(io.Discard, stdout)
 					return
 				}
 			}

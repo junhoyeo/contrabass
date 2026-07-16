@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -233,9 +234,9 @@ func (r *teamCLIRunner) Start(ctx context.Context, issue types.Issue, workspace 
 	startCtx, cancel := context.WithTimeout(ctx, r.startupTimeout)
 	defer cancel()
 
-	output, err := r.runCommand(startCtx, workspace, r.startArgs(r.teamSpec, launchTask)...)
+	stdout, stderr, err := r.runCommand(startCtx, workspace, r.startArgs(r.teamSpec, launchTask)...)
 	if err != nil {
-		return nil, fmt.Errorf("start %s team %q: %w%s", r.name, predictedTeamName, err, formatCommandOutput(output))
+		return nil, fmt.Errorf("start %s team %q: %w%s", r.name, predictedTeamName, err, formatCommandOutput(combineStreams(stdout, stderr)))
 	}
 
 	// omx v0.16+ generates team names with a hash suffix (e.g.
@@ -243,7 +244,7 @@ func (r *teamCLIRunner) Start(ctx context.Context, issue types.Issue, workspace 
 	// on stdout. Parse the actual name so subsequent `team status`/`team await`
 	// calls hit the right team. Fall back to the predicted slug for older
 	// CLIs that did not emit this line.
-	teamName := parseTeamNameFromOutput(output)
+	teamName := parseTeamNameFromOutput(stdout)
 	if teamName == "" {
 		teamName = predictedTeamName
 	}
@@ -612,14 +613,15 @@ func (r *teamCLIRunner) fetchSnapshot(ctx context.Context, workspace, teamName s
 }
 
 func (r *teamCLIRunner) shutdownTeam(ctx context.Context, workspace, teamName string) error {
-	output, err := r.runCommand(ctx, workspace, r.shutdownArgs(teamName)...)
+	stdout, stderr, err := r.runCommand(ctx, workspace, r.shutdownArgs(teamName)...)
 	if err == nil {
 		return nil
 	}
-	if strings.Contains(string(output), "No team state found") {
+	combined := combineStreams(stdout, stderr)
+	if strings.Contains(string(combined), "No team state found") {
 		return nil
 	}
-	return fmt.Errorf("shutdown %s team %q: %w%s", r.name, teamName, err, formatCommandOutput(output))
+	return fmt.Errorf("shutdown %s team %q: %w%s", r.name, teamName, err, formatCommandOutput(combined))
 }
 
 func (r *teamCLIRunner) runTeamAPI(ctx context.Context, workspace, operation string, input interface{}, target interface{}) error {
@@ -628,14 +630,14 @@ func (r *teamCLIRunner) runTeamAPI(ctx context.Context, workspace, operation str
 		return fmt.Errorf("marshal team api input: %w", err)
 	}
 
-	output, err := r.runCommand(ctx, workspace, "team", "api", operation, "--input", string(payload), "--json")
+	stdout, stderr, err := r.runCommand(ctx, workspace, "team", "api", operation, "--input", string(payload), "--json")
 	if err != nil {
-		return fmt.Errorf("run %s team api %s: %w%s", r.name, operation, err, formatCommandOutput(output))
+		return fmt.Errorf("run %s team api %s: %w%s", r.name, operation, err, formatCommandOutput(combineStreams(stdout, stderr)))
 	}
 
 	var envelope teamCLIEnvelope
-	if err := json.Unmarshal(output, &envelope); err != nil {
-		return fmt.Errorf("decode %s team api %s response: %w", r.name, operation, err)
+	if err := json.Unmarshal(stdout, &envelope); err != nil {
+		return fmt.Errorf("decode %s team api %s response: %w%s", r.name, operation, err, formatCommandOutput(stderr))
 	}
 	if envelope.Status == "missing" {
 		return errTeamMissing
@@ -655,15 +657,43 @@ func (r *teamCLIRunner) runTeamAPI(ctx context.Context, workspace, operation str
 	return nil
 }
 
-func (r *teamCLIRunner) runCommand(ctx context.Context, workspace string, args ...string) ([]byte, error) {
+// runCommand executes the team CLI and returns stdout and stderr separately.
+// omx/omc are Node CLIs: runtime warnings (ExperimentalWarning, deprecation
+// notices) land on stderr, and mixing them into stdout corrupts the JSON that
+// runTeamAPI parses — three consecutive decode failures used to shut down a
+// perfectly healthy team.
+func (r *teamCLIRunner) runCommand(ctx context.Context, workspace string, args ...string) (stdout []byte, stderr []byte, err error) {
 	argv := strings.Fields(strings.TrimSpace(r.binaryPath))
 	if len(argv) == 0 {
-		return nil, fmt.Errorf("%s binary path is empty", r.name)
+		return nil, nil, fmt.Errorf("%s binary path is empty", r.name)
 	}
 
 	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], args...)...)
 	cmd.Dir = workspace
-	return cmd.CombinedOutput()
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	return outBuf.Bytes(), errBuf.Bytes(), err
+}
+
+// combineStreams joins stdout and stderr for human-facing error messages,
+// where seeing both is more useful than stream fidelity.
+func combineStreams(stdout, stderr []byte) []byte {
+	out := bytes.TrimSpace(stdout)
+	errOut := bytes.TrimSpace(stderr)
+	switch {
+	case len(out) == 0:
+		return errOut
+	case len(errOut) == 0:
+		return out
+	default:
+		combined := make([]byte, 0, len(out)+1+len(errOut))
+		combined = append(combined, out...)
+		combined = append(combined, '\n')
+		combined = append(combined, errOut...)
+		return combined
+	}
 }
 
 func isTeamMissingError(err error) bool {
