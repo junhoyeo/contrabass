@@ -122,6 +122,19 @@ func (t *LocalTracker) BoardDir() string {
 	return t.boardDir
 }
 
+// lockBoardFile takes the cross-process board lock. The daemon and the
+// `contrabass board`/`team` CLIs open the same BoardDir from separate
+// processes; t.mu only serializes within one process. Callers must already
+// hold t.mu (so lock ordering is always mu → file lock) and must call the
+// returned release func.
+func (t *LocalTracker) lockBoardFile() (func(), error) {
+	lock := newFileLock(filepath.Join(t.boardDir, "board"))
+	if err := lock.Lock(); err != nil {
+		return nil, fmt.Errorf("lock board: %w", err)
+	}
+	return func() { _ = lock.Unlock() }, nil
+}
+
 func ParseLocalBoardState(raw string) (LocalBoardState, error) {
 	switch LocalBoardState(strings.TrimSpace(raw)) {
 	case LocalBoardStateTodo:
@@ -189,6 +202,12 @@ func (t *LocalTracker) ClaimIssue(ctx context.Context, issueID string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return err
 	}
@@ -215,6 +234,12 @@ func (t *LocalTracker) ReleaseIssue(ctx context.Context, issueID string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return err
 	}
@@ -237,6 +262,12 @@ func (t *LocalTracker) UpdateIssueState(ctx context.Context, issueID string, sta
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return err
@@ -268,6 +299,12 @@ func (t *LocalTracker) PostComment(ctx context.Context, issueID string, body str
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return err
@@ -304,6 +341,12 @@ func (t *LocalTracker) CreateIssueWithOptions(ctx context.Context, opts LocalIss
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return LocalBoardIssue{}, err
+	}
+	defer release()
 
 	manifest, err := t.ensureBoardLocked()
 	if err != nil {
@@ -533,6 +576,12 @@ func (t *LocalTracker) UpdateIssue(
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return LocalBoardIssue{}, err
+	}
+	defer release()
+
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return LocalBoardIssue{}, err
 	}
@@ -561,6 +610,12 @@ func (t *LocalTracker) MoveIssue(ctx context.Context, issueID string, state Loca
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return LocalBoardIssue{}, err
+	}
+	defer release()
 
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return LocalBoardIssue{}, err
@@ -805,15 +860,36 @@ func writeJSONAtomic(path string, value interface{}) error {
 		return fmt.Errorf("encoding %s: %w", path, err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating parent directory for %s: %w", path, err)
 	}
 
-	tempPath := path + ".tmp"
-	if err := os.WriteFile(tempPath, append(data, '\n'), 0o644); err != nil {
+	// A unique temp name per writer: with a fixed "<path>.tmp" two concurrent
+	// writers (daemon + CLI) truncate each other's temp file and one renames
+	// a half-written or foreign payload into place.
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file for %s: %w", path, err)
+	}
+	tempPath := tmp.Name()
+
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tempPath)
 		return fmt.Errorf("writing temp file for %s: %w", path, err)
 	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("closing temp file for %s: %w", path, err)
+	}
+	// CreateTemp uses 0600; keep board files group/world-readable as before.
+	if err := os.Chmod(tempPath, 0o644); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("chmod temp file for %s: %w", path, err)
+	}
 	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
 		return fmt.Errorf("renaming temp file for %s: %w", path, err)
 	}
 
