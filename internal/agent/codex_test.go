@@ -959,7 +959,13 @@ func TestCodexHelperProcess(t *testing.T) {
 				return
 			case "sequence":
 				writeJSON(t, writer, map[string]interface{}{"method": "helper/sequence", "params": map[string]interface{}{"methods": methods}})
-				writeJSON(t, writer, map[string]interface{}{"method": "turn/completed", "params": map[string]interface{}{}})
+				// Keep the helper alive until the test exercises runner.Stop. If
+				// this exits immediately, the stream goroutine can unregister the
+				// process before Stop observes it.
+				sigCh := make(chan os.Signal, 1)
+				signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+				defer signal.Stop(sigCh)
+				<-sigCh
 				return
 			case "events":
 				writeJSON(t, writer, map[string]interface{}{"method": "item/commandExecution/requestApproval", "params": map[string]interface{}{"command": "ls"}})
