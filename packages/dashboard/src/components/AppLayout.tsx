@@ -47,7 +47,7 @@ interface QueueDef {
 }
 
 export function getLinearState(issue: Issue): string | undefined {
-  const meta = issue.tracker_meta as Record<string, unknown> | undefined;
+  const meta = issue.tracker_meta;
   if (!meta) return undefined;
   const v = meta["linear_state"];
   return typeof v === "string" ? v : undefined;
@@ -72,6 +72,14 @@ function backoffAsRunningRow(entry: BackoffEntry, issue?: Issue): RunningEntry {
     diff_status: "ok",
     phase_label: `attempt ${entry.attempt}`,
   };
+}
+
+// Snapshot issues arrive as a map whose traversal order is arbitrary
+// (lexicographic issue-ID order on the wire), so time-based queues must
+// sort explicitly before truncating.
+function issueUpdatedAtMs(issue: Issue): number {
+  const parsed = Date.parse(issue.updated_at ?? "");
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function issueAsTodoRow(issue: Issue): RunningEntry {
@@ -182,7 +190,10 @@ export function AppLayout({
       recent_done: {
         id: "recent_done",
         title: "最近完成",
-        rows: done.slice(0, 50).map(issueAsTodoRow),
+        rows: [...done]
+          .sort((a, b) => issueUpdatedAtMs(b) - issueUpdatedAtMs(a))
+          .slice(0, 50)
+          .map(issueAsTodoRow),
         emptyText: "暂无近期完成任务",
       },
       canceled: {
