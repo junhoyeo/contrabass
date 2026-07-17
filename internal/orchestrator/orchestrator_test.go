@@ -1195,10 +1195,17 @@ func TestOrchestrator_ReconcileAssignsTimedOut(t *testing.T) {
 	orch.mu.Unlock()
 
 	orch.reconcileRunning(context.Background(), cfg)
-	// reconcileRunning calls stopRun which removes the entry from the map,
-	// but the entry pointer was mutated in-place before removal.
+	// reconcileRunning interrupts the run but must leave the entry in
+	// o.running so the watcher's done signal can drive completeRun (claim
+	// release, workspace cleanup, retry backoff) instead of being dropped by
+	// completeRun's not-found guard.
 	assert.Equal(t, types.TimedOut, entry.attempt.Phase)
 	assert.Equal(t, "run timed out", entry.attempt.Error)
+
+	orch.mu.Lock()
+	_, present := orch.running["ISS-TIMEOUT-1"]
+	orch.mu.Unlock()
+	assert.True(t, present, "timed-out entry must stay managed until its done signal completes the run")
 }
 
 // --- Error Path Tests (T30) ---
@@ -2307,4 +2314,292 @@ func TestSuccessGate_HollowRunReroutesToBackoff(t *testing.T) {
 			require.NoError(t, <-done)
 		})
 	}
+}
+
+// TestStalledRunCompletesWithReleaseAndBackoff is the regression test for the
+// silent stall drop: detectStalledRuns used to call stopRun, which deleted the
+// entry from o.running before the watcher's done signal was drained, so
+// completeRun's not-found guard skipped claim release, workspace cleanup, the
+// failure record, and retry backoff — the issue then hot-looped at attempt 1.
+// The stall must now flow through the same completion path as any failed run.
+func TestStalledRunCompletesWithReleaseAndBackoff(t *testing.T) {
+	issueID := "ISS-STALL"
+	mt := newObservingTracker([]types.Issue{{ID: issueID, Title: "Stall", State: types.Unclaimed}})
+	mw := workspace.NewMockManager(t.TempDir())
+	// One event, then a long silent delay — the run stalls with the process
+	// still alive until the orchestrator interrupts it.
+	mr := &agent.MockRunner{
+		Events: []types.AgentEvent{{Type: "turn/started"}},
+		Delay:  10 * time.Second,
+	}
+
+	workflowCfg := testConfig()
+	workflowCfg.StallTimeoutMsRaw = 50
+	workflowCfg.MaxRetryBackoffMsRaw = 5_000
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: workflowCfg}, nil)
+	events := newEventCollector(orch.Events())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	require.Eventually(t, func() bool {
+		phase, ok := events.FinishedPhase(issueID)
+		if !ok || phase != types.Stalled {
+			return false
+		}
+		entries := backoffSnapshot(orch)
+		if len(entries) != 1 || entries[0].IssueID != issueID || entries[0].Attempt != 2 {
+			return false
+		}
+		state, ok := mt.State(issueID)
+		return ok && state == types.RetryQueued &&
+			mt.ReleaseCount(issueID) > 0 &&
+			!mw.Exists(issueID)
+	}, 2*time.Second, 10*time.Millisecond,
+		"stalled run must release the claim, clean the workspace, and enqueue backoff at attempt 2")
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+// --- stopRun grace-timeout unit tests ---
+
+func TestStopRun_GraceTimeoutRetainsEntry(t *testing.T) {
+	mt := newObservingTracker(nil)
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	cfg := testConfig()
+	cfg.Orchestrator.StopGraceTimeoutMs = 30
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: cfg}, nil)
+
+	// Process whose done channel never fires and whose PID the runner does
+	// not know — Stop is a no-op, simulating a kill-resistant process.
+	entry := &runEntry{
+		issue:   types.Issue{ID: "ISS-ALIVE", State: types.Running},
+		attempt: types.RunAttempt{IssueID: "ISS-ALIVE", Phase: types.StreamingTurn, Attempt: 1},
+		process: &agent.AgentProcess{PID: 4242, SessionID: "alive", Done: make(chan error)},
+		cancel:  func() {},
+	}
+	orch.mu.Lock()
+	orch.running["ISS-ALIVE"] = entry
+	orch.stats.Running = 1
+	orch.mu.Unlock()
+
+	stopped := orch.stopRun(context.Background(), "ISS-ALIVE")
+
+	assert.False(t, stopped, "unconfirmed termination must be reported to the caller")
+	orch.mu.Lock()
+	_, present := orch.running["ISS-ALIVE"]
+	orch.mu.Unlock()
+	assert.True(t, present,
+		"entry must be retained while the process may still be alive, so the issue cannot be re-dispatched")
+}
+
+func TestStopAgent_GraceTimeoutKeepsClaim(t *testing.T) {
+	target := types.Issue{ID: "ISS-A", Identifier: "ISS-A", State: types.Running}
+	mt := newObservingTracker([]types.Issue{target})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	cfg := testConfig()
+	cfg.Orchestrator.StopGraceTimeoutMs = 30
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: cfg}, nil)
+
+	orch.mu.Lock()
+	orch.running["ISS-A"] = &runEntry{
+		issue:   target,
+		attempt: types.RunAttempt{IssueID: "ISS-A", Phase: types.StreamingTurn, Attempt: 1},
+		process: &agent.AgentProcess{PID: 4243, SessionID: "alive", Done: make(chan error)},
+		cancel:  func() {},
+	}
+	orch.stats.Running = 1
+	orch.mu.Unlock()
+
+	err := orch.StopAgent(context.Background(), "ISS-A")
+
+	require.Error(t, err, "StopAgent must not report success while the process may still be alive")
+	assert.Zero(t, mt.ReleaseCount("ISS-A"), "claim must be kept until termination is confirmed")
+	assert.Zero(t, mt.UpdateIssueStateCount("ISS-A", types.Released))
+	orch.mu.Lock()
+	_, present := orch.running["ISS-A"]
+	orch.mu.Unlock()
+	assert.True(t, present)
+}
+
+// --- dispatchReadyBackoff blocker gating ---
+
+func TestDispatchReadyBackoff_GatesOnBlockedBy(t *testing.T) {
+	// The blocker was created while ISS-X sat in backoff. The retry must obey
+	// the same BlockedBy gate as fresh dispatch and keep its attempt count.
+	retryIssue := types.Issue{
+		ID: "ISS-X", Identifier: "ZII-50", Title: "Retry", State: types.RetryQueued,
+		BlockedBy: []string{"ZII-49"},
+	}
+	blocker := types.Issue{ID: "ISS-B", Identifier: "ZII-49", Title: "Blocker", State: types.Running}
+	mt := newObservingTracker([]types.Issue{retryIssue, blocker})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{
+		Events: []types.AgentEvent{},
+		Delay:  10 * time.Second,
+	}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+	go func() {
+		for range orch.Events() {
+		}
+	}()
+
+	orch.mu.Lock()
+	orch.backoff = []types.BackoffEntry{{
+		IssueID: "ISS-X",
+		Attempt: 3,
+		RetryAt: time.Now().Add(-time.Second), // already ready
+	}}
+	orch.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	// Allow several poll cycles (poll interval is 10ms in testConfig), then
+	// stop the loop so the backoff slice is not observed mid-drain.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+
+	require.Equal(t, 0, mt.ClaimCount("ISS-X"),
+		"ready backoff entry must not dispatch while its blocker is in the candidate set")
+
+	entries := backoffSnapshot(orch)
+	require.Len(t, entries, 1, "blocked retry must be requeued, not consumed")
+	assert.Equal(t, "ISS-X", entries[0].IssueID)
+	assert.Equal(t, 3, entries[0].Attempt, "requeue must preserve the attempt counter")
+}
+
+// --- BlockedBy cycle detection ---
+
+func TestDetectBlockedByCycles(t *testing.T) {
+	cases := []struct {
+		name   string
+		issues []types.Issue
+		want   [][]string
+	}{
+		{
+			name: "no cycle in a linear chain",
+			issues: []types.Issue{
+				{ID: "1", Identifier: "A", BlockedBy: []string{"B"}},
+				{ID: "2", Identifier: "B"},
+			},
+			want: [][]string{},
+		},
+		{
+			name: "blocker outside the open set is ignored",
+			issues: []types.Issue{
+				{ID: "1", Identifier: "A", BlockedBy: []string{"GONE"}},
+			},
+			want: [][]string{},
+		},
+		{
+			name: "self reference",
+			issues: []types.Issue{
+				{ID: "1", Identifier: "A", BlockedBy: []string{"A"}},
+			},
+			want: [][]string{{"A"}},
+		},
+		{
+			name: "mutual blockers",
+			issues: []types.Issue{
+				{ID: "1", Identifier: "A", BlockedBy: []string{"B"}},
+				{ID: "2", Identifier: "B", BlockedBy: []string{"A"}},
+			},
+			want: [][]string{{"A", "B"}},
+		},
+		{
+			name: "cycle reached through a chain",
+			issues: []types.Issue{
+				{ID: "1", Identifier: "A", BlockedBy: []string{"B"}},
+				{ID: "2", Identifier: "B", BlockedBy: []string{"C"}},
+				{ID: "3", Identifier: "C", BlockedBy: []string{"B"}},
+			},
+			want: [][]string{{"B", "C"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectBlockedByCycles(tc.issues, buildOpenIDSet(tc.issues))
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestBlockedByCycle_SkippedAndWarnedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.NewWithOptions(&buf, log.Options{Level: log.WarnLevel})
+
+	mt := newObservingTracker([]types.Issue{
+		{ID: "ISS-A", Identifier: "ZII-A", Title: "A", State: types.Unclaimed, BlockedBy: []string{"ZII-B"}},
+		{ID: "ISS-B", Identifier: "ZII-B", Title: "B", State: types.Unclaimed, BlockedBy: []string{"ZII-A"}},
+	})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, logger)
+	go func() {
+		for range orch.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	// Allow several poll cycles so the once-per-cycle dedup is exercised.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+
+	assert.Equal(t, 0, mt.ClaimCount("ISS-A"), "cycle members must stay undispatched")
+	assert.Equal(t, 0, mt.ClaimCount("ISS-B"), "cycle members must stay undispatched")
+	assert.Equal(t, 1, strings.Count(buf.String(), "blocked_by_cycle_detected"),
+		"each unique cycle must be warned exactly once, not once per tick")
+	assert.Contains(t, buf.String(), "ZII-A,ZII-B")
+}
+
+// --- paused map cleanup ---
+
+func TestPausedIssueRequeuedByOperatorRedispatches(t *testing.T) {
+	issue := types.Issue{ID: "ISS-P", Identifier: "ISS-P", Title: "Paused", State: types.Unclaimed}
+	mt := newObservingTracker([]types.Issue{issue})
+	mw := workspace.NewMockManager(t.TempDir())
+	mr := &agent.MockRunner{
+		Events: []types.AgentEvent{{Type: "turn/completed"}},
+		Delay:  10 * time.Millisecond,
+	}
+	orch := NewOrchestrator(mt, mw, mr, &staticConfig{cfg: testConfig()}, nil)
+	go func() {
+		for range orch.Events() {
+		}
+	}()
+
+	// Simulate a prior pauseUnverifiedSuccess hold; the tracker snapshot
+	// already shows the issue back in Unclaimed (operator re-queued it).
+	orch.mu.Lock()
+	orch.paused["ISS-P"] = "success_unverified_branch_unchanged"
+	orch.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := startOrchestrator(ctx, orch)
+
+	require.Eventually(t, func() bool {
+		return mt.ClaimCount("ISS-P") > 0
+	}, 2*time.Second, 10*time.Millisecond,
+		"operator-requeued issue must be dispatched again once the pause is cleared")
+
+	orch.mu.Lock()
+	_, stillPaused := orch.paused["ISS-P"]
+	orch.mu.Unlock()
+	assert.False(t, stillPaused, "paused entry must be removed when the tracker shows Unclaimed")
+
+	cancel()
+	require.NoError(t, <-done)
 }

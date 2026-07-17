@@ -3,7 +3,9 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -87,6 +89,11 @@ type Orchestrator struct {
 	// most once per orchestrator lifetime.
 	recoveredSet map[string]struct{}
 
+	// warnedCycles tracks BlockedBy cycle signatures already warned about,
+	// so each unique cycle is surfaced at most once per orchestrator
+	// lifetime instead of once per poll tick.
+	warnedCycles map[string]struct{}
+
 	buildInfo BuildInfo
 }
 
@@ -133,6 +140,7 @@ func NewOrchestrator(
 		issueCacheSize:      policy.issueCacheSize,
 		runSignalBufferSize: policy.runSignalBufferSize,
 		recoveredSet:        make(map[string]struct{}),
+		warnedCycles:        make(map[string]struct{}),
 		stats: Stats{
 			MaxAgents: cfg.MaxConcurrency(),
 			StartTime: time.Now(),
@@ -222,7 +230,9 @@ func (o *Orchestrator) runCycle(ctx context.Context, supervisor *errgroup.Group,
 
 	openIDs := buildOpenIDSet(issues)
 
-	o.dispatchReadyBackoff(ctx, supervisorCtxOr(ctx), cfg, issuesByID, supervisor, runSignals)
+	o.clearRequeuedPaused(issues)
+	o.warnBlockedByCycles(issues, openIDs)
+	o.dispatchReadyBackoff(ctx, supervisorCtxOr(ctx), cfg, issuesByID, openIDs, supervisor, runSignals)
 	recoveredAttempts := o.recoverOrphanedClaims(issues)
 	o.dispatchUnclaimedIssues(ctx, supervisorCtxOr(ctx), cfg, issues, openIDs, recoveredAttempts, supervisor, runSignals)
 	o.releaseBlockedRunning(ctx, issuesByID, openIDs)
@@ -254,6 +264,7 @@ func (o *Orchestrator) dispatchReadyBackoff(
 	watchCtx context.Context,
 	cfg *config.WorkflowConfig,
 	issuesByID map[string]types.Issue,
+	openIDs map[string]struct{},
 	supervisor *errgroup.Group,
 	runSignals chan<- runSignal,
 ) {
@@ -290,6 +301,17 @@ func (o *Orchestrator) dispatchReadyBackoff(
 		}
 		if !ok {
 			o.enqueueContinuation(backoffEntry.IssueID, backoffEntry.Attempt, "issue details unavailable")
+			continue
+		}
+
+		// Retries obey the same BlockedBy gate as fresh dispatch; the entry
+		// is requeued with its attempt preserved so retry accounting is not
+		// reset by a blocker that appeared while the issue sat in backoff.
+		if unresolved := unresolvedBlockers(issue.BlockedBy, openIDs); len(unresolved) > 0 {
+			logging.LogIssueEvent(o.logger, issue.ID,
+				"retry_skipped_blocked_by",
+				"blockers", strings.Join(unresolved, ","))
+			o.requeueBackoff(backoffEntry)
 			continue
 		}
 
@@ -414,7 +436,12 @@ func (o *Orchestrator) releaseBlockedRunning(
 			"running_released_blocked_by",
 			"blockers", strings.Join(unresolved, ","))
 
-		o.stopRun(ctx, id)
+		if !o.stopRun(ctx, id) {
+			// Termination unconfirmed: keep the claim so the issue cannot be
+			// re-dispatched onto a workspace the old process may still write.
+			// The blocker is still unresolved next tick, so stop is retried.
+			continue
+		}
 
 		if err := o.tracker.UpdateIssueState(ctx, id, types.Unclaimed); err != nil {
 			logging.LogIssueEvent(o.logger, id,
@@ -443,7 +470,11 @@ func (o *Orchestrator) StopAgent(ctx context.Context, issueID string) error {
 
 	logging.LogIssueEvent(o.logger, issueID, "stop_agent_requested")
 
-	o.stopRun(ctx, issueID)
+	if !o.stopRun(ctx, issueID) {
+		// Keep the claim: releasing it while the process may still be alive
+		// would let the next tick start a second agent in the same workspace.
+		return fmt.Errorf("agent for %s did not exit within the stop grace window; claim retained", issueID)
+	}
 
 	if err := o.tracker.UpdateIssueState(ctx, issueID, types.Released); err != nil {
 		logging.LogIssueEvent(o.logger, issueID, "stop_agent_state_release_failed", "err", err)
@@ -471,6 +502,96 @@ func unresolvedBlockers(blockedBy []string, openIDs map[string]struct{}) []strin
 		}
 	}
 	return unresolved
+}
+
+// detectBlockedByCycles returns the identifier cycles (including
+// self-references) in the BlockedBy graph of the fetched snapshot. Only edges
+// into the open candidate set matter — those are the ones the dispatch gate
+// tests — and each cycle's members are sorted for a stable signature.
+func detectBlockedByCycles(issues []types.Issue, openIDs map[string]struct{}) [][]string {
+	adjacency := make(map[string][]string, len(issues))
+	for _, issue := range issues {
+		if issue.Identifier == "" {
+			continue
+		}
+		for _, blocker := range issue.BlockedBy {
+			if _, open := openIDs[blocker]; open {
+				adjacency[issue.Identifier] = append(adjacency[issue.Identifier], blocker)
+			}
+		}
+	}
+
+	nodes := make([]string, 0, len(adjacency))
+	for node := range adjacency {
+		nodes = append(nodes, node)
+	}
+	sort.Strings(nodes)
+
+	const (
+		unvisited = 0
+		inStack   = 1
+		finished  = 2
+	)
+	state := make(map[string]int, len(adjacency))
+	stack := make([]string, 0, len(adjacency))
+	cycles := make([][]string, 0)
+
+	var visit func(node string)
+	visit = func(node string) {
+		state[node] = inStack
+		stack = append(stack, node)
+		for _, next := range adjacency[node] {
+			switch state[next] {
+			case unvisited:
+				visit(next)
+			case inStack:
+				// Back edge: the cycle is the stack suffix starting at next.
+				start := len(stack) - 1
+				for start > 0 && stack[start] != next {
+					start--
+				}
+				cycle := append([]string(nil), stack[start:]...)
+				sort.Strings(cycle)
+				cycles = append(cycles, cycle)
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[node] = finished
+	}
+
+	for _, node := range nodes {
+		if state[node] == unvisited {
+			visit(node)
+		}
+	}
+	return cycles
+}
+
+// warnBlockedByCycles surfaces circular (or self-referencing) BlockedBy
+// dependencies, whose members the dispatch gate would otherwise skip silently
+// forever. Cycle members are deliberately NOT force-dispatched: running work
+// whose declared prerequisites are unsatisfiable risks executing it in the
+// wrong order, so the safer semantic is to keep skipping them and alert a
+// human to fix the dependency data. Each unique cycle is warned once per
+// orchestrator lifetime (tracked via warnedCycles).
+func (o *Orchestrator) warnBlockedByCycles(issues []types.Issue, openIDs map[string]struct{}) {
+	for _, cycle := range detectBlockedByCycles(issues, openIDs) {
+		signature := strings.Join(cycle, ",")
+
+		o.mu.Lock()
+		_, seen := o.warnedCycles[signature]
+		if !seen {
+			o.warnedCycles[signature] = struct{}{}
+		}
+		o.mu.Unlock()
+		if seen {
+			continue
+		}
+
+		o.logger.Warn("blocked_by_cycle_detected",
+			"members", signature,
+			"action", "members stay undispatched until the cycle is broken in the tracker")
+	}
 }
 
 func (o *Orchestrator) dispatchIssue(

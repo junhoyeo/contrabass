@@ -405,6 +405,30 @@ func (o *Orchestrator) pauseUnverifiedSuccess(
 		"status", attempt.Phase.String(), "err", cause)
 }
 
+// clearRequeuedPaused unpauses issues the operator has moved back to an
+// Unclaimed tracker state after a pauseUnverifiedSuccess hold. Without this
+// the paused entry keeps isManagedIssue true forever, so an operator-requeued
+// issue could never be dispatched again until process restart.
+func (o *Orchestrator) clearRequeuedPaused(issues []types.Issue) {
+	for _, issue := range issues {
+		if issue.State != types.Unclaimed {
+			continue
+		}
+
+		o.mu.Lock()
+		_, paused := o.paused[issue.ID]
+		if paused {
+			delete(o.paused, issue.ID)
+		}
+		o.mu.Unlock()
+
+		if paused {
+			logging.LogIssueEvent(o.logger, issue.ID, "paused_cleared_requeued",
+				"identifier", issue.Identifier)
+		}
+	}
+}
+
 func (o *Orchestrator) enqueueContinuation(issueID string, attempt int, message string) {
 	delayMs := o.backoffDelayMs(issueID, 0)
 	retryAt := time.Now().Add(time.Duration(delayMs) * time.Millisecond)
@@ -468,12 +492,24 @@ func (o *Orchestrator) reconcileRunning(ctx context.Context, cfg *config.Workflo
 	now := time.Now()
 	orphaned := make([]string, 0)
 	forceRemoved := make([]string, 0)
+	broken := make([]string, 0)
 
 	o.mu.Lock()
 	for issueID, entry := range o.running {
-		if entry == nil || entry.process == nil || entry.process.Done == nil {
+		if entry == nil {
+			// Placeholder with no run state — nothing to complete.
 			delete(o.running, issueID)
 			forceRemoved = append(forceRemoved, issueID)
+			continue
+		}
+		if entry.process == nil || entry.process.Done == nil {
+			// No watcher exists to deliver a done signal, so completeRun must
+			// be invoked directly (below, after the lock is released) to
+			// release the claim and record the failure.
+			if entry.cancel == nil {
+				entry.cancel = func() {}
+			}
+			broken = append(broken, issueID)
 			continue
 		}
 		if now.Sub(entry.attempt.StartTime) > timeout && isActiveRunPhase(entry.attempt.Phase) {
@@ -492,12 +528,22 @@ func (o *Orchestrator) reconcileRunning(ctx context.Context, cfg *config.Workflo
 			o.logger,
 			"run_force_removed",
 			"issue_id", issueID,
-			"reason", "missing_process_or_done",
+			"reason", "nil_entry",
 		)
 	}
 
+	for _, issueID := range broken {
+		logging.LogOrchestratorEvent(
+			o.logger,
+			"run_force_removed",
+			"issue_id", issueID,
+			"reason", "missing_process_or_done",
+		)
+		o.completeRun(ctx, issueID, errors.New("agent process handle missing done channel"))
+	}
+
 	for _, issueID := range orphaned {
-		o.stopRun(ctx, issueID)
+		o.interruptRun(issueID)
 	}
 }
 
@@ -520,16 +566,44 @@ func (o *Orchestrator) detectStalledRuns(ctx context.Context, cfg *config.Workfl
 	o.mu.Unlock()
 
 	for _, issueID := range stalled {
-		o.stopRun(ctx, issueID)
+		o.interruptRun(issueID)
 	}
 }
 
-func (o *Orchestrator) stopRun(_ context.Context, issueID string) {
+// interruptRun signals the agent process for issueID to terminate but leaves
+// the entry in o.running: the watcher's done signal then drives completeRun
+// on the run loop, which owns claim release, workspace cleanup, the failure
+// record, and retry backoff. Used by the stall/timeout paths, where removing
+// the entry here would make completeRun's not-found guard drop all of that.
+func (o *Orchestrator) interruptRun(issueID string) {
 	o.mu.Lock()
 	entry, ok := o.running[issueID]
 	o.mu.Unlock()
 	if !ok || entry == nil {
 		return
+	}
+
+	entry.cancel()
+	if err := o.agent.Stop(entry.process); err != nil {
+		logging.LogAgentEvent(o.logger, issueID, "stop_failed", "err", err)
+	}
+
+	logging.LogOrchestratorEvent(o.logger, "run_interrupted", "issue_id", issueID)
+}
+
+// stopRun tears down the run for issueID without a completion record — used
+// by explicit stops (operator request, blocker re-validation) where the
+// eventual done signal is intentionally discarded. The entry is removed from
+// o.running only once the process's done signal fires: removing it while the
+// process may still be alive would let the next tick dispatch a second agent
+// into the same workspace. Returns false when termination is unconfirmed;
+// callers must keep the tracker claim and retry on a later tick.
+func (o *Orchestrator) stopRun(_ context.Context, issueID string) bool {
+	o.mu.Lock()
+	entry, ok := o.running[issueID]
+	o.mu.Unlock()
+	if !ok || entry == nil {
+		return true
 	}
 
 	entry.cancel()
@@ -552,6 +626,7 @@ func (o *Orchestrator) stopRun(_ context.Context, issueID string) {
 				"issue_id", issueID,
 				"grace_timeout", graceTimeout.String(),
 			)
+			return false
 		}
 		if !graceTimer.Stop() {
 			select {
@@ -570,6 +645,7 @@ func (o *Orchestrator) stopRun(_ context.Context, issueID string) {
 	o.mu.Unlock()
 
 	logging.LogOrchestratorEvent(o.logger, "run_stopped", "issue_id", issueID, "cleaned_up", true)
+	return true
 }
 
 func (o *Orchestrator) releaseIssue(ctx context.Context, issueID string, from types.IssueState, attempt int) {
