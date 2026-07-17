@@ -23,6 +23,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A closed hub never emits again; fail the request so EventSource clients
+	// surface the outage instead of reconnecting into a silent stream.
+	if s.hub.Closed() {
+		writeJSONError(w, http.StatusServiceUnavailable, "event stream is no longer available")
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")

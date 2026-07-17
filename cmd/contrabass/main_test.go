@@ -21,6 +21,7 @@ import (
 	"github.com/junhoyeo/contrabass/internal/config"
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
 	"github.com/junhoyeo/contrabass/internal/types"
+	"github.com/junhoyeo/contrabass/internal/web"
 )
 
 func TestRootCommandHelp(t *testing.T) {
@@ -583,4 +584,36 @@ func TestRunTUI_TUIErrorOrchestratorSuccess(t *testing.T) {
 	err := runTUI(context.Background(), orch, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, tuiErr)
+}
+
+// Regression: the forwarder used to close webEvents after the orchestrator's
+// event channel drained. HTTP handlers publish into the same channel via
+// Server.SetEventSink, so an in-flight board request during the server's
+// graceful-shutdown window would panic with send on closed channel.
+func TestForwardOrchestratorEventsLeavesSinkOpen(t *testing.T) {
+	orchEvents := make(chan orchestrator.OrchestratorEvent, 1)
+	webEvents := make(chan web.WebEvent, 2)
+
+	orchEvents <- orchestrator.OrchestratorEvent{Type: orchestrator.EventStatusUpdate}
+	close(orchEvents)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		forwardOrchestratorEvents(orchEvents, webEvents)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("forwarder did not return after source channel closed")
+	}
+
+	forwarded := <-webEvents
+	assert.Equal(t, orchestrator.EventStatusUpdate.String(), forwarded.Type)
+
+	// A handler publish after the orchestrator is gone must not panic: the
+	// sink stays open and the hub tears down via ctx instead.
+	webEvents <- web.WebEvent{Type: "board"}
+	assert.Len(t, webEvents, 1)
 }

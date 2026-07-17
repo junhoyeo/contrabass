@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
+	"github.com/junhoyeo/contrabass/internal/tracker"
 	"github.com/junhoyeo/contrabass/internal/types"
 )
 
@@ -109,7 +110,7 @@ func TestServerRoutes(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.target, nil)
+			req := newLocalWebRequest(tt.method, tt.target, nil)
 			if tt.target == "/api/v1/stream" {
 				req = newLocalWebRequest(tt.method, tt.target, strings.NewReader(`{"jsonrpc":"2.0","id":"ping-1","method":"dashboard.ping"}`))
 				req.Header.Set("Accept", "application/json, text/event-stream")
@@ -120,11 +121,8 @@ func TestServerRoutes(t *testing.T) {
 			h.ServeHTTP(rec, req)
 
 			assert.Equal(t, tt.status, rec.Code)
-			if tt.target == "/api/v1/stream" {
-				assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
-			} else {
-				assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
-			}
+			// No Origin header on the request means no CORS grant is echoed.
+			assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
 
 			if tt.status != http.StatusAccepted {
 				assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
@@ -159,15 +157,159 @@ func TestServerCORSPreflight(t *testing.T) {
 	s := &Server{snapshotProvider: provider, dashboardFS: nil}
 	h := s.newMux()
 
-	req := httptest.NewRequest(http.MethodOptions, "/api/v1/refresh", nil)
+	req := newLocalWebRequest(http.MethodOptions, "/api/v1/refresh", nil)
+	req.Header.Set("Origin", "http://localhost:8080")
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
+	// The validated origin is echoed back; the wildcard grant is gone.
+	assert.Equal(t, "http://localhost:8080", rec.Header().Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "Origin", rec.Header().Get("Vary"))
 	assert.Equal(t, "GET, POST, PATCH, OPTIONS", rec.Header().Get("Access-Control-Allow-Methods"))
 	assert.Equal(t, "Accept, Authorization, Content-Type, Mcp-Protocol-Version", rec.Header().Get("Access-Control-Allow-Headers"))
+}
+
+func TestWithCORSOriginPolicy(t *testing.T) {
+	tests := []struct {
+		name                string
+		method              string
+		target              string
+		host                string
+		origin              string
+		extraAllowedOrigins []string
+		wantStatus          int
+		wantAllowOrigin     string
+	}{
+		{
+			name:       "no_origin_curl_style_request_allowed",
+			method:     http.MethodGet,
+			target:     "/api/v1/state",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:            "same_origin_mutation_allowed",
+			method:          http.MethodPost,
+			target:          "/api/v1/refresh",
+			origin:          "http://localhost:8080",
+			wantStatus:      http.StatusAccepted,
+			wantAllowOrigin: "http://localhost:8080",
+		},
+		{
+			name:            "loopback_origin_on_other_port_allowed",
+			method:          http.MethodGet,
+			target:          "/api/v1/state",
+			origin:          "http://127.0.0.1:5173",
+			wantStatus:      http.StatusOK,
+			wantAllowOrigin: "http://127.0.0.1:5173",
+		},
+		{
+			name:       "cross_origin_mutation_rejected",
+			method:     http.MethodPost,
+			target:     "/api/v1/refresh",
+			origin:     "https://evil.example",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "cross_origin_sse_rejected",
+			method:     http.MethodGet,
+			target:     "/api/v1/events",
+			origin:     "https://evil.example",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "cross_origin_state_read_rejected",
+			method:     http.MethodGet,
+			target:     "/api/v1/state",
+			origin:     "https://evil.example",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "foreign_host_without_origin_rejected_dns_rebinding",
+			method:     http.MethodGet,
+			target:     "/api/v1/state",
+			host:       "evil.example:8080",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:                "allowlisted_origin_allowed",
+			method:              http.MethodPost,
+			target:              "/api/v1/refresh",
+			origin:              "https://dash.example.com",
+			extraAllowedOrigins: []string{"https://dash.example.com"},
+			wantStatus:          http.StatusAccepted,
+			wantAllowOrigin:     "https://dash.example.com",
+		},
+		{
+			name:                "allowlisted_host_trusted_without_origin",
+			method:              http.MethodGet,
+			target:              "/api/v1/state",
+			host:                "dash.example.com:8080",
+			extraAllowedOrigins: []string{"https://dash.example.com"},
+			wantStatus:          http.StatusOK,
+		},
+		{
+			name:                "wildcard_escape_hatch_restores_allow_all",
+			method:              http.MethodPost,
+			target:              "/api/v1/refresh",
+			host:                "anything.example:8080",
+			origin:              "https://evil.example",
+			extraAllowedOrigins: []string{"*"},
+			wantStatus:          http.StatusAccepted,
+			wantAllowOrigin:     "https://evil.example",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			provider := fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{Issues: map[string]types.Issue{}}}
+			s := &Server{snapshotProvider: provider, dashboardFS: nil, extraAllowedOrigins: tt.extraAllowedOrigins}
+			h := s.newMux()
+
+			req := newLocalWebRequest(tt.method, tt.target, nil)
+			if tt.host != "" {
+				req.Host = tt.host
+			}
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			rec := httptest.NewRecorder()
+
+			h.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			assert.Equal(t, tt.wantAllowOrigin, rec.Header().Get("Access-Control-Allow-Origin"))
+			if tt.wantStatus == http.StatusForbidden {
+				assert.Equal(t, "origin not allowed", readErrorMessage(t, rec))
+			}
+		})
+	}
+}
+
+func TestWithCORSCrossOriginBoardMutationRejected(t *testing.T) {
+	bp := &fakeBoardProvider{issues: map[string]tracker.LocalBoardIssue{}}
+	s := &Server{snapshotProvider: fakeSnapshotProvider{}, boardProvider: bp}
+	h := s.newMux()
+
+	req := newLocalWebRequest(http.MethodPost, "/api/v1/board/issues", strings.NewReader(`{"title":"pwn"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Empty(t, bp.issues, "cross-origin request must not reach the board provider")
+}
+
+func TestNewServerReadsAllowedOriginsFromEnv(t *testing.T) {
+	t.Setenv(allowedOriginsEnv, " https://dash.example.com/ , https://other.example ,, ")
+
+	s := NewServer("", fakeSnapshotProvider{}, nil, nil)
+
+	assert.Equal(t, []string{"https://dash.example.com", "https://other.example"}, s.extraAllowedOrigins)
 }
 
 func TestNormalizeListenAddr(t *testing.T) {
@@ -309,7 +451,7 @@ func TestHandleStopAgent(t *testing.T) {
 			h := s.newMux()
 
 			target := fmt.Sprintf("/api/v1/running/%s/stop", tt.issueID)
-			req := httptest.NewRequest(http.MethodPost, target, nil)
+			req := newLocalWebRequest(http.MethodPost, target, nil)
 			rec := httptest.NewRecorder()
 
 			h.ServeHTTP(rec, req)
@@ -332,13 +474,28 @@ func TestHandleStopAgent_RejectsBlankIssueID(t *testing.T) {
 
 	// PathValue extracts the issue_id; an explicit blank segment 404s at the
 	// router. Use a whitespace-only segment to drive the BadRequest branch.
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/running/%20/stop", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/v1/running/%20/stop", nil)
 	rec := httptest.NewRecorder()
 
 	h.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Empty(t, stopper.calls, "blank issue_id must not invoke the stopper")
+}
+
+func TestServeSetsReadHeaderTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	provider := fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{Issues: map[string]types.Issue{}}}
+	server := &Server{snapshotProvider: provider, dashboardFS: nil}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.NoError(t, server.Serve(ctx, listener))
+
+	assert.Equal(t, readHeaderTimeout, server.httpServer.ReadHeaderTimeout)
 }
 
 func TestStartReturnsErrorWhenPortAlreadyInUse(t *testing.T) {
