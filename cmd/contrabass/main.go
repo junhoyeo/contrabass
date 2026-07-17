@@ -314,12 +314,7 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 		h = hub.NewHub(webEvents)
 		go h.Run(ctx)
 
-		go func() {
-			for orchEvent := range orch.Events() {
-				webEvents <- web.NewOrchestratorWebEvent(orchEvent)
-			}
-			close(webEvents)
-		}()
+		go forwardOrchestratorEvents(orch.Events(), webEvents)
 
 		var dashboardFS fs.FS
 		if _, statErr := fs.Stat(contrabass.DashboardDistFS, "packages/dashboard/dist"); statErr == nil {
@@ -359,6 +354,18 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 		return runHeadless(ctx, orch, logger, h)
 	}
 	return runTUI(ctx, orch, h)
+}
+
+// forwardOrchestratorEvents copies orchestrator events into the hub source
+// channel. It must NOT close webEvents: HTTP handlers publish board mutations
+// into the same channel (Server.SetEventSink), and in-flight requests can
+// outlive the orchestrator during the server's graceful shutdown window —
+// closing here would make publishEvent panic with send on closed channel.
+// The hub shuts down via ctx instead.
+func forwardOrchestratorEvents(orchEvents <-chan orchestrator.OrchestratorEvent, webEvents chan<- web.WebEvent) {
+	for orchEvent := range orchEvents {
+		webEvents <- web.NewOrchestratorWebEvent(orchEvent)
+	}
 }
 
 // runDryRun starts the orchestrator and exits after the first emitted event.
