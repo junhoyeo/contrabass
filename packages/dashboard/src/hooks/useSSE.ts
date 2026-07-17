@@ -77,6 +77,9 @@ interface StreamableHTTPMessage {
 }
 
 export interface QueueEventPayload {
+  // Monotonic id: consumers must track position by seq, not array index,
+  // because the queueEvents ring buffer trims entries from the front.
+  seq: number
   issue_id: string
   identifier: string
   blockers: string
@@ -573,6 +576,10 @@ function applyAgentLogEvent(state: SSEState, webEvt: WebEvent): SSEState {
   return appendAgentLog(state, logEvent)
 }
 
+// Module-level so seq survives reducer re-runs; gaps (e.g. from StrictMode
+// double-invocation) are fine — only monotonicity matters.
+let nextQueueEventSeq = 0
+
 function applyQueueEvent(state: SSEState, webEvt: WebEvent): SSEState {
   const payload = asRecord(webEvt.payload)
   const issueID = typeof payload.issue_id === 'string' ? payload.issue_id : ''
@@ -581,6 +588,7 @@ function applyQueueEvent(state: SSEState, webEvt: WebEvent): SSEState {
   }
 
   const entry: QueueEventPayload = {
+    seq: nextQueueEventSeq++,
     issue_id: issueID,
     identifier: typeof payload.identifier === 'string' ? payload.identifier : issueID,
     blockers: typeof payload.blockers === 'string' ? payload.blockers : '',
@@ -851,6 +859,11 @@ export function useSSE() {
         return
       }
 
+      // Only a parsed message proves the stream is healthy; resetting on the
+      // HTTP 200 alone would defeat exponential backoff against a server that
+      // accepts the request and then immediately drops the body.
+      reconnectAttemptRef.current = 0
+
       switch (message.method) {
         case 'dashboard.snapshot':
           {
@@ -895,7 +908,9 @@ export function useSSE() {
         }
 
         dispatch({ type: 'connected' })
-        reconnectAttemptRef.current = 0
+        // Board events published while disconnected are lost (the hub has no
+        // replay buffer), so re-sync the board on every successful (re)connect.
+        void refreshBoardIssues(controller.signal)
         await readStreamableHTTPResponse(response, handleMessage)
         dispatch({ type: 'disconnected' })
         scheduleReconnect(controller)
@@ -911,7 +926,7 @@ export function useSSE() {
         }
       }
     })()
-  }, [clearReconnectTimer, scheduleReconnect])
+  }, [clearReconnectTimer, refreshBoardIssues, scheduleReconnect])
 
   useEffect(() => {
     connectRef.current = connect
@@ -926,12 +941,6 @@ export function useSSE() {
       clearReconnectTimer()
     }
   }, [connect, clearReconnectTimer])
-
-  useEffect(() => {
-    const controller = new AbortController()
-    void refreshBoardIssues(controller.signal)
-    return () => controller.abort()
-  }, [refreshBoardIssues])
 
   // Per-issue tokens (running[i].tokens_in/out) and diff stats are only
   // populated in the initial /api/v1/state snapshot — the StatusUpdate SSE

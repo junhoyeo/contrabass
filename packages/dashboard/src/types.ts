@@ -65,13 +65,15 @@ export interface Issue {
   description: string;
   state: number;
   priority?: number;
-  labels: string[];
+  // Go marshals nil slices/maps as null and the runtime validator admits it;
+  // the declared type must match so new code cannot trust a bare array/object.
+  labels?: string[] | null;
   url: string;
   branch_name?: string;
   blocked_by?: string[];
   created_at?: string;
   updated_at?: string;
-  tracker_meta: Record<string, unknown>;
+  tracker_meta?: Record<string, unknown> | null;
 }
 
 export interface LinearUserSummary {
