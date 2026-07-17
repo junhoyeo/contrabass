@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,7 +102,19 @@ func (r *TaskRegistry) ListTasks(teamName string) ([]types.TeamTask, error) {
 		var task types.TeamTask
 		path := filepath.Join(dir, entry.Name())
 		if err := r.store.ReadJSON(path, &task); err != nil {
-			continue
+			// A task deleted between ReadDir and read is a benign race, and
+			// corrupt JSON is skipped like other registries do. Any other
+			// read failure (permissions, transient EMFILE) must surface:
+			// silently dropping a task lets AllTasksCompleted report the
+			// pipeline done without ever executing it.
+			if os.IsNotExist(err) {
+				continue
+			}
+			if isJSONUnmarshalError(err) {
+				slog.Default().Warn("skipping malformed task file", "team", teamName, "path", path, "error", err)
+				continue
+			}
+			return nil, fmt.Errorf("read task file %s: %w", entry.Name(), err)
 		}
 
 		if r.applyLeaseExpiry(&task) {

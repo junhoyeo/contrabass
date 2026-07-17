@@ -2,6 +2,7 @@ package team
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,11 @@ import (
 
 	"github.com/junhoyeo/contrabass/internal/types"
 )
+
+// ErrTeamExists is returned by CreateManifest when the team already has a
+// manifest on disk. Overwriting would reset the phase machine underneath a
+// live coordinator and leave the previous run's task files claimable.
+var ErrTeamExists = errors.New("team already exists")
 
 // Store provides atomic filesystem operations for team state.
 type Store struct {
@@ -94,10 +100,16 @@ func (s *Store) ReadJSON(path string, v interface{}) error {
 	return nil
 }
 
-// CreateManifest initializes a new team with its manifest and directory structure.
+// CreateManifest initializes a new team with its manifest and directory
+// structure. It refuses to overwrite an existing team (ErrTeamExists);
+// callers must delete the previous team's state first.
 func (s *Store) CreateManifest(teamName string, cfg types.TeamConfig) (*types.TeamManifest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if _, err := os.Stat(s.paths.ManifestPath(teamName)); err == nil {
+		return nil, fmt.Errorf("%w: %s", ErrTeamExists, teamName)
+	}
 
 	if err := s.EnsureDirs(teamName); err != nil {
 		return nil, fmt.Errorf("ensure dirs: %w", err)
