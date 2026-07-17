@@ -23,8 +23,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const wireCaptureHandshakeTimeout = 5 * time.Second
+
 func TestCodexRunner_PolicyDefaults_OnWire(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "capture-wire"), 2*time.Second)
+	runner := NewCodexRunner(helperCommand(t, "capture-wire"), wireCaptureHandshakeTimeout)
 
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
 	require.NoError(t, err)
@@ -42,7 +44,7 @@ func TestCodexRunner_PolicyDefaults_OnWire(t *testing.T) {
 }
 
 func TestCodexRunner_PolicyOverride_OnWire(t *testing.T) {
-	runner := NewCodexRunner(helperCommand(t, "capture-wire"), 2*time.Second)
+	runner := NewCodexRunner(helperCommand(t, "capture-wire"), wireCaptureHandshakeTimeout)
 	runner.ConfigureCodex(CodexRunnerOptions{
 		ApprovalPolicy: "on-request",
 		Sandbox:        map[string]interface{}{"type": "readOnly"},
@@ -98,7 +100,7 @@ func TestCodexRunner_PolicyStringOverride_OnWire(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			runner := NewCodexRunner(helperCommand(t, "capture-wire"), 2*time.Second)
+			runner := NewCodexRunner(helperCommand(t, "capture-wire"), wireCaptureHandshakeTimeout)
 			runner.ConfigureCodex(CodexRunnerOptions{Sandbox: c.sandbox})
 
 			proc, err := runner.Start(context.Background(), types.Issue{ID: "MT-11", Title: "Task 11"}, t.TempDir(), "hello")
@@ -405,7 +407,10 @@ func TestCodexRunner_ConcurrentStartStop(t *testing.T) {
 			}
 
 			select {
-			case <-proc.Done:
+			case doneErr := <-proc.Done:
+				if doneErr == nil {
+					errCh <- errors.New("Stop consumed the codex exit error")
+				}
 			case <-time.After(2 * time.Second):
 				errCh <- errors.New("done timed out")
 			}
@@ -763,6 +768,7 @@ func startedExitedCodexProcessWithStdin(t *testing.T, ctx context.Context) (*cod
 		stdin:      stdin,
 		streamCtx:  ctx,
 		done:       make(chan error, 1),
+		exited:     make(chan struct{}),
 		stderr:     &safeBuffer{},
 		stderrDone: stderrDone,
 	}, stdin
@@ -832,6 +838,7 @@ func startedExitedCodexProcess(t *testing.T, ctx context.Context) *codexProcess 
 		cmd:        cmd,
 		streamCtx:  ctx,
 		done:       make(chan error, 1),
+		exited:     make(chan struct{}),
 		stderr:     &safeBuffer{},
 		stderrDone: stderrDone,
 	}

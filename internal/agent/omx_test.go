@@ -527,6 +527,11 @@ args = sys.argv[1:]
 with open(log_path, 'a', encoding='utf-8') as fh:
     fh.write(' '.join(args) + '\n')
 
+# Real omx/omc are Node CLIs that emit runtime warnings on stderr. Mixing
+# stderr into the parsed output used to corrupt the JSON envelopes and shut
+# down healthy teams, so every fixture invocation exercises that noise.
+print('(node:99999) ExperimentalWarning: contrabass fixture noise', file=sys.stderr)
+
 def post(path, payload):
     data = json.dumps(payload).encode('utf-8')
     req = urllib.request.Request(base + path, data=data, headers={'Content-Type': 'application/json'})

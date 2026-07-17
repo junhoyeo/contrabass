@@ -197,6 +197,10 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context, workDir string) (stri
 	key := serverKey(workDir)
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", 0, err
+		}
+
 		r.mu.Lock()
 		if server, ok := r.servers[key]; ok && server != nil {
 			if server.ready != nil {
@@ -212,8 +216,55 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context, workDir string) (stri
 
 			if server.url != "" {
 				pid := serverPID(server)
+				url := server.url
 				r.mu.Unlock()
-				return server.url, pid, nil
+				healthy, healthErr := r.serverHealthy(ctx, url)
+				if healthErr != nil {
+					return "", 0, healthErr
+				}
+				if healthy {
+					return url, pid, nil
+				}
+				// The cached server died or wedged: without this reap its
+				// stale URL would be reused by every future Start, and each
+				// session would hang until timeout. Replace it with a startup
+				// placeholder before reaping so concurrent callers wait rather
+				// than racing a replacement onto the old server's port.
+				r.mu.Lock()
+				if err := ctx.Err(); err != nil {
+					r.mu.Unlock()
+					return "", 0, err
+				}
+				current, stillCurrent := r.servers[key]
+				if !stillCurrent || current != server {
+					r.mu.Unlock()
+					continue
+				}
+				argv := strings.Fields(strings.TrimSpace(r.binaryPath))
+				if len(argv) == 0 {
+					r.mu.Unlock()
+					return "", 0, errors.New("opencode binary path is empty")
+				}
+				extraEnv := append([]string(nil), r.extraEnv...)
+				placeholder := &openCodeServer{
+					port:  server.port,
+					ready: make(chan struct{}),
+				}
+				r.servers[key] = placeholder
+				r.mu.Unlock()
+				if err := r.stopServer(ctx, server); err != nil {
+					r.discardStartingServer(key, placeholder)
+					return "", 0, fmt.Errorf("reap unhealthy opencode server: %w", err)
+				}
+				// stopServer can return after the caller deadline while its
+				// best-effort reap completes in the background. Do not start a
+				// replacement after that deadline: besides violating cancellation,
+				// it could launch an unavailable binary during shutdown.
+				if err := ctx.Err(); err != nil {
+					r.discardStartingServer(key, placeholder)
+					return "", 0, err
+				}
+				return r.startAndPublishServer(ctx, key, workDir, argv, extraEnv, placeholder)
 			}
 
 			delete(r.servers, key)
@@ -234,39 +285,65 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context, workDir string) (stri
 		r.servers[key] = placeholder
 		r.mu.Unlock()
 
-		server, err := r.startServer(ctx, argv, workDir, extraEnv, port)
+		return r.startAndPublishServer(ctx, key, workDir, argv, extraEnv, placeholder)
+	}
+}
 
-		r.mu.Lock()
-		current, stillCurrent := r.servers[key]
-		if stillCurrent && current == placeholder {
-			if err != nil {
-				delete(r.servers, key)
-			} else {
-				placeholder.process = server.process
-				placeholder.url = server.url
-			}
-		}
-		ready := placeholder.ready
-		placeholder.ready = nil
-		r.mu.Unlock()
+func (r *OpenCodeRunner) startAndPublishServer(
+	ctx context.Context,
+	key string,
+	workDir string,
+	argv []string,
+	extraEnv []string,
+	placeholder *openCodeServer,
+) (string, int, error) {
+	server, err := r.startServer(ctx, argv, workDir, extraEnv, placeholder.port)
 
-		if ready != nil {
-			close(ready)
-		}
-
-		if !stillCurrent || current != placeholder {
-			if err == nil {
-				_ = r.stopServer(server)
-				return "", 0, errors.New("opencode server startup interrupted")
-			}
-			return "", 0, err
-		}
-
+	r.mu.Lock()
+	current, stillCurrent := r.servers[key]
+	if stillCurrent && current == placeholder {
 		if err != nil {
-			return "", 0, err
+			delete(r.servers, key)
+		} else {
+			placeholder.process = server.process
+			placeholder.url = server.url
 		}
+	}
+	ready := placeholder.ready
+	placeholder.ready = nil
+	r.mu.Unlock()
 
-		return server.url, serverPID(server), nil
+	if ready != nil {
+		close(ready)
+	}
+
+	if !stillCurrent || current != placeholder {
+		if err == nil {
+			_ = r.stopServer(ctx, server)
+			return "", 0, errors.New("opencode server startup interrupted")
+		}
+		return "", 0, err
+	}
+
+	if err != nil {
+		return "", 0, err
+	}
+
+	return server.url, serverPID(server), nil
+}
+
+func (r *OpenCodeRunner) discardStartingServer(key string, placeholder *openCodeServer) {
+	r.mu.Lock()
+	current, stillCurrent := r.servers[key]
+	if stillCurrent && current == placeholder {
+		delete(r.servers, key)
+	}
+	ready := placeholder.ready
+	placeholder.ready = nil
+	r.mu.Unlock()
+
+	if ready != nil {
+		close(ready)
 	}
 }
 
@@ -320,6 +397,12 @@ func (r *OpenCodeRunner) startServer(
 			if strings.Contains(line, "listening on http://") || strings.Contains(line, "listening on https://") {
 				if url := extractListeningURL(line); url != "" {
 					urlCh <- url
+					// Keep draining stdout for the server's lifetime. Nothing
+					// else reads this pipe: once the server has logged enough
+					// to fill it (~64KB), its writes block and the whole
+					// server freezes, stalling every session on it. Exits on
+					// EOF when the server process ends.
+					_, _ = io.Copy(io.Discard, stdout)
 					return
 				}
 			}
@@ -356,6 +439,34 @@ func (r *OpenCodeRunner) startServer(
 	}
 }
 
+// serverHealthy reports whether the opencode server at url still accepts
+// connections. Any HTTP response — regardless of status code — counts as
+// healthy; the check only exists to detect a process that exited or stopped
+// serving entirely. Caller cancellation is returned separately because it is
+// not evidence that a shared server is unhealthy.
+func (r *OpenCodeRunner) serverHealthy(ctx context.Context, url string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, url+"/", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		return false, nil
+	}
+	_ = resp.Body.Close()
+	return true, nil
+}
+
 func isSignalError(err error) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
@@ -366,7 +477,11 @@ func isSignalError(err error) bool {
 	return exitErr.ExitCode() == -1
 }
 
-func (r *OpenCodeRunner) stopServer(server *openCodeServer) error {
+// stopServer terminates a managed server within the smaller of the caller's
+// remaining deadline and the runner timeout. A SIGKILL is best-effort after
+// the deadline; it is not followed by another full timeout window, so recovery
+// cannot hold a dispatch slot for twice the configured timeout.
+func (r *OpenCodeRunner) stopServer(ctx context.Context, server *openCodeServer) error {
 	if server == nil {
 		return nil
 	}
@@ -375,6 +490,11 @@ func (r *OpenCodeRunner) stopServer(server *openCodeServer) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
 
 	if err := cmd.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("interrupt opencode server: %w", err)
@@ -391,14 +511,12 @@ func (r *OpenCodeRunner) stopServer(server *openCodeServer) error {
 			return err
 		}
 		return nil
-	case <-time.After(r.timeout):
+	case <-stopCtx.Done():
 		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return fmt.Errorf("kill opencode server: %w", err)
 		}
-		select {
-		case <-waitCh:
-		case <-time.After(r.timeout):
-		}
+		// Wait continues in the background to reap the child; returning now
+		// honors the single shutdown budget for the caller.
 		return nil
 	}
 }
@@ -416,7 +534,7 @@ func (r *OpenCodeRunner) Close() error {
 
 	var closeErr error
 	for _, server := range servers {
-		if err := r.stopServer(server); err != nil && closeErr == nil {
+		if err := r.stopServer(context.Background(), server); err != nil && closeErr == nil {
 			closeErr = err
 		}
 	}
@@ -454,7 +572,30 @@ func (r *OpenCodeRunner) Start(ctx context.Context, _ types.Issue, workspace str
 		})
 	}
 
-	go r.streamSessionEvents(streamCtx, serverURL, sessionID, events, finish)
+	subscribed := make(chan struct{})
+	go r.streamSessionEvents(streamCtx, serverURL, sessionID, events, finish, subscribed)
+
+	// Wait for the SSE subscription to be established before submitting the
+	// prompt. Submitting first races the subscription: early events —
+	// including the terminal idle status for fast turns — are missed and the
+	// session hangs until timeout.
+	subscriptionTimer := time.NewTimer(r.timeout)
+	defer subscriptionTimer.Stop()
+	select {
+	case <-subscribed:
+	case doneErr := <-done:
+		if doneErr == nil {
+			doneErr = errors.New("opencode event stream closed before subscribing")
+		}
+		return nil, doneErr
+	case <-subscriptionTimer.C:
+		doneErr := fmt.Errorf("timed out waiting for opencode event stream subscription after %s", r.timeout)
+		finish(doneErr)
+		return nil, doneErr
+	case <-ctx.Done():
+		finish(ctx.Err())
+		return nil, ctx.Err()
+	}
 
 	if err := r.submitPrompt(ctx, serverURL, sessionID, prompt); err != nil {
 		cancelStream()
@@ -587,6 +728,7 @@ func (r *OpenCodeRunner) streamSessionEvents(
 	sessionID string,
 	events chan<- types.AgentEvent,
 	finish func(error),
+	subscribed chan<- struct{},
 ) {
 	defer finish(nil)
 
@@ -606,6 +748,10 @@ func (r *OpenCodeRunner) streamSessionEvents(
 		finish(fmt.Errorf("opencode event stream failed: status %d body=%q", resp.StatusCode, string(body)))
 		return
 	}
+
+	// The subscription is live: Start may now submit the prompt without
+	// racing early events.
+	close(subscribed)
 
 	reader := newSSEReader(resp.Body)
 	for {

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,6 +73,86 @@ func TestOpenCodeRunner_Start(t *testing.T) {
 	assert.Equal(t, "message.part.updated", events[1].Type)
 	assert.Equal(t, "session.status", events[2].Type)
 	assertDoneNil(t, proc.Done)
+}
+
+func TestOpenCodeRunner_StartTimesOutBeforePromptWithoutSSEHeaders(t *testing.T) {
+	streamStarted := make(chan struct{})
+	var promptSubmitted atomic.Bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/session":
+			_, _ = io.WriteString(w, `{"id":"sess-1"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/session/sess-1/prompt_async":
+			promptSubmitted.Store(true)
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/event":
+			close(streamStarted)
+			// Deliberately do not flush response headers. A proxy with this
+			// behavior used to leave Start blocked forever when its caller had
+			// no deadline.
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	workspace := t.TempDir()
+	runner := NewOpenCodeRunner("opencode serve", 0, "", "", 100*time.Millisecond)
+	primeTestOpenCodeServer(runner, workspace, server.URL, 4242)
+
+	start := time.Now()
+	proc, err := runner.Start(context.Background(), types.Issue{}, workspace, "hello")
+	require.Error(t, err)
+	assert.Nil(t, proc)
+	assert.ErrorContains(t, err, "event stream subscription")
+	assert.Less(t, time.Since(start), time.Second)
+	assert.False(t, promptSubmitted.Load())
+
+	select {
+	case <-streamStarted:
+	default:
+		t.Fatal("expected SSE connection attempt before timeout")
+	}
+}
+
+func TestOpenCodeRunner_CancelledHealthCheckKeepsCachedServer(t *testing.T) {
+	healthStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/" {
+			close(healthStarted)
+			<-r.Context().Done()
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	workspace := t.TempDir()
+	runner := NewOpenCodeRunner("opencode serve", 0, "", "", time.Second)
+	key := serverKey(workspace)
+	cached := &openCodeServer{url: server.URL}
+	runner.servers[key] = cached
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := runner.ensureServer(ctx, workspace)
+		result <- err
+	}()
+
+	select {
+	case <-healthStarted:
+	case <-time.After(time.Second):
+		t.Fatal("health check did not start")
+	}
+	cancel()
+
+	require.ErrorIs(t, <-result, context.Canceled)
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	assert.Same(t, cached, runner.servers[key])
 }
 
 func TestOpenCodeRunner_StartWithAuth(t *testing.T) {
@@ -529,6 +611,224 @@ func TestOpenCodeRunner_EnsureServerStartsWorkspacesInParallel(t *testing.T) {
 	}, []string{res1.url, res2.url})
 }
 
+func TestOpenCodeRunner_ConcurrentStaleRecoveryReapsOnce(t *testing.T) {
+	healthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer healthServer.Close()
+
+	stateDir := t.TempDir()
+	scriptPath := filepath.Join(stateDir, "replacement-opencode.sh")
+	script := `#!/bin/sh
+set -eu
+echo "listening on ${TEST_SERVER_URL:?TEST_SERVER_URL is required}"
+sleep 30
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+
+	runner := NewOpenCodeRunner(scriptPath, 0, "", "", time.Second)
+	runner.SetExtraEnv([]string{"TEST_SERVER_URL=" + healthServer.URL})
+	t.Cleanup(func() {
+		require.NoError(t, runner.Close())
+	})
+
+	staleCmd := exec.Command("sleep", "30")
+	require.NoError(t, staleCmd.Start())
+	workspace := filepath.Join(stateDir, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0o755))
+	runner.servers[serverKey(workspace)] = &openCodeServer{
+		process: staleCmd,
+		url:     "http://127.0.0.1:1",
+	}
+
+	const callers = 8
+	type result struct {
+		url string
+		pid int
+		err error
+	}
+	results := make(chan result, callers)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for range callers {
+		go func() {
+			url, pid, err := runner.ensureServer(ctx, workspace)
+			results <- result{url: url, pid: pid, err: err}
+		}()
+	}
+
+	for range callers {
+		result := <-results
+		require.NoError(t, result.err)
+		assert.Equal(t, healthServer.URL, result.url)
+		assert.NotZero(t, result.pid)
+	}
+	assert.Eventually(t, func() bool {
+		return staleCmd.ProcessState != nil
+	}, time.Second, 10*time.Millisecond, "stale server was not reaped")
+}
+
+func TestOpenCodeRunner_ConcurrentStaleRecoveryWaitsForFixedPort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, listener.Close())
+
+	stateDir := t.TempDir()
+	scriptPath := filepath.Join(stateDir, "port-opencode.py")
+	script := `#!/usr/bin/env python3
+import http.server
+import os
+import signal
+import sys
+
+port = int(sys.argv[sys.argv.index("--port") + 1])
+if os.environ.get("IGNORE_INTERRUPT") == "1":
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+else:
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(204)
+        self.end_headers()
+    def log_message(self, *_):
+        pass
+
+server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+print(f"listening on http://127.0.0.1:{port}", flush=True)
+server.serve_forever()
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+
+	runner := NewOpenCodeRunner("python3 "+scriptPath, port, "", "", 250*time.Millisecond)
+	t.Cleanup(func() {
+		require.NoError(t, runner.Close())
+	})
+
+	staleCmd := exec.Command("python3", scriptPath, "--port", strconv.Itoa(port))
+	staleCmd.Env = append(os.Environ(), "IGNORE_INTERRUPT=1")
+	require.NoError(t, staleCmd.Start())
+	assert.Eventually(t, func() bool {
+		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 20*time.Millisecond)
+		if dialErr != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, time.Second, 10*time.Millisecond, "stale server never bound its configured port")
+
+	workspace := filepath.Join(stateDir, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0o755))
+	runner.servers[serverKey(workspace)] = &openCodeServer{
+		process: staleCmd,
+		port:    port,
+		url:     "http://127.0.0.1:1",
+	}
+
+	const callers = 8
+	results := make(chan error, callers)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for range callers {
+		go func() {
+			_, _, ensureErr := runner.ensureServer(ctx, workspace)
+			results <- ensureErr
+		}()
+	}
+
+	for range callers {
+		require.NoError(t, <-results)
+	}
+}
+
+func TestOpenCodeRunner_StaleRecoveryHonorsCallerDeadline(t *testing.T) {
+	// Ignore SIGINT so recovery must use its caller deadline instead of
+	// waiting for the runner's much longer shutdown budget. Wait until the
+	// trap is installed before injecting the process; otherwise CI can signal
+	// the shell during startup, let it exit early, and accidentally start the
+	// unavailable replacement binary.
+	readyFile := filepath.Join(t.TempDir(), "stale-server-ready")
+	staleCmd := exec.Command("sh", "-c", "trap '' INT; : > \"$READY_FILE\"; exec sleep 30")
+	staleCmd.Env = append(os.Environ(), "READY_FILE="+readyFile)
+	require.NoError(t, staleCmd.Start())
+	assert.Eventually(t, func() bool {
+		_, err := os.Stat(readyFile)
+		return err == nil
+	}, time.Second, 10*time.Millisecond, "stale server did not install its interrupt trap")
+
+	runner := NewOpenCodeRunner("opencode serve", 0, "", "", 5*time.Second)
+	workspace := t.TempDir()
+	runner.servers[serverKey(workspace)] = &openCodeServer{
+		process: staleCmd,
+		url:     "http://127.0.0.1:1",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, _, err := runner.ensureServer(ctx, workspace)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), time.Second)
+
+	// stopServer reaps killed children asynchronously after returning at the
+	// caller deadline. Reading Cmd.ProcessState here races with that Wait; the
+	// observable recovery contract is that this runner no longer retains the
+	// stale server or a replacement placeholder.
+	runner.mu.Lock()
+	_, cached := runner.servers[serverKey(workspace)]
+	runner.mu.Unlock()
+	assert.False(t, cached, "deadline recovery left a stale server cached")
+}
+
+// TestOpenCodeRunner_DrainsServerStdoutAfterStartup pins the pipe-drain
+// contract: after the "listening on" line, nothing used to read the server's
+// stdout, so once the OS pipe buffer (~64KB) filled, the server's log writes
+// blocked and the whole server froze — every session on it stalled. The fake
+// server emits ~512KB of log output (8x the pipe buffer) after startup and
+// then writes a marker file; the marker is only reachable if startServer
+// keeps draining the pipe.
+func TestOpenCodeRunner_DrainsServerStdoutAfterStartup(t *testing.T) {
+	stateDir := t.TempDir()
+	scriptPath := filepath.Join(stateDir, "chatty-opencode.sh")
+	script := `#!/bin/sh
+set -eu
+state_dir="${TEST_STATE_DIR:?TEST_STATE_DIR is required}"
+echo "listening on http://127.0.0.1:4545"
+i=0
+while [ "$i" -lt 512 ]; do
+  printf '%01023d\n' "$i"
+  i=$((i+1))
+done
+touch "$state_dir/drained"
+sleep 30
+`
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+
+	runner := NewOpenCodeRunner(scriptPath, 0, "", "", 5*time.Second)
+	runner.SetExtraEnv([]string{"TEST_STATE_DIR=" + stateDir})
+	t.Cleanup(func() {
+		require.NoError(t, runner.Close())
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	workspace := filepath.Join(stateDir, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0o755))
+
+	url, pid, err := runner.ensureServer(ctx, workspace)
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:4545", url)
+	assert.NotZero(t, pid)
+
+	assert.Eventually(t, func() bool {
+		_, statErr := os.Stat(filepath.Join(stateDir, "drained"))
+		return statErr == nil
+	}, 8*time.Second, 50*time.Millisecond,
+		"server blocked writing to its undrained stdout pipe")
+}
+
 func newTestOpenCodeRunner(serverURL string) *OpenCodeRunner {
 	r := NewOpenCodeRunner("opencode serve", 0, "", "", 2*time.Second)
 	primeTestOpenCodeServer(r, "", serverURL, 4242)
@@ -580,6 +880,13 @@ func setSSEHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Send the headers immediately, as a real SSE server does: Start blocks
+	// prompt submission until the subscription response arrives, so a handler
+	// that defers WriteHeader until its first event would deadlock the test.
+	w.WriteHeader(http.StatusOK)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func writeSSEEvent(w http.ResponseWriter, eventType, data string) {

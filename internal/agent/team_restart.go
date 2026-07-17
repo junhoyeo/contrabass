@@ -26,8 +26,14 @@ type WorkerRestartResult struct {
 	ReassignedTasks []string  `json:"reassigned_tasks,omitempty"`
 }
 
-// RestartWorker attempts to gracefully restart a worker by sending a shutdown
-// request via the CLI API and reassigning its in-progress tasks.
+// RestartWorker gracefully "restarts" a worker: it sends a shutdown request
+// via the CLI API, waits (bounded by GracePeriod) for the acknowledgment, and
+// releases the worker's in-progress task claims so another worker can pick
+// them up. It does NOT spawn a replacement process itself — respawning is the
+// team CLI supervisor's job (omx v0.16+ self-healing). Success=true therefore
+// means "shutdown requested and claims released", not "new worker confirmed
+// running"; when the worker never acknowledges, Error records that while
+// Success stays true because the claim release still proceeded.
 func (r *teamCLIRunner) RestartWorker(ctx context.Context, workspace, teamName, workerName string, opts *WorkerRestartOptions) (*WorkerRestartResult, error) {
 	if opts == nil {
 		opts = &WorkerRestartOptions{
@@ -106,6 +112,10 @@ waitLoop:
 				"team", teamName,
 				"worker", workerName,
 				"grace_period", opts.GracePeriod,
+			)
+			result.Error = fmt.Sprintf(
+				"worker did not acknowledge shutdown within %s; task claims released anyway",
+				opts.GracePeriod,
 			)
 			break waitLoop
 		case <-ticker.C:
