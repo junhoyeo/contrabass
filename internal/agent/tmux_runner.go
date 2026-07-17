@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,10 +62,11 @@ type tmuxProcess struct {
 	taskID    string
 	workspace string
 
-	promptPath string
-	events     chan types.AgentEvent
-	done       chan error
-	finished   chan struct{}
+	promptPath     string
+	exitMarkerPath string
+	events         chan types.AgentEvent
+	done           chan error
+	finished       chan struct{}
 
 	cancel     context.CancelFunc
 	finishOnce sync.Once
@@ -140,17 +144,28 @@ func (r *TmuxRunner) Start(ctx context.Context, issue types.Issue, workspace str
 	}
 
 	pid := int(r.pidSeq.Add(1))
-	workerID := fmt.Sprintf("worker-%d", pid)
+	// The "tmux-" prefix keeps these synthetic IDs out of the coordinator's
+	// "worker-<n>" heartbeat namespace, where a collision would keep a dead
+	// coordinator worker's heartbeat fresh and mask its staleness.
+	workerID := fmt.Sprintf("tmux-worker-%d", pid)
 	taskID := firstNonEmpty(issue.ID, issue.Identifier, workerID)
 	cliArgs := cliCfg.BuildArgs(workspace, promptPath)
 
+	exitMarkerPath, err := prepareExitMarker(workspace, pid)
+	if err != nil {
+		return nil, fmt.Errorf("prepare exit marker: %w", err)
+	}
+
 	bootstrap := tmux.NewWorkerBootstrap(r.session, tmux.BootstrapConfig{
-		WorkerID:   workerID,
-		TeamName:   r.teamName,
-		WorkDir:    workspace,
-		CLICommand: binaryPath,
-		CLIArgs:    cliArgs,
-		Env:        cliCfg.Env,
+		WorkerID:       workerID,
+		TeamName:       r.teamName,
+		WorkDir:        workspace,
+		CLICommand:     binaryPath,
+		CLIArgs:        cliArgs,
+		Env:            cliCfg.Env,
+		PromptMode:     cliCfg.PromptMode,
+		PromptPath:     promptPath,
+		ExitMarkerPath: exitMarkerPath,
 	})
 
 	paneID, err := bootstrap.Bootstrap(ctx)
@@ -159,15 +174,16 @@ func (r *TmuxRunner) Start(ctx context.Context, issue types.Issue, workspace str
 	}
 
 	state := &tmuxProcess{
-		pid:        pid,
-		paneID:     paneID,
-		workerID:   workerID,
-		taskID:     taskID,
-		workspace:  workspace,
-		promptPath: promptPath,
-		events:     make(chan types.AgentEvent, 128),
-		done:       make(chan error, 1),
-		finished:   make(chan struct{}),
+		pid:            pid,
+		paneID:         paneID,
+		workerID:       workerID,
+		taskID:         taskID,
+		workspace:      workspace,
+		promptPath:     promptPath,
+		exitMarkerPath: exitMarkerPath,
+		events:         make(chan types.AgentEvent, 128),
+		done:           make(chan error, 1),
+		finished:       make(chan struct{}),
 	}
 
 	if r.dispatchQueue != nil {
@@ -273,14 +289,43 @@ func (r *TmuxRunner) monitorProcess(ctx context.Context, bootstrap *tmux.WorkerB
 		}
 	}
 
+	// Completion comes from the exit marker the pane's shell writes when the
+	// CLI command exits — never from pane liveness. The interactive shell
+	// keeps the pane alive after the command exits, and a pane that dies
+	// without a marker (tmux destroys dead panes, so IsWorkerAlive errors)
+	// means the command was killed, not that it finished.
 	checkAlive := func(logStarted bool) (bool, error) {
-		alive, err := bootstrap.IsWorkerAlive(ctx, proc.paneID)
+		exitCode, exited, markerErr := readExitMarker(proc.exitMarkerPath)
+
+		paneAlive := true
+		var paneErr error
+		if !exited && markerErr == nil {
+			paneAlive, paneErr = bootstrap.IsWorkerAlive(ctx, proc.paneID)
+			if paneErr != nil || !paneAlive {
+				// The command may have exited and written the marker just
+				// before the pane closed; re-check before calling it a crash.
+				exitCode, exited, markerErr = readExitMarker(proc.exitMarkerPath)
+			}
+		}
+
+		var failure error
+		switch {
+		case markerErr != nil:
+			failure = fmt.Errorf("read exit marker for pane %s: %w", proc.paneID, markerErr)
+		case exited && exitCode != 0:
+			failure = fmt.Errorf("worker command exited with code %d", exitCode)
+		case !exited && paneErr != nil:
+			failure = fmt.Errorf("worker pane %s died before writing exit marker: %w", proc.paneID, paneErr)
+		case !exited && !paneAlive:
+			failure = fmt.Errorf("worker pane %s died before writing exit marker", proc.paneID)
+		}
+
 		now := time.Now()
 
 		status := "running"
-		if err != nil {
+		if failure != nil {
 			status = "error"
-		} else if !alive {
+		} else if exited {
 			status = "stopped"
 		}
 
@@ -316,16 +361,16 @@ func (r *TmuxRunner) monitorProcess(ctx context.Context, bootstrap *tmux.WorkerB
 			}
 		}
 
-		if err != nil {
-			return false, err
+		if failure != nil {
+			return false, failure
 		}
-		if !alive {
+		if exited {
 			if r.eventLogger != nil {
 				if logErr := r.eventLogger.Log(r.teamName, ipc.Event{
 					Type:      "worker_stopped",
 					WorkerID:  proc.workerID,
 					TaskID:    proc.taskID,
-					Data:      map[string]interface{}{"pane_id": proc.paneID},
+					Data:      map[string]interface{}{"pane_id": proc.paneID, "exit_code": exitCode},
 					Timestamp: now,
 				}); logErr != nil {
 					r.logger.Warn("tmux worker_stopped log failed", "team", r.teamName, "worker_id", proc.workerID, "error", logErr)
@@ -366,6 +411,7 @@ func (r *TmuxRunner) monitorProcess(ctx context.Context, bootstrap *tmux.WorkerB
 			"worker_id": proc.workerID,
 			"task_id":   proc.taskID,
 		})
+		r.cleanupPane(proc)
 		proc.finish(nil)
 		return
 	}
@@ -395,9 +441,60 @@ func (r *TmuxRunner) monitorProcess(ctx context.Context, bootstrap *tmux.WorkerB
 					"worker_id": proc.workerID,
 					"task_id":   proc.taskID,
 				})
+				r.cleanupPane(proc)
 				proc.finish(nil)
 				return
 			}
 		}
 	}
+}
+
+// cleanupPane kills the pane after a successful completion: the CLI ran
+// inside the pane's interactive shell, so the pane stays alive after the
+// command exits. Failed panes are intentionally kept for post-mortem.
+func (r *TmuxRunner) cleanupPane(proc *tmuxProcess) {
+	killCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.session.KillPane(killCtx, proc.paneID); err != nil {
+		r.logger.Warn("tmux pane cleanup failed", "team", r.teamName, "pane_id", proc.paneID, "error", err)
+	}
+}
+
+// prepareExitMarker returns the file the pane shell writes the CLI's exit
+// code to. A stale marker left by a previous run of the same workspace is
+// removed first so an old exit code cannot complete the new task instantly.
+func prepareExitMarker(workspace string, pid int) (string, error) {
+	dir := filepath.Join(workspace, ".contrabass")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, fmt.Sprintf("task-exit-%d", pid))
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	return path, nil
+}
+
+// readExitMarker reports the exit code recorded by the pane shell. found is
+// false while the command is still running, or while the marker write is
+// mid-flight and the file is momentarily empty.
+func readExitMarker(path string) (code int, found bool, err error) {
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return 0, false, nil
+		}
+		return 0, false, readErr
+	}
+
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return 0, false, nil
+	}
+
+	code, parseErr := strconv.Atoi(content)
+	if parseErr != nil {
+		return 0, false, fmt.Errorf("parse exit marker %s: %w", path, parseErr)
+	}
+	return code, true, nil
 }

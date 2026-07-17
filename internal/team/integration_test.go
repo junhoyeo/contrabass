@@ -1,6 +1,8 @@
 package team
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -72,6 +74,58 @@ func TestStoreLifecycle(t *testing.T) {
 
 	// Verify team no longer exists
 	assert.False(t, store.TeamExists("test-team"))
+}
+
+// TestCreateManifestRefusesExistingTeam ensures a second CreateManifest for
+// the same team name cannot reset the phase machine and manifest underneath
+// an existing run.
+func TestCreateManifestRefusesExistingTeam(t *testing.T) {
+	store, _ := setupTestStore(t)
+
+	_, err := store.CreateManifest("test-team", types.TeamConfig{MaxWorkers: 1})
+	require.NoError(t, err)
+
+	_, err = store.CreateManifest("test-team", types.TeamConfig{MaxWorkers: 2})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTeamExists)
+
+	// The original manifest must be untouched.
+	manifest, err := store.LoadManifest("test-team")
+	require.NoError(t, err)
+	assert.Equal(t, 1, manifest.Config.MaxWorkers)
+}
+
+// TestListTasksSkipsCorruptButSurfacesUnreadableFiles pins the error
+// classification in ListTasks: corrupt JSON is skipped (matching the other
+// registries), but I/O failures must not silently shrink the task board.
+func TestListTasksSkipsCorruptButSurfacesUnreadableFiles(t *testing.T) {
+	store, paths := setupTestStore(t)
+	registry := NewTaskRegistry(store, paths, 300)
+
+	_, err := store.CreateManifest("test-team", types.TeamConfig{MaxWorkers: 1})
+	require.NoError(t, err)
+	require.NoError(t, registry.CreateTask("test-team", &types.TeamTask{ID: "task-1", Subject: "ok"}))
+
+	corrupt := filepath.Join(paths.TasksDir("test-team"), "task-2.json")
+	require.NoError(t, os.WriteFile(corrupt, []byte("{not json"), 0o644))
+
+	tasks, err := registry.ListTasks("test-team")
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "task-1", tasks[0].ID)
+
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based unreadable files cannot be simulated as root")
+	}
+
+	unreadable := filepath.Join(paths.TasksDir("test-team"), "task-3.json")
+	require.NoError(t, os.WriteFile(unreadable, []byte("{}"), 0o644))
+	require.NoError(t, os.Chmod(unreadable, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o644) })
+
+	_, err = registry.ListTasks("test-team")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "task-3.json")
 }
 
 // TestPhaseTransitions tests valid phase transitions through the pipeline.

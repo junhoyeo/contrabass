@@ -132,6 +132,175 @@ func TestRunFixPhaseResetsFailedTasks(t *testing.T) {
 	assert.Equal(t, types.PhaseExec, phase)
 }
 
+func TestInitializeRefusesActiveTeam(t *testing.T) {
+	cfg := &config.WorkflowConfig{
+		Agent: config.AgentConfig{Type: "codex"},
+		Team: config.TeamSectionConfig{
+			MaxWorkers:        1,
+			MaxFixLoops:       2,
+			ClaimLeaseSeconds: 300,
+			StateDir:          t.TempDir(),
+		},
+	}
+
+	coordinator := NewCoordinator(
+		"test-team",
+		cfg,
+		nil,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	teamCfg := types.TeamConfig{MaxWorkers: 1, MaxFixLoops: 2}
+	require.NoError(t, coordinator.Initialize(teamCfg))
+
+	// The team sits in a non-terminal phase (plan); a second run of the same
+	// name must not reset the phase machine underneath it.
+	err := coordinator.Initialize(teamCfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+
+	phase, err := coordinator.phases.CurrentPhase("test-team")
+	require.NoError(t, err)
+	assert.Equal(t, types.PhasePlan, phase)
+}
+
+func TestInitializeWipesTerminalTeamState(t *testing.T) {
+	cfg := &config.WorkflowConfig{
+		Agent: config.AgentConfig{Type: "codex"},
+		Team: config.TeamSectionConfig{
+			MaxWorkers:        1,
+			MaxFixLoops:       2,
+			ClaimLeaseSeconds: 300,
+			StateDir:          t.TempDir(),
+		},
+	}
+
+	coordinator := NewCoordinator(
+		"test-team",
+		cfg,
+		nil,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	teamCfg := types.TeamConfig{MaxWorkers: 1, MaxFixLoops: 2}
+	require.NoError(t, coordinator.Initialize(teamCfg))
+	require.NoError(t, coordinator.tasks.CreateTask("test-team", &types.TeamTask{ID: "stale-task", Subject: "old run"}))
+
+	require.NoError(t, coordinator.phases.Transition("test-team", types.PhasePRD, "plan complete"))
+	require.NoError(t, coordinator.phases.Transition("test-team", types.PhaseExec, "prd complete"))
+	require.NoError(t, coordinator.phases.Transition("test-team", types.PhaseVerify, "exec complete"))
+	require.NoError(t, coordinator.phases.Transition("test-team", types.PhaseComplete, "verified"))
+
+	// Re-running the same team name must not leave the previous run's task
+	// files claimable next to the new run's tasks.
+	require.NoError(t, coordinator.Initialize(teamCfg))
+
+	tasks, err := coordinator.tasks.ListTasks("test-team")
+	require.NoError(t, err)
+	assert.Empty(t, tasks)
+
+	phase, err := coordinator.phases.CurrentPhase("test-team")
+	require.NoError(t, err)
+	assert.Equal(t, types.PhasePlan, phase)
+}
+
+func TestExecPhaseRoutesBlockedOnFailedTasksToFixLoop(t *testing.T) {
+	cfg := &config.WorkflowConfig{
+		Agent: config.AgentConfig{Type: "codex"},
+		Team: config.TeamSectionConfig{
+			MaxWorkers:        1,
+			MaxFixLoops:       2,
+			ClaimLeaseSeconds: 300,
+			StateDir:          t.TempDir(),
+		},
+	}
+
+	coordinator := NewCoordinator(
+		"test-team",
+		cfg,
+		nil,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	require.NoError(t, coordinator.Initialize(types.TeamConfig{MaxWorkers: 1, MaxFixLoops: 2}))
+	require.NoError(t, coordinator.tasks.CreateTask("test-team", &types.TeamTask{ID: "task-a", Subject: "upstream"}))
+	require.NoError(t, coordinator.tasks.CreateTask("test-team", &types.TeamTask{
+		ID:        "task-b",
+		Subject:   "downstream",
+		DependsOn: []string{"task-a"},
+	}))
+
+	token, err := coordinator.tasks.ClaimTask("test-team", "task-a", "worker-0", 1)
+	require.NoError(t, err)
+	require.NoError(t, coordinator.tasks.FailTask("test-team", "task-a", token, "boom"))
+
+	require.NoError(t, coordinator.phases.Transition("test-team", types.PhasePRD, "plan complete"))
+	require.NoError(t, coordinator.phases.Transition("test-team", types.PhaseExec, "prd complete"))
+
+	// task-b is pending but unclaimable (its dependency failed); exec must
+	// hand off toward the fix loop instead of tripping the phase gate.
+	require.NoError(t, coordinator.runExecPhase(context.Background()))
+
+	phase, err := coordinator.phases.CurrentPhase("test-team")
+	require.NoError(t, err)
+	require.Equal(t, types.PhaseVerify, phase)
+
+	require.NoError(t, coordinator.runVerifyPhase(context.Background()))
+	phase, err = coordinator.phases.CurrentPhase("test-team")
+	require.NoError(t, err)
+	require.Equal(t, types.PhaseFix, phase)
+
+	require.NoError(t, coordinator.runFixPhase(context.Background()))
+	phase, err = coordinator.phases.CurrentPhase("test-team")
+	require.NoError(t, err)
+	require.Equal(t, types.PhaseExec, phase)
+
+	resetTask, err := coordinator.tasks.GetTask("test-team", "task-a")
+	require.NoError(t, err)
+	assert.Equal(t, types.TaskPending, resetTask.Status)
+}
+
+func TestCheckForStaleWorkersSkipsIdleWorkers(t *testing.T) {
+	cfg := &config.WorkflowConfig{
+		Agent: config.AgentConfig{Type: "codex"},
+		Team: config.TeamSectionConfig{
+			MaxWorkers:        2,
+			MaxFixLoops:       2,
+			ClaimLeaseSeconds: 1,
+			StateDir:          t.TempDir(),
+		},
+	}
+
+	coordinator := NewCoordinator(
+		"test-team",
+		cfg,
+		nil,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	require.NoError(t, coordinator.Initialize(types.TeamConfig{MaxWorkers: 2, MaxFixLoops: 2}))
+
+	old := time.Now().Add(-5 * time.Second)
+	for _, workerID := range []string{"worker-0", "worker-1"} {
+		require.NoError(t, coordinator.heartbeats.Write("test-team", Heartbeat{WorkerID: workerID, Timestamp: time.Now()}))
+		path := coordinator.paths.HeartbeatPath("test-team", workerID)
+		require.NoError(t, os.Chtimes(path, old, old))
+	}
+
+	coordinator.mu.Lock()
+	// worker-0 finished its task: heartbeatLoop stopped by design, so its
+	// frozen heartbeat file must not be reported as stale.
+	coordinator.workers["worker-0"] = &workerHandle{state: types.WorkerState{ID: "worker-0", Status: "idle"}}
+	coordinator.workers["worker-1"] = &workerHandle{state: types.WorkerState{ID: "worker-1", Status: "working", CurrentTask: "task-1"}}
+	coordinator.mu.Unlock()
+
+	stale := coordinator.checkForStaleWorkers()
+	assert.Equal(t, []string{"worker-1"}, stale)
+}
+
 func TestCoordinatorRunStartupRecoveryCleansStaleHeartbeat(t *testing.T) {
 	cfg := &config.WorkflowConfig{
 		Agent: config.AgentConfig{Type: "codex"},

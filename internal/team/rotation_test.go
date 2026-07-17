@@ -160,8 +160,10 @@ func TestStaleLockRecovery_RecoverStaleLocks(t *testing.T) {
 				teamDir := paths.TeamDir(teamName)
 				require.NoError(t, os.MkdirAll(filepath.Join(teamDir, "tasks"), 0o755))
 
-				staleTmp := filepath.Join(teamDir, "manifest.json.tmp")
-				recentTmp := filepath.Join(teamDir, "tasks", "task-1.json.tmp")
+				// Names must match the Store's real temp scheme
+				// "<path>.tmp.<pid>.<unixnano>" (writeJSONBytesNoLock).
+				staleTmp := filepath.Join(teamDir, "manifest.json.tmp.4242.1712000000000000000")
+				recentTmp := filepath.Join(teamDir, "tasks", "task-1.json.tmp.4242.1712000000000000001")
 				nonTmp := filepath.Join(teamDir, "phase-state.json")
 
 				require.NoError(t, os.WriteFile(staleTmp, []byte("stale"), 0o644))
@@ -176,10 +178,10 @@ func TestStaleLockRecovery_RecoverStaleLocks(t *testing.T) {
 			assertion: func(t *testing.T, paths *Paths, teamName string) {
 				t.Helper()
 				teamDir := paths.TeamDir(teamName)
-				_, staleErr := os.Stat(filepath.Join(teamDir, "manifest.json.tmp"))
+				_, staleErr := os.Stat(filepath.Join(teamDir, "manifest.json.tmp.4242.1712000000000000000"))
 				assert.True(t, os.IsNotExist(staleErr))
 
-				_, recentErr := os.Stat(filepath.Join(teamDir, "tasks", "task-1.json.tmp"))
+				_, recentErr := os.Stat(filepath.Join(teamDir, "tasks", "task-1.json.tmp.4242.1712000000000000001"))
 				require.NoError(t, recentErr)
 
 				_, nonTmpErr := os.Stat(filepath.Join(teamDir, "phase-state.json"))

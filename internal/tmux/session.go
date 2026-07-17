@@ -98,7 +98,7 @@ func (s *Session) Kill(ctx context.Context) error {
 		return fmt.Errorf("session name is empty")
 	}
 
-	if _, err := s.runTmux(ctx, "kill-session", "-t", s.Name); err != nil {
+	if _, err := s.runTmux(ctx, "kill-session", "-t", s.exactTarget()); err != nil {
 		return fmt.Errorf("kill tmux session %q: %w", s.Name, err)
 	}
 
@@ -111,8 +111,15 @@ func (s *Session) IsAlive(ctx context.Context) bool {
 		return false
 	}
 
-	_, err := s.runTmux(ctx, "has-session", "-t", s.Name)
+	_, err := s.runTmux(ctx, "has-session", "-t", s.exactTarget())
 	return err == nil
+}
+
+// exactTarget returns the session name with tmux's "=" exact-match prefix.
+// Without it tmux falls back to prefix matching, so operations on team
+// "alpha" could target team "alpha-2"'s session.
+func (s *Session) exactTarget() string {
+	return "=" + s.Name
 }
 
 // ListPanes returns all panes for this session.
@@ -121,7 +128,7 @@ func (s *Session) ListPanes(ctx context.Context) ([]PaneInfo, error) {
 		return nil, fmt.Errorf("session is nil")
 	}
 
-	output, err := s.runTmux(ctx, "list-panes", "-t", s.Name, "-F", paneListFormat)
+	output, err := s.runTmux(ctx, "list-panes", "-t", s.exactTarget(), "-F", paneListFormat)
 	if err != nil {
 		return nil, fmt.Errorf("list panes for session %q: %w", s.Name, err)
 	}
@@ -198,7 +205,7 @@ func (s *Session) NewWindow(ctx context.Context, windowName string) (string, err
 		return "", fmt.Errorf("window name is empty")
 	}
 
-	output, err := s.runTmux(ctx, "new-window", "-t", s.Name, "-n", windowName, "-P", "-F", "#{pane_id}")
+	output, err := s.runTmux(ctx, "new-window", "-t", s.exactTarget(), "-n", windowName, "-P", "-F", "#{pane_id}")
 	if err != nil {
 		return "", fmt.Errorf("create tmux window %q: %w", windowName, err)
 	}

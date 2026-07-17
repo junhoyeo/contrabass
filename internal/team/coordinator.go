@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -128,8 +129,26 @@ func (c *Coordinator) Mailbox() *Mailbox { return c.mailbox }
 // Ownership returns the ownership registry.
 func (c *Coordinator) Ownership() *OwnershipRegistry { return c.ownership }
 
-// Initialize creates the team manifest and directory structure.
+// Initialize creates the team manifest and directory structure. State left
+// by a finished (terminal) run of the same team name is wiped first so its
+// leftover task files cannot be claimed alongside the new run's tasks; a
+// non-terminal team is refused because a live coordinator may still own it.
 func (c *Coordinator) Initialize(teamCfg types.TeamConfig) error {
+	if c.store.TeamExists(c.teamName) {
+		state, err := c.store.LoadPhaseState(c.teamName)
+		switch {
+		case err == nil && !state.Phase.IsTerminal():
+			return fmt.Errorf("team %q already exists in phase %q; wait for it to finish or remove its state dir %s",
+				c.teamName, state.Phase, c.paths.TeamDir(c.teamName))
+		case err != nil && !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("team %q already exists but its phase state is unreadable; remove its state dir %s manually: %w",
+				c.teamName, c.paths.TeamDir(c.teamName), err)
+		}
+		if err := c.store.DeleteTeam(c.teamName); err != nil {
+			return fmt.Errorf("clear previous team state: %w", err)
+		}
+	}
+
 	if _, err := c.store.CreateManifest(c.teamName, teamCfg); err != nil {
 		return fmt.Errorf("create team manifest: %w", err)
 	}
@@ -593,6 +612,18 @@ func (c *Coordinator) checkTransitionGovernance(ctx context.Context, phase types
 		return err
 	}
 
+	if !allTerminal {
+		// Pending tasks whose dependency chain contains a failed task can
+		// only progress after the fix loop resets that dependency. Treating
+		// them as settled lets exec/verify hand off to the fix loop instead
+		// of tripping PhaseGateRule and hard-failing the pipeline.
+		settled, settledErr := c.allTasksSettled()
+		if settledErr != nil {
+			return settledErr
+		}
+		allTerminal = settled
+	}
+
 	_, activeWorkerCount := c.workerGovernanceSnapshot("")
 
 	return c.governance.Check(ctx, Decision{
@@ -602,6 +633,62 @@ func (c *Coordinator) checkTransitionGovernance(ctx context.Context, phase types
 		ActiveWorkerCount:         activeWorkerCount,
 		CurrentPhaseTasksTerminal: allTerminal,
 	})
+}
+
+// allTasksSettled reports whether every task is terminal or is a pending
+// task blocked (transitively) by a failed dependency. Such pending tasks are
+// unclaimable until the fix loop resets the failed task, so they must not
+// keep the phase gate closed.
+func (c *Coordinator) allTasksSettled() (bool, error) {
+	tasks, err := c.tasks.ListTasks(c.teamName)
+	if err != nil {
+		return false, err
+	}
+
+	byID := make(map[string]*types.TeamTask, len(tasks))
+	for i := range tasks {
+		byID[tasks[i].ID] = &tasks[i]
+	}
+
+	var blockedByFailed func(id string, seen map[string]bool) bool
+	blockedByFailed = func(id string, seen map[string]bool) bool {
+		if seen[id] {
+			return false
+		}
+		seen[id] = true
+		task := byID[id]
+		if task == nil {
+			return false
+		}
+		for _, depID := range task.DependsOn {
+			dep := byID[depID]
+			if dep == nil {
+				continue
+			}
+			if dep.Status == types.TaskFailed {
+				return true
+			}
+			if dep.Status == types.TaskPending && blockedByFailed(depID, seen) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for i := range tasks {
+		switch tasks[i].Status {
+		case types.TaskCompleted, types.TaskFailed:
+			continue
+		case types.TaskPending:
+			if !blockedByFailed(tasks[i].ID, make(map[string]bool)) {
+				return false, nil
+			}
+		default:
+			return false, nil
+		}
+	}
+
+	return true, nil
 }
 
 func (c *Coordinator) executeTask(ctx context.Context, task *types.TeamTask, token string, workerID string) error {
@@ -764,7 +851,12 @@ func (c *Coordinator) heartbeatLoop(ctx context.Context, workerID string, pid in
 func (c *Coordinator) checkForStaleWorkers() []string {
 	c.mu.Lock()
 	workerIDs := make([]string, 0, len(c.workers))
-	for id := range c.workers {
+	for id, w := range c.workers {
+		// Idle workers stop heartbeating by design once their task ends;
+		// a frozen heartbeat file is only meaningful mid-task.
+		if w.state.CurrentTask == "" {
+			continue
+		}
 		workerIDs = append(workerIDs, id)
 	}
 	c.mu.Unlock()

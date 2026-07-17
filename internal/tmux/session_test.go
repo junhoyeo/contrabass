@@ -54,7 +54,7 @@ func TestSessionCreate(t *testing.T) {
 		{
 			name: "creates session when absent",
 			results: map[string]mockResult{
-				"tmux has-session -t contrabass-team": {err: errors.New("exit status 1")},
+				"tmux has-session -t =contrabass-team": {err: errors.New("exit status 1")},
 			},
 			assertErr: func(t *testing.T, err error) {
 				require.NoError(t, err)
@@ -65,19 +65,19 @@ func TestSessionCreate(t *testing.T) {
 		{
 			name: "returns already exists error",
 			results: map[string]mockResult{
-				"tmux has-session -t contrabass-team": {},
+				"tmux has-session -t =contrabass-team": {},
 			},
 			assertErr: func(t *testing.T, err error) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "already exists")
 			},
 			callCount: 1,
-			lastCall:  []string{"has-session", "-t", "contrabass-team"},
+			lastCall:  []string{"has-session", "-t", "=contrabass-team"},
 		},
 		{
 			name: "returns clear error when tmux is missing",
 			results: map[string]mockResult{
-				"tmux has-session -t contrabass-team": {err: errors.New("exit status 1")},
+				"tmux has-session -t =contrabass-team": {err: errors.New("exit status 1")},
 				"tmux new-session -d -s contrabass-team": {
 					err: &exec.Error{Name: "tmux", Err: exec.ErrNotFound},
 				},
@@ -109,7 +109,7 @@ func TestSessionCreate(t *testing.T) {
 func TestSessionListPanes(t *testing.T) {
 	runner := &MockRunner{
 		results: map[string]mockResult{
-			"tmux list-panes -t contrabass-team -F " + paneListFormat: {
+			"tmux list-panes -t =contrabass-team -F " + paneListFormat: {
 				output: []byte("%0:0:1:0:4242:bash\n%1:1:0:1:5252:worker"),
 			},
 		},
@@ -143,7 +143,7 @@ func TestSessionSplitPane(t *testing.T) {
 func TestSessionNewWindow(t *testing.T) {
 	runner := &MockRunner{
 		results: map[string]mockResult{
-			"tmux new-window -t contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%3")},
+			"tmux new-window -t =contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%3")},
 		},
 	}
 
@@ -151,6 +151,25 @@ func TestSessionNewWindow(t *testing.T) {
 	paneID, err := session.NewWindow(context.Background(), "worker-1")
 	require.NoError(t, err)
 	assert.Equal(t, "%3", paneID)
+}
+
+// Session-level targets must use tmux's "=" exact-match prefix; a bare name
+// prefix-matches other sessions (contrabass-team vs contrabass-team-2), so
+// Kill/IsAlive could hit another team.
+func TestSessionTargetsUseExactMatch(t *testing.T) {
+	runner := &MockRunner{
+		results: map[string]mockResult{
+			"tmux has-session -t =contrabass-team": {},
+		},
+	}
+	session := NewSession("team", runner)
+
+	assert.True(t, session.IsAlive(context.Background()))
+	require.NoError(t, session.Kill(context.Background()))
+
+	require.Len(t, runner.calls, 2)
+	assert.Equal(t, []string{"has-session", "-t", "=contrabass-team"}, runner.calls[0].args)
+	assert.Equal(t, []string{"kill-session", "-t", "=contrabass-team"}, runner.calls[1].args)
 }
 
 func TestSessionSendKeys(t *testing.T) {

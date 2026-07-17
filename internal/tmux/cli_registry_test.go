@@ -28,11 +28,11 @@ func TestCLIRegistry_Get(t *testing.T) {
 		promptMode string
 		wantArgs   []string
 	}{
-		{name: "codex", agentType: "codex", binaryPath: "codex", promptMode: "stdin", wantArgs: []string{"app-server"}},
-		{name: "opencode", agentType: "opencode", binaryPath: "opencode", promptMode: "file", wantArgs: []string{"serve"}},
+		{name: "codex", agentType: "codex", binaryPath: "codex", promptMode: "stdin", wantArgs: []string{"exec", "-"}},
+		{name: "opencode", agentType: "opencode", binaryPath: "opencode", promptMode: "file", wantArgs: []string{"run"}},
 		{name: "omx", agentType: "omx", binaryPath: "omx", promptMode: "arg", wantArgs: []string{"team"}},
 		{name: "omc", agentType: "omc", binaryPath: "omc", promptMode: "arg", wantArgs: []string{"team"}},
-		{name: "oh-my-opencode", agentType: "oh-my-opencode", binaryPath: "oh-my-opencode", promptMode: "file", wantArgs: []string{}},
+		{name: "oh-my-opencode", agentType: "oh-my-opencode", binaryPath: "oh-my-opencode", promptMode: "file", wantArgs: []string{"run"}},
 	}
 
 	r := NewCLIRegistry()
@@ -130,11 +130,14 @@ func TestCLIRegistry_BuildArgsForEachAgentType(t *testing.T) {
 		agentType string
 		want      []string
 	}{
-		{name: "codex app-server", agentType: "codex", want: []string{"app-server"}},
-		{name: "opencode serve", agentType: "opencode", want: []string{"serve"}},
+		// Every entry must be a run-to-completion command: pane-based workers
+		// detect completion from the command's exit, so a server entrypoint
+		// (e.g. "opencode serve") would hang the pipeline forever.
+		{name: "codex exec", agentType: "codex", want: []string{"exec", "-"}},
+		{name: "opencode run", agentType: "opencode", want: []string{"run"}},
 		{name: "omx team", agentType: "omx", want: []string{"team"}},
 		{name: "omc team", agentType: "omc", want: []string{"team"}},
-		{name: "oh-my-opencode default", agentType: "oh-my-opencode", want: []string{}},
+		{name: "oh-my-opencode run", agentType: "oh-my-opencode", want: []string{"run"}},
 	}
 
 	for _, testCase := range testCases {
