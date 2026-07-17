@@ -59,6 +59,24 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 
 	workspacePath := m.workspacePath(issue.ID)
 
+	// Establish the repository mode before inspecting an existing workspace.
+	// In plain-directory mode, an existing path is a valid workspace (not an
+	// unregistered worktree) and must be preserved. Inspecting it with
+	// `git worktree list` first turns that normal case into a false failure.
+	notRepo, gitErr := m.isOutsideGitRepo(ctx)
+	if gitErr != nil {
+		return "", gitErr
+	}
+	if notRepo {
+		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+			return "", fmt.Errorf("create plain workspace dir for issue %s: %w", issue.ID, err)
+		}
+		m.mu.Lock()
+		m.active[issue.ID] = workspacePath
+		m.mu.Unlock()
+		return workspacePath, nil
+	}
+
 	m.mu.RLock()
 	trackedPath, tracked := m.active[issue.ID]
 	m.mu.RUnlock()
@@ -101,26 +119,6 @@ func (m *Manager) Create(ctx context.Context, issue types.Issue) (string, error)
 
 	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o755); err != nil {
 		return "", fmt.Errorf("create workspace parent directory: %w", err)
-	}
-
-	// If the base directory is not a git repo, create a plain directory
-	// instead of a git worktree. This is needed for tests and ephemeral
-	// environments that do not have a git repository. Only a definitive
-	// "not a git repository" answer takes this path — any other rev-parse
-	// failure (transient IO error, canceled context) used to silently create
-	// a plain dir INSIDE a real repo, confusing worktree bookkeeping later.
-	notRepo, gitErr := m.isOutsideGitRepo(ctx)
-	if gitErr != nil {
-		return "", gitErr
-	}
-	if notRepo {
-		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-			return "", fmt.Errorf("create plain workspace dir for issue %s: %w", issue.ID, err)
-		}
-		m.mu.Lock()
-		m.active[issue.ID] = workspacePath
-		m.mu.Unlock()
-		return workspacePath, nil
 	}
 
 	// Choose the branch the agent will commit on. Issue.BranchName is the

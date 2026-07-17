@@ -370,6 +370,26 @@ func TestManager_CleanupRemovesPlainDirOutsideGitRepo(t *testing.T) {
 	assert.False(t, mgr.Exists("ISSUE-PLAIN"))
 }
 
+// TestManager_CreateReusesExistingPlainDirOutsideGitRepo protects the
+// team-runner path, which prepares worker directories before the workspace
+// manager sees them. Outside a Git repository those directories are valid
+// plain workspaces, not stale in-repo worktree remnants.
+func TestManager_CreateReusesExistingPlainDirOutsideGitRepo(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir() // not a git repository
+	issue := types.Issue{ID: "ISSUE-PLAIN-EXISTING"}
+	path := filepath.Join(baseDir, "workspaces", issue.ID)
+	marker := filepath.Join(path, "prepared.txt")
+	require.NoError(t, os.MkdirAll(path, 0o755))
+	require.NoError(t, os.WriteFile(marker, []byte("preserve me"), 0o644))
+
+	createdPath, err := NewManager(baseDir).Create(context.Background(), issue)
+	require.NoError(t, err)
+	assert.Equal(t, path, createdPath)
+	assert.FileExists(t, marker)
+}
+
 // TestManager_CleanupRemovesStalePlainDirInsideRepo covers the in-repo
 // variant: a bare directory at the workspace path (left by a crashed run) is
 // not a registered worktree, so `git worktree remove` refuses it — Cleanup
