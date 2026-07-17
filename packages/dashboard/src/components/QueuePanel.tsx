@@ -28,7 +28,7 @@ export function QueuePanel({
   now = Date.now,
   ttlMs = 5_000,
 }: QueuePanelProps) {
-  const processedCount = useRef(0);
+  const lastSeenSeq = useRef(-1);
   const nowRef = useRef(now);
   const rowsRef = useRef<QueueRow[]>([]);
   const [rows, setRows] = useState<QueueRow[]>([]);
@@ -38,11 +38,13 @@ export function QueuePanel({
   }, [now]);
 
   useEffect(() => {
-    const pending = events.slice(processedCount.current);
-    processedCount.current = Math.min(processedCount.current + pending.length, events.length);
+    // Consume by sequence id, not array index: useSSE trims the buffer from
+    // the front once full, so indices do not survive across renders.
+    const pending = events.filter((event) => event.seq > lastSeenSeq.current);
     if (pending.length === 0) {
       return;
     }
+    lastSeenSeq.current = pending[pending.length - 1].seq;
 
     const seenAt = nowRef.current();
     setRows((current) => {

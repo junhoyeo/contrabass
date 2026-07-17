@@ -1,6 +1,8 @@
 export const zhCN = {
   app: {
     connectionError: "连接错误",
+    loading: "正在加载运行状态…",
+    reconnecting: "连接失败，正在自动重试…",
     sections: {
       runningSessions: "运行会话",
       board: "看板",

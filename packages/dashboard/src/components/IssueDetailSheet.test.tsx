@@ -173,6 +173,77 @@ describe("IssueDetailSheet", () => {
     }
   });
 
+  it("renders the empty-timeline state when the API returns null collections", async () => {
+    const { restore } = installFetchMock((url) => {
+      if (url.endsWith("/details")) {
+        return jsonResponse({
+          issue: baseIssue(),
+          generated_at: "2026-03-05T10:06:00.000Z",
+        });
+      }
+      // Go marshals nil slices as null for issues with no workflow history.
+      return jsonResponse({
+        issue_id: "issue-1",
+        runs: null,
+        nodes: null,
+        run_sync_states: null,
+        node_sync_states: null,
+        generated_at: "2026-03-05T10:06:00.000Z",
+      });
+    });
+
+    try {
+      render(<IssueDetailSheet data={sheetData()} onOpenChange={() => {}} />);
+
+      await waitFor(() => {
+        expectInDocument(screen.getByText(zhCN.detail.noTimeline));
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not refetch when sheet data object identity changes for the same issue", async () => {
+    const { fetchMock, restore } = installFetchMock((url) => {
+      if (url.endsWith("/details")) {
+        return jsonResponse({
+          issue: { ...baseIssue(), title: "Loaded issue title" },
+          generated_at: "2026-03-05T10:06:00.000Z",
+        });
+      }
+      return jsonResponse({
+        issue_id: "issue-1",
+        runs: [],
+        nodes: [],
+        run_sync_states: [],
+        node_sync_states: [],
+        generated_at: "2026-03-05T10:06:00.000Z",
+      });
+    });
+
+    try {
+      const { rerender } = render(
+        <IssueDetailSheet data={sheetData()} onOpenChange={() => {}} />,
+      );
+
+      await waitFor(() => {
+        expectInDocument(screen.getByText("Loaded issue title"));
+      });
+      const callsAfterLoad = fetchMock.mock.calls.length;
+
+      // Every accepted SSE snapshot rebuilds sheetData with a fresh object
+      // identity; the fetch effect must key on the stable issue id so open
+      // sheets do not flicker back to their loading states.
+      rerender(<IssueDetailSheet data={sheetData()} onOpenChange={() => {}} />);
+
+      expect(fetchMock.mock.calls.length).toBe(callsAfterLoad);
+      expect(screen.queryByText(zhCN.detail.loadingDetails)).toBeNull();
+      expectInDocument(screen.getByText("Loaded issue title"));
+    } finally {
+      restore();
+    }
+  });
+
   it("shows inline non-blocking errors for failed detail and timeline fetches", async () => {
     const { restore } = installFetchMock((url) => {
       if (url.endsWith("/details")) {
@@ -408,6 +479,61 @@ describe("IssueDetailSheet — Stop button", () => {
       });
 
       resolveStop();
+    } finally {
+      restore();
+    }
+  });
+
+  it("clears a stale stop error when the sheet targets another issue", async () => {
+    const { restore } = installFetchMock((url) => {
+      if (url.includes("/stop")) {
+        return jsonResponse({ error: "not running" }, 404);
+      }
+      if (url.endsWith("/timeline")) {
+        return jsonResponse({
+          issue_id: "ISS-RUN-1",
+          runs: [],
+          nodes: [],
+          run_sync_states: [],
+          node_sync_states: [],
+          generated_at: "",
+        });
+      }
+      return jsonResponse({ issue: baseIssue(), generated_at: "" });
+    });
+
+    try {
+      const { rerender } = render(
+        <IssueDetailSheet
+          data={runningSheetData()}
+          onOpenChange={() => {}}
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: zhCN.detail.stopAgent }),
+      );
+
+      await waitFor(() => {
+        expectInDocument(
+          screen.getByText(zhCN.detail.stopFailed("not running")),
+        );
+      });
+
+      // Close-and-reopen on another running agent: the previous issue's
+      // failure must not render under the new issue's stop button.
+      rerender(
+        <IssueDetailSheet
+          data={runningSheetData(baseRunningEntry({ issue_id: "ISS-RUN-2" }))}
+          onOpenChange={() => {}}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.queryByText(zhCN.detail.stopFailed("not running")),
+        ).toBeNull();
+      });
     } finally {
       restore();
     }

@@ -124,11 +124,6 @@ export function IssueDetailSheet({
     }
   }
 
-  useEffect(() => {
-    if (kind !== "running") {
-      setStopping(false);
-    }
-  }, [kind]);
   const loadedIssue = detailState.data?.issue;
   const displayedIssue = loadedIssue ?? issue;
   const linearState = displayedIssue
@@ -136,8 +131,18 @@ export function IssueDetailSheet({
     : undefined;
   const issueID = selectedIssueID(data);
 
+  // Stop state is per-issue: a stale error or in-flight flag from one issue
+  // must not carry over when the sheet targets another one.
   useEffect(() => {
-    if (!data || !issueID) {
+    setStopping(false);
+    setStopError(null);
+  }, [kind, issueID]);
+
+  // Keyed on issueID only: `data` gets a new object identity on every SSE
+  // snapshot, which would abort and restart these fetches while the sheet
+  // stays on the same issue. issueID is "" whenever data is null.
+  useEffect(() => {
+    if (!issueID) {
       setDetailState(emptyDetailState);
       setTimelineState(emptyTimelineState);
       return;
@@ -172,7 +177,19 @@ export function IssueDetailSheet({
       controller.signal,
     )
       .then((payload) =>
-        setTimelineState({ loading: false, data: payload, error: null }),
+        // Go marshals nil slices as null (issues with no workflow history);
+        // normalize so render code can index the collections safely.
+        setTimelineState({
+          loading: false,
+          data: {
+            ...payload,
+            runs: payload.runs ?? [],
+            nodes: payload.nodes ?? [],
+            run_sync_states: payload.run_sync_states ?? [],
+            node_sync_states: payload.node_sync_states ?? [],
+          },
+          error: null,
+        }),
       )
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
@@ -186,7 +203,7 @@ export function IssueDetailSheet({
       });
 
     return () => controller.abort();
-  }, [data, issueID]);
+  }, [issueID]);
 
   return (
     <Sheet open={data !== null} onOpenChange={onOpenChange}>

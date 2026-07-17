@@ -60,7 +60,17 @@ function App() {
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-primary">
             Contrabass
           </p>
-          <p className="mt-2 text-sm">{zhCN.app.sections.runningSessions}…</p>
+          <p className="mt-2 text-sm">{zhCN.app.loading}</p>
+          {error ? (
+            <div className="mt-3 space-y-1" role="alert">
+              <p className="text-xs font-medium text-destructive">
+                {zhCN.app.connectionError}: {error}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {zhCN.app.reconnecting}
+              </p>
+            </div>
+          ) : null}
         </div>
       </div>
     );

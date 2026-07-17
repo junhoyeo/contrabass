@@ -412,6 +412,35 @@ describe('useSSE state helpers', () => {
     }
   })
 
+  it('re-syncs board issues after the stream reconnects', async () => {
+    const firstStream = new MockStreamableHTTP()
+    const secondStream = new MockStreamableHTTP()
+    const mockFetch = installStreamableFetch([firstStream, secondStream])
+
+    try {
+      renderHook(() => useSSE())
+
+      await waitFor(() => {
+        expect(mockFetch.calls.filter((call) => call.url === '/api/v1/board/issues')).toHaveLength(1)
+      })
+      firstStream.close()
+
+      // Board events published while disconnected are lost (no hub replay),
+      // so every successful reconnect must refetch the board snapshot.
+      await waitFor(
+        () => {
+          expect(mockFetch.calls.filter((call) => call.url === '/api/v1/board/issues')).toHaveLength(2)
+        },
+        { timeout: 1500 },
+      )
+    } finally {
+      firstStream.close()
+      secondStream.close()
+      mockFetch.restore()
+      cleanup()
+    }
+  })
+
   it('handles all orchestrator event types in applyEvent', () => {
     const snapshot = makeSnapshot()
 
@@ -659,7 +688,7 @@ describe('useSSE state helpers', () => {
     expect(next.state?.running.find((entry) => entry.issue_id === 'ISSUE-9')).toBeTruthy()
   })
 
-  it('records queue channel events', () => {
+  it('records queue channel events with monotonically increasing sequence ids', () => {
     const next = sseReducer(INITIAL_STATE, {
       type: 'web_event',
       data: makeWebEvent('orchestrator', 'dispatch_skipped_blocked_by', {
@@ -669,13 +698,26 @@ describe('useSSE state helpers', () => {
       }),
     })
 
-    expect(next.queueEvents).toEqual([
-      {
-        issue_id: 'issue-50',
-        identifier: 'ZII-50',
-        blockers: 'ZII-49,ZII-48',
-      },
-    ])
+    expect(next.queueEvents).toHaveLength(1)
+    expect(next.queueEvents[0]).toMatchObject({
+      issue_id: 'issue-50',
+      identifier: 'ZII-50',
+      blockers: 'ZII-49,ZII-48',
+    })
+
+    const after = sseReducer(next, {
+      type: 'web_event',
+      data: makeWebEvent('orchestrator', 'dispatch_skipped_blocked_by', {
+        issue_id: 'issue-51',
+        identifier: 'ZII-51',
+        blockers: 'ZII-50',
+      }),
+    })
+
+    // Consumers track their position by seq because the ring buffer trims
+    // entries from the front once full; indices are not stable.
+    expect(after.queueEvents).toHaveLength(2)
+    expect(after.queueEvents[1].seq).toBeGreaterThan(after.queueEvents[0].seq)
   })
 
   it('updates teamSnapshot for team events', () => {

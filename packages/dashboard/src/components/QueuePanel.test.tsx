@@ -14,10 +14,15 @@ async function waitForQueueTick() {
   });
 }
 
+// seq mirrors useSSE's monotonic counter; each fabricated event gets a fresh
+// one unless the test pins it explicitly.
+let nextSeq = 0;
+
 function queueEvent(
   overrides: Partial<QueueEventPayload> = {},
 ): QueueEventPayload {
   return {
+    seq: nextSeq++,
     issue_id: "issue-1",
     identifier: "ZII-50",
     blockers: "ZII-49",
@@ -91,5 +96,23 @@ describe("QueuePanel", () => {
     nowMs = 10_000;
     await waitForQueueTick();
     expect(screen.queryByText("ZII-50")).toBeNull();
+  });
+
+  it("keeps processing events after the buffer is trimmed from the front", async () => {
+    const first = queueEvent({ issue_id: "issue-a", identifier: "ZII-60" });
+    const second = queueEvent({ issue_id: "issue-b", identifier: "ZII-61" });
+    const { rerender } = render(<QueuePanel events={[first, second]} />);
+    expectInDocument(screen.getByText("ZII-60"));
+    expectInDocument(screen.getByText("ZII-61"));
+
+    // Simulate the useSSE ring buffer at capacity: the oldest entry is
+    // spliced off the front while a new one is appended, so the array
+    // length stays constant and index-based cursors would stall.
+    const third = queueEvent({ issue_id: "issue-c", identifier: "ZII-62" });
+    await act(async () => {
+      rerender(<QueuePanel events={[second, third]} />);
+    });
+
+    expectInDocument(screen.getByText("ZII-62"));
   });
 });
