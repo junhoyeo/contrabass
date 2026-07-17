@@ -13,7 +13,7 @@ import (
 func TestWorkerBootstrapBootstrap(t *testing.T) {
 	runner := &MockRunner{
 		results: map[string]mockResult{
-			"tmux new-window -t contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%3\n")},
+			"tmux new-window -t =contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%3\n")},
 		},
 	}
 
@@ -41,13 +41,43 @@ func TestWorkerBootstrapBootstrap(t *testing.T) {
 	}
 
 	expected := [][]string{
-		{"new-window", "-t", "contrabass-team", "-n", "worker-1", "-P", "-F", "#{pane_id}"},
+		{"new-window", "-t", "=contrabass-team", "-n", "worker-1", "-P", "-F", "#{pane_id}"},
 		{"send-keys", "-t", "%3", "export API_TOKEN='a b'", "C-m"},
 		{"send-keys", "-t", "%3", "export ZED='value'", "C-m"},
 		{"send-keys", "-t", "%3", "cd '/tmp/work dir'", "C-m"},
 		{"send-keys", "-t", "%3", "'contrabass' 'team' '2:executor'", "C-m"},
 	}
 	assert.Equal(t, expected, got)
+}
+
+func TestWorkerBootstrapBootstrapWrapsPromptAndExitMarker(t *testing.T) {
+	runner := &MockRunner{
+		results: map[string]mockResult{
+			"tmux new-window -t =contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%4\n")},
+		},
+	}
+
+	b := NewWorkerBootstrap(NewSession("team", runner), BootstrapConfig{
+		WorkerID:       "worker-1",
+		TeamName:       "team",
+		WorkDir:        "/tmp/work",
+		CLICommand:     "opencode",
+		CLIArgs:        []string{"run"},
+		PromptMode:     promptModeFile,
+		PromptPath:     "/tmp/work/prompt task.md",
+		ExitMarkerPath: "/tmp/work/.contrabass/task-exit-1",
+	})
+	b.startupDelay = time.Millisecond
+
+	_, err := b.Bootstrap(context.Background())
+	require.NoError(t, err)
+
+	last := runner.calls[len(runner.calls)-1]
+	assert.Equal(t, []string{
+		"send-keys", "-t", "%4",
+		"'opencode' 'run' < '/tmp/work/prompt task.md'; echo $? > '/tmp/work/.contrabass/task-exit-1'",
+		"C-m",
+	}, last.args)
 }
 
 func TestWorkerBootstrapBootstrapValidationErrors(t *testing.T) {
@@ -106,8 +136,8 @@ func TestWorkerBootstrapBootstrapValidationErrors(t *testing.T) {
 func TestWorkerBootstrapBootstrapCleansUpOnFailure(t *testing.T) {
 	runner := &MockRunner{
 		results: map[string]mockResult{
-			"tmux new-window -t contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%7")},
-			"tmux send-keys -t %7 cd '/tmp/work' C-m":                         {err: errors.New("send failed")},
+			"tmux new-window -t =contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%7")},
+			"tmux send-keys -t %7 cd '/tmp/work' C-m":                          {err: errors.New("send failed")},
 		},
 	}
 

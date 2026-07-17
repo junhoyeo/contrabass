@@ -82,7 +82,7 @@ func TestTmuxRunner_IntegrationPipeline(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			workspace := t.TempDir()
 			stateDir := t.TempDir()
-			mockRunner := newIntegrationMockRunner(workspace, tt.processCount)
+			mockRunner := newIntegrationMockRunner(tt.processCount)
 
 			teamName := "team-integration"
 			paths := team.NewPaths(stateDir)
@@ -141,6 +141,12 @@ func TestTmuxRunner_IntegrationPipeline(t *testing.T) {
 				}
 				for _, hb := range heartbeats {
 					if hb.Status != "running" {
+						return false
+					}
+					// Runner heartbeats must stay out of the coordinator's
+					// "worker-<n>" namespace so they cannot mask a genuinely
+					// stale coordinator worker.
+					if !strings.HasPrefix(hb.WorkerID, "tmux-worker-") {
 						return false
 					}
 				}
@@ -205,7 +211,7 @@ func TestTmuxRunner_IntegrationPipeline(t *testing.T) {
 	}
 }
 
-func newIntegrationMockRunner(workspace string, processCount int) *integrationMockRunner {
+func newIntegrationMockRunner(processCount int) *integrationMockRunner {
 	handlers := map[string]func(args []string) ([]byte, error){
 		"tmux list-panes -t %1 -F #{pane_dead}": func(_ []string) ([]byte, error) {
 			return []byte("0\n"), nil
@@ -215,25 +221,13 @@ func newIntegrationMockRunner(workspace string, processCount int) *integrationMo
 		},
 	}
 
-	handlers["tmux new-window -t contrabass-team-integration -n worker-1 -P -F #{pane_id}"] = func(_ []string) ([]byte, error) {
+	handlers["tmux new-window -t =contrabass-team-integration -n tmux-worker-1 -P -F #{pane_id}"] = func(_ []string) ([]byte, error) {
 		return []byte("%1\n"), nil
-	}
-	handlers["tmux send-keys -t %1 cd "+shellQuoteForIntegrationKey(workspace)+" C-m"] = func(_ []string) ([]byte, error) {
-		return nil, nil
-	}
-	handlers["tmux send-keys -t %1 codex app-server C-m"] = func(_ []string) ([]byte, error) {
-		return nil, nil
 	}
 
 	if processCount > 1 {
-		handlers["tmux new-window -t contrabass-team-integration -n worker-2 -P -F #{pane_id}"] = func(_ []string) ([]byte, error) {
+		handlers["tmux new-window -t =contrabass-team-integration -n tmux-worker-2 -P -F #{pane_id}"] = func(_ []string) ([]byte, error) {
 			return []byte("%2\n"), nil
-		}
-		handlers["tmux send-keys -t %2 cd "+shellQuoteForIntegrationKey(workspace)+" C-m"] = func(_ []string) ([]byte, error) {
-			return nil, nil
-		}
-		handlers["tmux send-keys -t %2 codex app-server C-m"] = func(_ []string) ([]byte, error) {
-			return nil, nil
 		}
 		handlers["tmux list-panes -t %2 -F #{pane_dead}"] = func(_ []string) ([]byte, error) {
 			return []byte("0\n"), nil
@@ -244,12 +238,4 @@ func newIntegrationMockRunner(workspace string, processCount int) *integrationMo
 	}
 
 	return &integrationMockRunner{handlers: handlers}
-}
-
-func shellQuoteForIntegrationKey(value string) string {
-	if value == "" {
-		return "''"
-	}
-
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

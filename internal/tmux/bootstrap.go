@@ -22,6 +22,15 @@ type BootstrapConfig struct {
 	CLIArgs         []string
 	BootstrapPrompt string
 	Env             map[string]string
+	// PromptMode and PromptPath deliver the task prompt to the CLI: "stdin"
+	// and "file" modes redirect the prompt file into the command's stdin.
+	PromptMode string
+	PromptPath string
+	// ExitMarkerPath, when set, appends a shell wrapper that writes the CLI
+	// command's exit code to this file when it exits. The CLI runs as a
+	// child of the pane's interactive shell, so the pane stays alive after
+	// the command exits — #{pane_dead} can never signal completion.
+	ExitMarkerPath string
 }
 
 type WorkerBootstrap struct {
@@ -75,6 +84,17 @@ func (w *WorkerBootstrap) Bootstrap(ctx context.Context) (paneID string, err err
 		cliParts = append(cliParts, shellQuote(arg))
 	}
 	fullCLICmd := strings.Join(cliParts, " ")
+
+	if promptPath := strings.TrimSpace(w.config.PromptPath); promptPath != "" {
+		switch w.config.PromptMode {
+		case promptModeStdin, promptModeFile:
+			fullCLICmd += " < " + shellQuote(promptPath)
+		}
+	}
+
+	if marker := strings.TrimSpace(w.config.ExitMarkerPath); marker != "" {
+		fullCLICmd += "; echo $? > " + shellQuote(marker)
+	}
 
 	if err := w.session.SendKeys(ctx, createdPaneID, fullCLICmd, "C-m"); err != nil {
 		return "", fmt.Errorf("launch worker %q cli command: %w", w.config.WorkerID, err)

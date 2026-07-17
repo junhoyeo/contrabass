@@ -3,8 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -23,11 +26,8 @@ func TestTmuxRunner_CompileTimeCheck(t *testing.T) {
 func TestTmuxRunner_StartCreatesProcess(t *testing.T) {
 	workspace := t.TempDir()
 	runner := setupTmuxRunner(t, workspace, tmuxMockSpecs{
-		"tmux new-window -t contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
-		"tmux send-keys -t %1 cd " + shellQuoteForKey(workspace) + " C-m": {},
-		"tmux send-keys -t %1 codex app-server C-m":                       {},
-		"tmux list-panes -t %1 -F #{pane_dead}":                           {output: []byte("0\n")},
-		"tmux kill-pane -t %1":                                            {},
+		"tmux new-window -t =contrabass-team -n tmux-worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
+		"tmux list-panes -t %1 -F #{pane_dead}":                                 {output: []byte("0\n")},
 	})
 
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-1", Title: "tmux"}, workspace, "run this")
@@ -48,11 +48,9 @@ func TestTmuxRunner_StopKillsPaneAndSignalsDone(t *testing.T) {
 	workspace := t.TempDir()
 	killErr := errors.New("kill failed")
 	runner := setupTmuxRunner(t, workspace, tmuxMockSpecs{
-		"tmux new-window -t contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
-		"tmux send-keys -t %1 cd " + shellQuoteForKey(workspace) + " C-m": {},
-		"tmux send-keys -t %1 codex app-server C-m":                       {},
-		"tmux list-panes -t %1 -F #{pane_dead}":                           {output: []byte("0\n")},
-		"tmux kill-pane -t %1":                                            {err: killErr},
+		"tmux new-window -t =contrabass-team -n tmux-worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
+		"tmux list-panes -t %1 -F #{pane_dead}":                                 {output: []byte("0\n")},
+		"tmux kill-pane -t %1":                                                  {err: killErr},
 	})
 
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-2"}, workspace, "run this")
@@ -74,16 +72,10 @@ func TestTmuxRunner_StopKillsPaneAndSignalsDone(t *testing.T) {
 func TestTmuxRunner_CloseStopsAllProcesses(t *testing.T) {
 	workspace := t.TempDir()
 	runner := setupTmuxRunner(t, workspace, tmuxMockSpecs{
-		"tmux new-window -t contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
-		"tmux send-keys -t %1 cd " + shellQuoteForKey(workspace) + " C-m": {},
-		"tmux send-keys -t %1 codex app-server C-m":                       {},
-		"tmux list-panes -t %1 -F #{pane_dead}":                           {output: []byte("0\n")},
-		"tmux kill-pane -t %1":                                            {},
-		"tmux new-window -t contrabass-team -n worker-2 -P -F #{pane_id}": {output: []byte("%2\n")},
-		"tmux send-keys -t %2 cd " + shellQuoteForKey(workspace) + " C-m": {},
-		"tmux send-keys -t %2 codex app-server C-m":                       {},
-		"tmux list-panes -t %2 -F #{pane_dead}":                           {output: []byte("0\n")},
-		"tmux kill-pane -t %2":                                            {},
+		"tmux new-window -t =contrabass-team -n tmux-worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
+		"tmux list-panes -t %1 -F #{pane_dead}":                                 {output: []byte("0\n")},
+		"tmux new-window -t =contrabass-team -n tmux-worker-2 -P -F #{pane_id}": {output: []byte("%2\n")},
+		"tmux list-panes -t %2 -F #{pane_dead}":                                 {output: []byte("0\n")},
 	})
 
 	proc1, err := runner.Start(context.Background(), types.Issue{ID: "CB-3"}, workspace, "run one")
@@ -96,23 +88,65 @@ func TestTmuxRunner_CloseStopsAllProcesses(t *testing.T) {
 	assertDoneNil(t, proc2.Done)
 }
 
-func TestTmuxRunner_MonitorDetectsDeadPane(t *testing.T) {
+// Completion must come from the CLI command's exit marker, not from pane
+// liveness: the CLI runs inside the pane's interactive shell, so the pane
+// outlives the command and #{pane_dead} never fires on normal exit.
+func TestTmuxRunner_ExitMarkerCompletesTask(t *testing.T) {
 	workspace := t.TempDir()
 	runner := setupTmuxRunner(t, workspace, tmuxMockSpecs{
-		"tmux new-window -t contrabass-team -n worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
-		"tmux send-keys -t %1 cd " + shellQuoteForKey(workspace) + " C-m": {},
-		"tmux send-keys -t %1 codex app-server C-m":                       {},
-		"tmux list-panes -t %1 -F #{pane_dead}":                           {output: []byte("1\n")},
+		"tmux new-window -t =contrabass-team -n tmux-worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
+		"tmux list-panes -t %1 -F #{pane_dead}":                                 {output: []byte("0\n")},
 	})
 
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-5"}, workspace, "run this")
 	require.NoError(t, err)
+
+	writeExitMarker(t, workspace, 1, "0\n")
 
 	events := collectOpenCodeEvents(t, proc.Events, proc.Done, 2, 2*time.Second)
 	require.Len(t, events, 2)
 	assert.Equal(t, "turn/started", events[0].Type)
 	assert.Equal(t, "task/completed", events[1].Type)
 	assertDoneNil(t, proc.Done)
+}
+
+func TestTmuxRunner_ExitMarkerNonZeroFailsTask(t *testing.T) {
+	workspace := t.TempDir()
+	runner := setupTmuxRunner(t, workspace, tmuxMockSpecs{
+		"tmux new-window -t =contrabass-team -n tmux-worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
+		"tmux list-panes -t %1 -F #{pane_dead}":                                 {output: []byte("0\n")},
+	})
+
+	proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-5b"}, workspace, "run this")
+	require.NoError(t, err)
+
+	writeExitMarker(t, workspace, 1, "3\n")
+
+	events := collectOpenCodeEvents(t, proc.Events, proc.Done, 2, 2*time.Second)
+	require.Len(t, events, 2)
+	assert.Equal(t, "turn/started", events[0].Type)
+	assert.Equal(t, "turn/failed", events[1].Type)
+	assertDoneErrContains(t, proc.Done, "exited with code 3")
+}
+
+// A dead pane without an exit marker is a crash, not a completion: tmux only
+// reports pane_dead=1 when the pane's root shell died, which cannot happen on
+// a normal CLI exit under this bootstrap.
+func TestTmuxRunner_DeadPaneWithoutMarkerFailsTask(t *testing.T) {
+	workspace := t.TempDir()
+	runner := setupTmuxRunner(t, workspace, tmuxMockSpecs{
+		"tmux new-window -t =contrabass-team -n tmux-worker-1 -P -F #{pane_id}": {output: []byte("%1\n")},
+		"tmux list-panes -t %1 -F #{pane_dead}":                                 {output: []byte("1\n")},
+	})
+
+	proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-5c"}, workspace, "run this")
+	require.NoError(t, err)
+
+	events := collectOpenCodeEvents(t, proc.Events, proc.Done, 2, 2*time.Second)
+	require.Len(t, events, 2)
+	assert.Equal(t, "turn/started", events[0].Type)
+	assert.Equal(t, "turn/failed", events[1].Type)
+	assertDoneErrContains(t, proc.Done, "died before writing exit marker")
 }
 
 func TestTmuxRunner_StartUnknownAgentType(t *testing.T) {
@@ -178,10 +212,24 @@ func (m *mockTmuxRunner) Run(_ context.Context, name string, args ...string) ([]
 	return result.output, result.err
 }
 
-func shellQuoteForKey(value string) string {
-	if value == "" {
-		return "''"
-	}
+// writeExitMarker simulates the pane shell recording the CLI's exit code
+// (see prepareExitMarker for the path layout).
+func writeExitMarker(t *testing.T, workspace string, pid int, content string) {
+	t.Helper()
 
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+	dir := filepath.Join(workspace, ".contrabass")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("task-exit-%d", pid)), []byte(content), 0o644))
+}
+
+func assertDoneErrContains(t *testing.T, done <-chan error, substr string) {
+	t.Helper()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), substr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected done channel to be signaled")
+	}
 }

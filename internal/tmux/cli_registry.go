@@ -28,23 +28,29 @@ type CLIRegistry struct {
 func NewCLIRegistry() *CLIRegistry {
 	r := &CLIRegistry{configs: make(map[string]CLIConfig, 5)}
 
-	// Codex starts an app-server subprocess and receives prompts over stdin JSONL.
+	// Pane-based completion detection requires run-to-completion commands:
+	// the bootstrap redirects the prompt file into stdin and records the
+	// command's exit code in a marker file. Server entrypoints ("codex
+	// app-server", "opencode serve") never exit, so a tmux worker driving
+	// them would hang forever.
+
+	// Codex runs a one-shot non-interactive turn; "-" reads the prompt from stdin.
 	mustRegister(r, CLIConfig{
 		AgentType:  "codex",
 		BinaryPath: "codex",
 		BuildArgs: func(_, _ string) []string {
-			return []string{"app-server"}
+			return []string{"exec", "-"}
 		},
 		PromptMode:   promptModeStdin,
 		ReadyPattern: "initialized",
 	})
 
-	// OpenCode starts an HTTP/SSE server and consumes prompt content from a file.
+	// OpenCode runs a single prompt to completion, reading it from piped stdin.
 	mustRegister(r, CLIConfig{
 		AgentType:  "opencode",
 		BinaryPath: "opencode",
 		BuildArgs: func(_, _ string) []string {
-			return []string{"serve"}
+			return []string{"run"}
 		},
 		PromptMode:   promptModeFile,
 		ReadyPattern: "serve|listening",
@@ -72,12 +78,13 @@ func NewCLIRegistry() *CLIRegistry {
 		ReadyPattern: "team",
 	})
 
-	// oh-my-opencode wraps OpenCode and commonly receives prompt content from file.
+	// oh-my-opencode wraps OpenCode's CLI surface; "run" executes a single
+	// piped prompt to completion instead of launching the interactive TUI.
 	mustRegister(r, CLIConfig{
 		AgentType:  "oh-my-opencode",
 		BinaryPath: "oh-my-opencode",
 		BuildArgs: func(_, _ string) []string {
-			return []string{}
+			return []string{"run"}
 		},
 		PromptMode:   promptModeFile,
 		ReadyPattern: "ready|serve|listening",
