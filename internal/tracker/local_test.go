@@ -2,7 +2,9 @@ package tracker
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -110,6 +112,114 @@ func TestLocalTrackerLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, allIssues, 1)
 	assert.Equal(t, LocalBoardStateDone, allIssues[0].State)
+}
+
+// TestLocalTrackerConcurrentInstancesMintUniqueIDs pins the cross-process
+// locking contract. The daemon and the `contrabass board`/`team` CLIs open
+// the same BoardDir from separate processes; each LocalTracker instance has
+// its own sync.Mutex, so only the flock serializes the manifest
+// read-modify-write. Two instances in one test simulate two processes (flock
+// contends across separate file descriptors even within a process). Without
+// the lock this races: duplicate issue IDs are minted and issue files are
+// silently overwritten.
+func TestLocalTrackerConcurrentInstancesMintUniqueIDs(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	boardDir := filepath.Join(t.TempDir(), "board")
+
+	trackerA := NewLocalTracker(LocalConfig{BoardDir: boardDir, Actor: "daemon"})
+	trackerB := NewLocalTracker(LocalConfig{BoardDir: boardDir, Actor: "cli"})
+
+	const perTracker = 20
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2*perTracker)
+
+	for _, tr := range []*LocalTracker{trackerA, trackerB} {
+		for i := 0; i < perTracker; i++ {
+			wg.Add(1)
+			go func(tr *LocalTracker, i int) {
+				defer wg.Done()
+				if _, err := tr.CreateIssue(ctx, fmt.Sprintf("issue %d", i), "", nil); err != nil {
+					errCh <- err
+				}
+			}(tr, i)
+		}
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+
+	issues, err := trackerA.ListIssues(ctx, true)
+	require.NoError(t, err)
+	require.Len(t, issues, 2*perTracker, "every CreateIssue must land as its own file")
+
+	seen := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		_, dup := seen[issue.ID]
+		require.Falsef(t, dup, "duplicate issue ID minted: %s", issue.ID)
+		seen[issue.ID] = struct{}{}
+	}
+}
+
+func TestLocalTrackerClaimIsExclusiveAcrossInstances(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	boardDir := filepath.Join(t.TempDir(), "board")
+	trackerA := NewLocalTracker(LocalConfig{BoardDir: boardDir, Actor: "daemon"})
+	trackerB := NewLocalTracker(LocalConfig{BoardDir: boardDir, Actor: "cli"})
+
+	issue, err := trackerA.CreateIssue(ctx, "exclusive claim", "", nil)
+	require.NoError(t, err)
+	require.NoError(t, trackerA.ClaimIssue(ctx, issue.ID))
+
+	err = trackerB.ClaimIssue(ctx, issue.ID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already claimed by another process")
+
+	current, err := trackerA.GetIssue(ctx, issue.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "daemon", current.ClaimedBy)
+
+	// Terminal state releases the process-lifetime claim lock. A later caller
+	// must still reject the completed issue rather than launch duplicate work.
+	require.NoError(t, trackerA.UpdateIssueState(ctx, issue.ID, types.Released))
+	err = trackerB.ClaimIssue(ctx, issue.ID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already done")
+}
+
+// TestLocalBoardInProgressMapsToClaimed pins the crash-recovery contract: an
+// in_progress issue left behind by a crashed run must surface as Claimed so
+// the orchestrator's orphan-claim recovery (which only looks at Claimed)
+// re-dispatches it. Mapping it to Running strands the issue forever.
+func TestLocalBoardInProgressMapsToClaimed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	localTracker := NewLocalTracker(LocalConfig{
+		BoardDir: filepath.Join(t.TempDir(), "board"),
+		Actor:    "bot",
+	})
+
+	issue, err := localTracker.CreateIssue(ctx, "Crashes mid-run", "", nil)
+	require.NoError(t, err)
+	require.NoError(t, localTracker.ClaimIssue(ctx, issue.ID))
+
+	// Simulate an orchestrator restart: nothing is in the managed set, and
+	// FetchIssues reports the board as-is.
+	fetched, err := localTracker.FetchIssues(ctx)
+	require.NoError(t, err)
+	require.Len(t, fetched, 1)
+	assert.Equal(t, types.Claimed, fetched[0].State)
+
+	assert.Equal(t, types.Claimed, LocalBoardStateInProgress.IssueState())
+	assert.Equal(t, types.RetryQueued, LocalBoardStateRetry.IssueState())
+	assert.Equal(t, types.Released, LocalBoardStateDone.IssueState())
+	assert.Equal(t, types.Unclaimed, LocalBoardStateTodo.IssueState())
 }
 
 func TestLocalTrackerUpdateIssue(t *testing.T) {

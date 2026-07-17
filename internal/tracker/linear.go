@@ -109,6 +109,7 @@ const fetchIssuesQuery = `query FetchIssues($projectSlug: String!, $first: Int!,
 			description
 			priority
 			state { name type }
+			assignee { id }
 			url
 			labels { nodes { name } }
 			createdAt
@@ -218,6 +219,9 @@ func (c *LinearClient) FetchIssues(ctx context.Context) ([]types.Issue, error) {
 		for _, iss := range issues {
 			stateType, _ := iss.TrackerMeta["linear_state_type"].(string)
 			if !isClaimableLinearStateType(stateType) {
+				continue
+			}
+			if !c.isDispatchSafeAssignee(iss) {
 				continue
 			}
 			allIssues = append(allIssues, iss)
@@ -528,6 +532,11 @@ func normalizeIssue(node map[string]interface{}) types.Issue {
 		linearStateType, _ = state["type"].(string)
 	}
 
+	assigneeID := ""
+	if assignee, ok := node["assignee"].(map[string]interface{}); ok {
+		assigneeID, _ = assignee["id"].(string)
+	}
+
 	identifier := getString(node, "identifier")
 	priority := getInt(node, "priority")
 	createdAt := getTime(node, "createdAt")
@@ -553,10 +562,26 @@ func normalizeIssue(node map[string]interface{}) types.Issue {
 		CreatedAt:     createdAt,
 		UpdatedAt:     updatedAt,
 		TrackerMeta: map[string]interface{}{
-			"linear_state":      linearState,
-			"linear_state_type": linearStateType,
+			"linear_state":       linearState,
+			"linear_state_type":  linearStateType,
+			"linear_assignee_id": assigneeID,
 		},
 	}
+}
+
+// isDispatchSafeAssignee reports whether an issue's assignee allows the
+// orchestrator to manage it. Issues assigned to a different Linear user are
+// excluded entirely: returning them would let orphan-claim recovery re-assign
+// a teammate's In Progress issue to the bot and start an agent on it.
+// Unassigned issues and issues already assigned to the configured assignee
+// stay manageable. When no assignee ID is configured, ownership cannot be
+// established and nothing is filtered.
+func (c *LinearClient) isDispatchSafeAssignee(issue types.Issue) bool {
+	if c.assigneeID == "" {
+		return true
+	}
+	assigneeID, _ := issue.TrackerMeta["linear_assignee_id"].(string)
+	return assigneeID == "" || assigneeID == c.assigneeID
 }
 
 // terminalLinearStateTypes lists Linear state.type values for issues that the
@@ -564,13 +589,15 @@ func normalizeIssue(node map[string]interface{}) types.Issue {
 // was just successfully released (state=Done, type=completed) would reappear in
 // the next poll as Unclaimed and be picked up again, producing a re-claim loop.
 //
-// "completed" and "canceled" cover Linear's terminal types. "backlog" is also
-// excluded so triage-stage issues don't get picked up before a human moves them
-// to Todo / In Progress.
+// "completed" and "canceled" cover Linear's terminal types. "backlog" and
+// "triage" are also excluded so pre-planning issues don't get picked up before
+// a human moves them to Todo / In Progress. (Linear's state types are: triage,
+// backlog, unstarted, started, completed, canceled.)
 var terminalLinearStateTypes = map[string]struct{}{
 	"completed": {},
 	"canceled":  {},
 	"backlog":   {},
+	"triage":    {},
 }
 
 // isClaimableLinearStateType reports whether an issue with this Linear state
@@ -727,16 +754,25 @@ func getTime(m map[string]interface{}, key string) time.Time {
 	return t
 }
 
-// parseRetryAfter parses the Retry-After header value as seconds.
+// parseRetryAfter parses the Retry-After header value. RFC 9110 allows both
+// delta-seconds and an HTTP-date; treating a date as "no delay" would hammer
+// a rate-limited API in a tight retry loop.
 func parseRetryAfter(val string) time.Duration {
 	if val == "" {
 		return 0
 	}
-	seconds, err := strconv.Atoi(val)
-	if err != nil {
-		return 0
+	if seconds, err := strconv.Atoi(val); err == nil {
+		if seconds < 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
 	}
-	return time.Duration(seconds) * time.Second
+	if at, err := http.ParseTime(val); err == nil {
+		if delay := time.Until(at); delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 // truncateBody truncates a response body for error messages.

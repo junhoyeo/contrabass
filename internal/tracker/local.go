@@ -30,6 +30,12 @@ const (
 var localBoardPrefixPattern = regexp.MustCompile(`[^A-Za-z0-9]+`)
 var localBoardTeamPattern = regexp.MustCompile(`[^a-z0-9]+`)
 
+// localIssueIDPattern restricts issue IDs to filename-safe characters.
+// Issue IDs arrive from the CLI and the web API and are joined into
+// filesystem paths (issues/<id>.json, comments/<id>.jsonl); this prevents
+// path traversal via "../" or other metacharacters.
+var localIssueIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
 type LocalConfig struct {
 	BoardDir    string
 	IssuePrefix string
@@ -89,10 +95,11 @@ type LocalIssueCreateOptions struct {
 }
 
 type LocalTracker struct {
-	boardDir    string
-	issuePrefix string
-	actor       string
-	mu          sync.Mutex
+	boardDir         string
+	issuePrefix      string
+	actor            string
+	mu               sync.Mutex
+	activeClaimLocks map[string]*fileLock
 }
 
 var _ Tracker = (*LocalTracker)(nil)
@@ -112,14 +119,56 @@ func NewLocalTracker(cfg LocalConfig) *LocalTracker {
 	}
 
 	return &LocalTracker{
-		boardDir:    filepath.Clean(boardDir),
-		issuePrefix: sanitizeLocalIssuePrefix(cfg.IssuePrefix),
-		actor:       actor,
+		boardDir:         filepath.Clean(boardDir),
+		issuePrefix:      sanitizeLocalIssuePrefix(cfg.IssuePrefix),
+		actor:            actor,
+		activeClaimLocks: make(map[string]*fileLock),
 	}
 }
 
 func (t *LocalTracker) BoardDir() string {
 	return t.boardDir
+}
+
+// lockBoardFile takes the cross-process board lock. The daemon and the
+// `contrabass board`/`team` CLIs open the same BoardDir from separate
+// processes; t.mu only serializes within one process. Callers must already
+// hold t.mu (so lock ordering is always mu → file lock) and must call the
+// returned release func.
+func (t *LocalTracker) lockBoardFile() (func(), error) {
+	lock := newFileLock(filepath.Join(t.boardDir, "board"))
+	if err := lock.Lock(); err != nil {
+		return nil, fmt.Errorf("lock board: %w", err)
+	}
+	return func() { _ = lock.Unlock() }, nil
+}
+
+// tryLockIssueClaim takes a process-lifetime lock for one actively claimed
+// issue. Unlike the board mutation lock, this lock remains held while the
+// agent runs, so another daemon cannot mistake the live claim for an orphan.
+// flock is released by the OS if the claiming process crashes.
+func (t *LocalTracker) tryLockIssueClaim(issueID string) (*fileLock, error) {
+	lock := newFileLock(filepath.Join(t.boardDir, "claims", issueID))
+	acquired, err := lock.TryLock()
+	if err != nil {
+		return nil, fmt.Errorf("lock claim for issue %s: %w", issueID, err)
+	}
+	if !acquired {
+		return nil, fmt.Errorf("local board issue %q is already claimed by another process", issueID)
+	}
+	return lock, nil
+}
+
+func (t *LocalTracker) releaseIssueClaimLocked(issueID string) error {
+	lock, ok := t.activeClaimLocks[issueID]
+	if !ok {
+		return nil
+	}
+	delete(t.activeClaimLocks, issueID)
+	if err := lock.Unlock(); err != nil {
+		return fmt.Errorf("unlock claim for issue %s: %w", issueID, err)
+	}
+	return nil
 }
 
 func ParseLocalBoardState(raw string) (LocalBoardState, error) {
@@ -137,10 +186,16 @@ func ParseLocalBoardState(raw string) (LocalBoardState, error) {
 	}
 }
 
+// IssueState maps a board state to the orchestrator's claim state.
+// in_progress maps to Claimed (not Running) so that a crashed run — which
+// leaves the issue in_progress with no live agent — is picked up by
+// orphan-claim recovery instead of being stranded forever. This mirrors the
+// Linear adapter's started→Claimed mapping; the orchestrator itself decides
+// what is actively Running from its in-memory managed set.
 func (s LocalBoardState) IssueState() types.IssueState {
 	switch s {
 	case LocalBoardStateInProgress:
-		return types.Running
+		return types.Claimed
 	case LocalBoardStateRetry:
 		return types.RetryQueued
 	case LocalBoardStateDone:
@@ -157,6 +212,12 @@ func (t *LocalTracker) InitBoard(ctx context.Context) (*LocalBoardManifest, erro
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	return t.ensureBoardLocked()
 }
@@ -179,26 +240,55 @@ func (t *LocalTracker) ClaimIssue(ctx context.Context, issueID string) error {
 	if err := checkLocalTrackerContext(ctx); err != nil {
 		return err
 	}
+	if !localIssueIDPattern.MatchString(issueID) {
+		return fmt.Errorf("local board issue id %q contains invalid characters", issueID)
+	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return err
 	}
+	if _, claimed := t.activeClaimLocks[issueID]; claimed {
+		return fmt.Errorf("local board issue %q is already claimed by this process", issueID)
+	}
+
+	claimLock, err := t.tryLockIssueClaim(issueID)
+	if err != nil {
+		return err
+	}
+	releaseClaimLock := true
+	defer func() {
+		if releaseClaimLock {
+			_ = claimLock.Unlock()
+		}
+	}()
 
 	issue, err := t.loadIssueLocked(issueID)
 	if err != nil {
 		return err
 	}
-
-	if issue.State != LocalBoardStateDone {
-		issue.State = LocalBoardStateInProgress
+	if issue.State == LocalBoardStateDone {
+		return fmt.Errorf("local board issue %q is already done", issueID)
 	}
+
+	issue.State = LocalBoardStateInProgress
 	issue.ClaimedBy = t.actor
 	issue.UpdatedAt = time.Now().UTC()
 
-	return writeJSONAtomic(t.issuePath(issueID), issue)
+	if err := writeJSONAtomic(t.issuePath(issueID), issue); err != nil {
+		return err
+	}
+	t.activeClaimLocks[issueID] = claimLock
+	releaseClaimLock = false
+	return nil
 }
 
 func (t *LocalTracker) ReleaseIssue(ctx context.Context, issueID string) error {
@@ -208,6 +298,12 @@ func (t *LocalTracker) ReleaseIssue(ctx context.Context, issueID string) error {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return err
@@ -221,7 +317,10 @@ func (t *LocalTracker) ReleaseIssue(ctx context.Context, issueID string) error {
 	issue.ClaimedBy = ""
 	issue.UpdatedAt = time.Now().UTC()
 
-	return writeJSONAtomic(t.issuePath(issueID), issue)
+	if err := writeJSONAtomic(t.issuePath(issueID), issue); err != nil {
+		return err
+	}
+	return t.releaseIssueClaimLocked(issueID)
 }
 
 func (t *LocalTracker) UpdateIssueState(ctx context.Context, issueID string, state types.IssueState) error {
@@ -231,6 +330,12 @@ func (t *LocalTracker) UpdateIssueState(ctx context.Context, issueID string, sta
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return err
@@ -252,7 +357,13 @@ func (t *LocalTracker) UpdateIssueState(ctx context.Context, issueID string, sta
 	}
 	issue.UpdatedAt = time.Now().UTC()
 
-	return writeJSONAtomic(t.issuePath(issueID), issue)
+	if err := writeJSONAtomic(t.issuePath(issueID), issue); err != nil {
+		return err
+	}
+	if issue.State != LocalBoardStateInProgress {
+		return t.releaseIssueClaimLocked(issueID)
+	}
+	return nil
 }
 
 func (t *LocalTracker) PostComment(ctx context.Context, issueID string, body string) error {
@@ -262,6 +373,12 @@ func (t *LocalTracker) PostComment(ctx context.Context, issueID string, body str
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return err
@@ -298,6 +415,12 @@ func (t *LocalTracker) CreateIssueWithOptions(ctx context.Context, opts LocalIss
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return LocalBoardIssue{}, err
+	}
+	defer release()
 
 	manifest, err := t.ensureBoardLocked()
 	if err != nil {
@@ -527,6 +650,12 @@ func (t *LocalTracker) UpdateIssue(
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return LocalBoardIssue{}, err
+	}
+	defer release()
+
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return LocalBoardIssue{}, err
 	}
@@ -555,6 +684,12 @@ func (t *LocalTracker) MoveIssue(ctx context.Context, issueID string, state Loca
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	release, err := t.lockBoardFile()
+	if err != nil {
+		return LocalBoardIssue{}, err
+	}
+	defer release()
 
 	if _, err := t.ensureBoardLocked(); err != nil {
 		return LocalBoardIssue{}, err
@@ -673,6 +808,10 @@ func (t *LocalTracker) ensureBoardLocked() (*LocalBoardManifest, error) {
 }
 
 func (t *LocalTracker) loadIssueLocked(issueID string) (LocalBoardIssue, error) {
+	if !localIssueIDPattern.MatchString(issueID) {
+		return LocalBoardIssue{}, fmt.Errorf("local board issue id %q contains invalid characters", issueID)
+	}
+
 	var issue LocalBoardIssue
 	if err := readJSONFile(t.issuePath(issueID), &issue); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -799,15 +938,36 @@ func writeJSONAtomic(path string, value interface{}) error {
 		return fmt.Errorf("encoding %s: %w", path, err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating parent directory for %s: %w", path, err)
 	}
 
-	tempPath := path + ".tmp"
-	if err := os.WriteFile(tempPath, append(data, '\n'), 0o644); err != nil {
+	// A unique temp name per writer: with a fixed "<path>.tmp" two concurrent
+	// writers (daemon + CLI) truncate each other's temp file and one renames
+	// a half-written or foreign payload into place.
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file for %s: %w", path, err)
+	}
+	tempPath := tmp.Name()
+
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tempPath)
 		return fmt.Errorf("writing temp file for %s: %w", path, err)
 	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("closing temp file for %s: %w", path, err)
+	}
+	// CreateTemp uses 0600; keep board files group/world-readable as before.
+	if err := os.Chmod(tempPath, 0o644); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("chmod temp file for %s: %w", path, err)
+	}
 	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
 		return fmt.Errorf("renaming temp file for %s: %w", path, err)
 	}
 

@@ -1938,9 +1938,10 @@ func TestRecoverOrphanedClaims_OrphanOverriddenAndLogged(t *testing.T) {
 		{ID: "ISS-ORPHAN", Identifier: "ISS-ORPHAN", State: types.Claimed},
 	}
 
-	orch.recoverOrphanedClaims(issues)
+	recoveredAttempts := orch.recoverOrphanedClaims(issues)
 
 	assert.Equal(t, types.Unclaimed, issues[0].State, "orphaned Claimed issue must be overridden to Unclaimed")
+	assert.Equal(t, map[string]int{"ISS-ORPHAN": 2}, recoveredAttempts)
 	assert.Contains(t, buf.String(), "orphan_claim_recovered")
 	assert.Contains(t, buf.String(), "ISS-ORPHAN")
 }

@@ -147,6 +147,68 @@ func TestGitHubFetchIssues_ParsesDependencies(t *testing.T) {
 	assert.Equal(t, []string{"10", "11", "9"}, issues[2].BlockedBy)
 }
 
+// TestGitHubFetchIssues_AssigneeClaimSafety exercises the claim-safety rules:
+// issues assigned exclusively to other users never reach the orchestrator
+// (the additive POST /assignees claim would silently hijack them), and issues
+// already assigned to the configured assignee come back Claimed — not
+// hardcoded Unclaimed — so a restart routes them through orphan-claim
+// recovery instead of re-dispatching in-flight work from attempt 1.
+func TestGitHubFetchIssues_AssigneeClaimSafety(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondGitHubJSON(w, http.StatusOK, []interface{}{
+			map[string]interface{}{
+				"number": 1,
+				"title":  "Unassigned",
+				"body":   "",
+				"state":  "open",
+			},
+			map[string]interface{}{
+				"number": 2,
+				"title":  "Assigned to bot",
+				"body":   "",
+				"state":  "open",
+				"assignees": []interface{}{
+					map[string]interface{}{"login": "BOT-USER"},
+				},
+			},
+			map[string]interface{}{
+				"number": 3,
+				"title":  "Assigned to a human",
+				"body":   "",
+				"state":  "open",
+				"assignees": []interface{}{
+					map[string]interface{}{"login": "human-dev"},
+				},
+			},
+			map[string]interface{}{
+				"number": 4,
+				"title":  "Assigned to bot and a human",
+				"body":   "",
+				"state":  "open",
+				"assignees": []interface{}{
+					map[string]interface{}{"login": "human-dev"},
+					map[string]interface{}{"login": "bot-user"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := testGitHubClient(t, server.URL) // configured with Assignee "bot-user"
+	issues, err := client.FetchIssues(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, issues, 2)
+
+	assert.Equal(t, "1", issues[0].ID)
+	assert.Equal(t, types.Unclaimed, issues[0].State)
+	assert.Equal(t, []string{}, issues[0].TrackerMeta["github_assignees"])
+
+	assert.Equal(t, "2", issues[1].ID)
+	assert.Equal(t, types.Claimed, issues[1].State)
+	assert.Equal(t, []string{"BOT-USER"}, issues[1].TrackerMeta["github_assignees"])
+}
+
 func TestGitHubFetchIssues_FiltersPullRequests(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		respondGitHubJSON(w, http.StatusOK, []interface{}{
@@ -306,13 +368,28 @@ func TestGitHubFetchIssues_LabelsFilter(t *testing.T) {
 }
 
 func TestGitHubClaimIssue(t *testing.T) {
+	// GitHub answers POST /assignees with 201 and the updated issue. It also
+	// returns 201 when it silently IGNORES an assignee the token user cannot
+	// assign — the "silently ignored" case pins that ClaimIssue detects this
+	// instead of letting the orchestrator dispatch an issue it never owned.
+	issueWithAssignees := func(logins ...string) map[string]interface{} {
+		assignees := make([]interface{}, 0, len(logins))
+		for _, login := range logins {
+			assignees = append(assignees, map[string]interface{}{"login": login})
+		}
+		return map[string]interface{}{"number": 42, "assignees": assignees}
+	}
+
 	tests := []struct {
-		name         string
-		statusCode   int
-		wantErr      bool
-		containsPath string
+		name       string
+		statusCode int
+		respBody   map[string]interface{}
+		wantErr    bool
 	}{
-		{name: "happy path", statusCode: http.StatusCreated, wantErr: false},
+		{name: "happy path", statusCode: http.StatusCreated, respBody: issueWithAssignees("bot-user"), wantErr: false},
+		{name: "canonical login casing accepted", statusCode: http.StatusCreated, respBody: issueWithAssignees("BOT-USER"), wantErr: false},
+		{name: "assignee silently ignored", statusCode: http.StatusCreated, respBody: issueWithAssignees(), wantErr: true},
+		{name: "response without assignees rejected", statusCode: http.StatusCreated, respBody: map[string]interface{}{"ok": true}, wantErr: true},
 		{name: "wrong success status", statusCode: http.StatusOK, wantErr: true},
 		{name: "http error", statusCode: http.StatusInternalServerError, wantErr: true},
 	}
@@ -330,7 +407,11 @@ func TestGitHubClaimIssue(t *testing.T) {
 				require.Len(t, assignees, 1)
 				assert.Equal(t, "bot-user", assignees[0])
 
-				respondGitHubJSON(w, tt.statusCode, map[string]interface{}{"ok": true})
+				respBody := tt.respBody
+				if respBody == nil {
+					respBody = map[string]interface{}{"ok": true}
+				}
+				respondGitHubJSON(w, tt.statusCode, respBody)
 			}))
 			defer server.Close()
 
@@ -344,6 +425,31 @@ func TestGitHubClaimIssue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGitHubClaimIssue_RejectsMalformedVerificationResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `not-json`)
+	}))
+	defer server.Close()
+
+	client := testGitHubClient(t, server.URL)
+	err := client.ClaimIssue(context.Background(), "42")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode GitHub claim response")
+}
+
+func TestNewGitHubClient_RequiresAssignee(t *testing.T) {
+	_, err := NewGitHubClient(GitHubConfig{
+		APIToken: "ghp_test_token",
+		Owner:    "octocat",
+		Repo:     "hello-world",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github assignee required")
 }
 
 func TestGitHubReleaseIssue(t *testing.T) {
