@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -198,9 +199,9 @@ func TestRunDryRun_TimeoutNoEvents(t *testing.T) {
 	// (e.g., no events arrive), the function returns nil after the timeout instead of hanging.
 	//
 	// Note: Full integration testing of runDryRun requires mocking the orchestrator's
-	// internal dependencies (tracker, workspace, agent runner). The timeout logic itself
-	// is validated by the code review: context.WithTimeout wraps the context, and
-	// errors.Is(err, context.DeadlineExceeded) catches the timeout case.
+	// internal dependencies (tracker, workspace, agent runner). Orchestrator.Run
+	// returns nil when its context is done, so runDryRun detects the timeout by
+	// checking dryCtx.Err() for context.DeadlineExceeded after Run returns.
 	t.Skip("Integration test requires full orchestrator mock setup")
 }
 
@@ -389,6 +390,51 @@ Prompt.
 	assert.True(t, called)
 }
 
+func TestRun_TeamModeCancelsContextOnInterrupt(t *testing.T) {
+	restoreRunTUITestHooks(t)
+
+	boardDir := filepath.Join(t.TempDir(), "board")
+	cfgPath := writeRootWorkflowConfig(t, fmt.Sprintf(`---
+model: openai/gpt-5-codex
+project_url: https://linear.app/example/project/internal
+tracker:
+  board_dir: %q
+---
+Prompt.
+`, boardDir))
+
+	interrupted := make(chan struct{})
+	runRootTeamExecution = func(
+		ctx context.Context,
+		_ string,
+		_ *config.Watcher,
+		_ *log.Logger,
+		_ bool,
+		_ bool,
+		_ int,
+	) error {
+		// Without run() installing a handler before this branch, the SIGINT
+		// below would hit the Go default disposition and kill the test
+		// process instead of cancelling ctx.
+		require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGINT))
+		select {
+		case <-ctx.Done():
+			close(interrupted)
+		case <-time.After(5 * time.Second):
+		}
+		return nil
+	}
+
+	err := run(cfgPath, true, filepath.Join(t.TempDir(), "contrabass.log"), "info", false, 0)
+	require.NoError(t, err)
+
+	select {
+	case <-interrupted:
+	default:
+		t.Fatal("expected SIGINT to cancel the team execution context")
+	}
+}
+
 func TestRun_SingleExecutionModeKeepsOriginalOrchestratorPath(t *testing.T) {
 	restoreRunTUITestHooks(t)
 
@@ -491,7 +537,7 @@ func TestRunHeadless(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runHeadless(ctx, orch, logger, nil)
+		done <- runHeadless(ctx, orch, logger, nil, io.Discard)
 	}()
 
 	select {
@@ -500,6 +546,30 @@ func TestRunHeadless(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("runHeadless did not complete within 5s")
 	}
+}
+
+func TestStreamHeadlessOrchestratorEventsWritesToOut(t *testing.T) {
+	events := make(chan orchestrator.OrchestratorEvent, 1)
+	events <- orchestrator.OrchestratorEvent{Type: orchestrator.EventStatusUpdate, IssueID: "CB-7"}
+	close(events)
+
+	out := new(bytes.Buffer)
+	streamHeadlessOrchestratorEvents(out, log.NewWithOptions(io.Discard, log.Options{}), events)
+
+	assert.Contains(t, out.String(), "type=StatusUpdate")
+	assert.Contains(t, out.String(), "issue_id=CB-7")
+}
+
+func TestStreamHeadlessWebEventsWritesToOut(t *testing.T) {
+	events := make(chan web.WebEvent, 1)
+	events <- web.WebEvent{Kind: web.WebEventOrchestrator, Type: "status_update"}
+	close(events)
+
+	out := new(bytes.Buffer)
+	streamHeadlessWebEvents(out, log.NewWithOptions(io.Discard, log.Options{}), events)
+
+	assert.Contains(t, out.String(), "kind=orchestrator")
+	assert.Contains(t, out.String(), "type=status_update")
 }
 
 // --- Additional runTUI branch coverage ---
