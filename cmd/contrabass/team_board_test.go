@@ -38,7 +38,7 @@ func TestResolveTeamNameForIssue(t *testing.T) {
 	}, ""))
 }
 
-func TestBuildTeamTasksFromBoardIssue(t *testing.T) {
+func TestBuildBoardTeamPlanWithoutChildIssues(t *testing.T) {
 	t.Parallel()
 
 	issue := tracker.LocalBoardIssue{
@@ -52,7 +52,7 @@ func TestBuildTeamTasksFromBoardIssue(t *testing.T) {
 		BlockedBy:   []string{"CB-9"},
 	}
 
-	tasks := buildTeamTasksFromBoardIssue(issue)
+	tasks := buildBoardTeamPlan(issue, nil).Tasks
 	require.Len(t, tasks, 3)
 
 	assert.Equal(t, "001-cb-12-plan", tasks[0].ID)

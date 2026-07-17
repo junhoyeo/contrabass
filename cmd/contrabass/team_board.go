@@ -70,10 +70,6 @@ func resolveTeamNameForIssue(issue tracker.LocalBoardIssue, override string) str
 	return defaultTeamNameForIssue(issue.ID)
 }
 
-func buildTeamTasksFromBoardIssue(issue tracker.LocalBoardIssue) []types.TeamTask {
-	return buildBoardTeamPlan(issue, nil).Tasks
-}
-
 func buildBoardTeamPlan(issue tracker.LocalBoardIssue, childIssues []tracker.LocalBoardIssue) boardTeamPlan {
 	activeChildren := activeBoardChildIssues(childIssues)
 	if len(activeChildren) == 0 {

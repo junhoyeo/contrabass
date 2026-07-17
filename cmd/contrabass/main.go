@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -185,7 +186,16 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 
 	switch cfg.TeamExecutionMode() {
 	case config.TeamExecutionModeTeam:
-		return runRootTeamExecution(ctx, cfgPath, watcher, logger, noTUI, dryRun, port)
+		// This branch returns before the single-agent signal hook below is
+		// installed, and runTeamExecutionLoop disables the team-level handler,
+		// so without this wrapper SIGINT/SIGTERM would hit the Go default
+		// disposition: the process dies before runner.Close and
+		// boardSyncer.Finalize run, orphaning tmux panes and leaving board
+		// issues claimed. Cancelling ctx routes shutdown through the normal
+		// exit path instead.
+		teamCtx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stopSignals()
+		return runRootTeamExecution(teamCtx, cfgPath, watcher, logger, noTUI, dryRun, port)
 	case config.TeamExecutionModeSingle:
 		// Continue into the original single-agent orchestrator path.
 	default:
@@ -348,12 +358,16 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 			}
 		}()
 
-		fmt.Fprintf(os.Stderr, "Web dashboard available at http://localhost:%d\n", port)
+		if dashboardFS != nil {
+			fmt.Fprintf(os.Stderr, "Web dashboard available at http://localhost:%d\n", port)
+		} else {
+			fmt.Fprintf(os.Stderr, "Web API available at http://localhost:%d (dashboard assets not embedded; rebuild with the dashboard_dist tag)\n", port)
+		}
 	}
 
 	// 10. Select run mode
 	if noTUI {
-		return runHeadless(ctx, orch, logger, h)
+		return runHeadless(ctx, orch, logger, h, os.Stdout)
 	}
 	return runTUI(ctx, orch, h)
 }
@@ -371,54 +385,58 @@ func runDryRun(ctx context.Context, orch *orchestrator.Orchestrator) error {
 	}()
 
 	err := orch.Run(dryCtx)
-	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+	// Orchestrator.Run returns nil when its context is done, so the timeout
+	// must be detected on dryCtx itself rather than on the returned error.
+	if errors.Is(dryCtx.Err(), context.DeadlineExceeded) {
 		log.Warn("dry-run timeout: no events received within 60s")
 		return nil
 	}
 	return err
 }
 
-// runHeadless runs the orchestrator without TUI, logging events to the logger.
+// runHeadless runs the orchestrator without TUI, streaming events to out
+// (stdout in production, as promised by the --no-tui help text) in addition
+// to the file logger.
 func runHeadless(
 	ctx context.Context,
 	orch *orchestrator.Orchestrator,
 	logger *log.Logger,
 	h *hub.Hub[web.WebEvent],
+	out io.Writer,
 ) error {
 	if h != nil {
 		subID, subscribedEvents := h.Subscribe()
 		defer h.Unsubscribe(subID)
-		go func() {
-			for webEvt := range subscribedEvents {
-				logger.Info("event",
-					"kind", string(webEvt.Kind),
-					"type", webEvt.Type,
-				)
-			}
-		}()
+		go streamHeadlessWebEvents(out, logger, subscribedEvents)
 	} else {
-		go func() {
-			for event := range orch.Events() {
-				logger.Info("event",
-					"type", event.Type.String(),
-					"issue_id", event.IssueID,
-				)
-			}
-		}()
+		go streamHeadlessOrchestratorEvents(out, logger, orch.Events())
 	}
 
 	return orch.Run(ctx)
 }
 
-type workflowTimelineProvider struct {
-	store *timeline.Store
+func streamHeadlessWebEvents(out io.Writer, logger *log.Logger, events <-chan web.WebEvent) {
+	for webEvt := range events {
+		_, _ = fmt.Fprintf(out, "event kind=%s type=%s\n", string(webEvt.Kind), webEvt.Type)
+		logger.Info("event",
+			"kind", string(webEvt.Kind),
+			"type", webEvt.Type,
+		)
+	}
 }
 
-func (p workflowTimelineProvider) IssueTimeline(ctx context.Context, issueID string) (interface{}, error) {
-	if p.store == nil {
-		return nil, errors.New("timeline store is nil")
+func streamHeadlessOrchestratorEvents(
+	out io.Writer,
+	logger *log.Logger,
+	events <-chan orchestrator.OrchestratorEvent,
+) {
+	for event := range events {
+		_, _ = fmt.Fprintf(out, "event type=%s issue_id=%s\n", event.Type.String(), event.IssueID)
+		logger.Info("event",
+			"type", event.Type.String(),
+			"issue_id", event.IssueID,
+		)
 	}
-	return p.store.Snapshot(ctx, issueID)
 }
 
 func startSignalShutdownHook(
