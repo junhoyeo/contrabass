@@ -506,3 +506,22 @@ func TestSnapshot_ReleasesAgentStageState(t *testing.T) {
 	assert.Len(t, snap2.Running, 0)
 	assert.Equal(t, 0, len(o.running))
 }
+
+func TestClassifyAgentStage_ZeroLastDiffChangeStartsAtExploration(t *testing.T) {
+	baseTime := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	// Zero value, exactly as on a freshly-created runEntry: without the
+	// first-tick anchor, elapsed would be measured from the zero time and the
+	// run would classify as Reviewing (4) with the clamp locking it there.
+	state := &agentStageState{}
+
+	stage, step := classifyAgentStage(state, "tool_call", 0, 0, 0, baseTime)
+	assert.Equal(t, "Exploration", stage)
+	assert.Equal(t, 1, step)
+	assert.Equal(t, baseTime, state.LastDiffChange, "plateau clock must anchor at the first tick")
+
+	// The clamp must not have locked the run: a growing diff on the next
+	// tick advances to Editing.
+	stage2, step2 := classifyAgentStage(state, "tool_call", 10, 2, 80_000, baseTime.Add(5*time.Second))
+	assert.Equal(t, "Editing", stage2)
+	assert.Equal(t, 2, step2)
+}
