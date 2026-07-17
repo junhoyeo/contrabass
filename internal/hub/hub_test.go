@@ -160,6 +160,53 @@ func TestHub(t *testing.T) {
 			},
 		},
 		{
+			name: "subscribe_after_source_close_returns_closed_channel",
+			run: func(t *testing.T) {
+				source := make(chan orchestrator.OrchestratorEvent)
+				h := NewHub[orchestrator.OrchestratorEvent](source)
+
+				done := make(chan struct{})
+				go func() {
+					h.Run(context.Background())
+					close(done)
+				}()
+
+				close(source)
+				waitDone(t, done)
+
+				assert.True(t, h.Closed())
+
+				_, sub := h.Subscribe()
+				_, ok := <-sub
+				assert.False(t, ok, "late subscriber must receive an already-closed channel")
+				assert.Equal(t, 0, h.SubscriberCount())
+			},
+		},
+		{
+			name: "subscribe_after_context_cancel_returns_closed_channel",
+			run: func(t *testing.T) {
+				source := make(chan orchestrator.OrchestratorEvent)
+				h := NewHub[orchestrator.OrchestratorEvent](source)
+
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				go func() {
+					h.Run(ctx)
+					close(done)
+				}()
+
+				cancel()
+				waitDone(t, done)
+
+				assert.True(t, h.Closed())
+
+				_, sub := h.Subscribe()
+				_, ok := <-sub
+				assert.False(t, ok, "late subscriber must receive an already-closed channel")
+				assert.Equal(t, 0, h.SubscriberCount())
+			},
+		},
+		{
 			name: "subscriber_count_tracks_add_and_remove",
 			run: func(t *testing.T) {
 				source := make(chan orchestrator.OrchestratorEvent)

@@ -12,6 +12,9 @@ type Hub[T any] struct {
 	subscribers map[int]chan T
 	nextID      int
 	source      <-chan T
+	// closed is set when Run exits; the hub never restarts, so late
+	// subscribers must not be handed a channel nothing will ever write to.
+	closed bool
 }
 
 func NewHub[T any](source <-chan T) *Hub[T] {
@@ -29,9 +32,24 @@ func (h *Hub[T]) Subscribe() (int, <-chan T) {
 	h.nextID++
 
 	ch := make(chan T, defaultSubscriberBufferSize)
+	if h.closed {
+		// Run has exited: return an already-closed channel instead of
+		// registering a subscriber that would silently never receive.
+		close(ch)
+		return id, ch
+	}
 	h.subscribers[id] = ch
 
 	return id, ch
+}
+
+// Closed reports whether Run has exited; a closed hub delivers no further
+// events and Subscribe returns pre-closed channels.
+func (h *Hub[T]) Closed() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	return h.closed
 }
 
 func (h *Hub[T]) Unsubscribe(id int) {
@@ -84,6 +102,7 @@ func (h *Hub[T]) Run(ctx context.Context) {
 }
 
 func (h *Hub[T]) closeAllSubscribersLocked() {
+	h.closed = true
 	for id, sub := range h.subscribers {
 		close(sub)
 		delete(h.subscribers, id)
