@@ -181,7 +181,9 @@ func (r *StaleLockRecovery) RecoverStaleLocks(teamName string) error {
 			errs = append(errs, fmt.Errorf("walk team dir: %w", walkErr))
 			return nil
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".tmp") {
+		// Store temp files are named "<path>.tmp.<pid>.<unixnano>" (see
+		// writeJSONBytesNoLock), so match the ".tmp." infix, not a suffix.
+		if d.IsDir() || !strings.Contains(d.Name(), ".tmp.") {
 			return nil
 		}
 
