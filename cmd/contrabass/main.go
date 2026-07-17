@@ -330,6 +330,9 @@ func run(cfgPath string, noTUI bool, logFile, logLevel string, dryRun bool, port
 		}
 
 		srv := web.NewServer(fmt.Sprintf("localhost:%d", port), orch, h, dashboardFS)
+		// Board mutations made over HTTP must flow back into the hub so other
+		// dashboard tabs and stream subscribers see them live.
+		srv.SetEventSink(webEvents)
 		srv.SetAgentStopper(orch)
 		if boardProvider, ok := trackerClient.(web.BoardProvider); ok {
 			srv.SetBoardProvider(boardProvider)

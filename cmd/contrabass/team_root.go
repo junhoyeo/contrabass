@@ -104,6 +104,7 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 
 	provider := web.NewTeamSnapshotProvider()
 	srv := web.NewServer(fmt.Sprintf("localhost:%d", port), provider, h, dashboardFS)
+	srv.SetEventSink(webEvents)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
 	if err != nil {
