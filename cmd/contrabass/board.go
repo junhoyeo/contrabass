@@ -72,11 +72,24 @@ var boardDispatchCmd = &cobra.Command{
 	RunE:  runBoardDispatch,
 }
 
+// defaultMaxDispatchAttempts bounds how many times a single issue may be
+// dispatched within one drain; a failed team run re-queues its issue as
+// retry, so without a cap --until-empty re-selects a deterministically
+// failing issue forever.
+const defaultMaxDispatchAttempts = 3
+
+// boardParkedClaim marks an issue that exhausted its dispatch attempts. A
+// non-empty ClaimedBy hides the issue from FindDispatchableIssue; moving the
+// issue (e.g. `board move <id> retry`) clears the claim and re-enables
+// dispatch.
+const boardParkedClaim = "parked:max-dispatch-attempts"
+
 type boardDispatchOptions struct {
-	ConfigPath string
-	TeamName   string
-	MaxWorkers int
-	UntilEmpty bool
+	ConfigPath       string
+	TeamName         string
+	MaxWorkers       int
+	UntilEmpty       bool
+	MaxIssueAttempts int
 }
 
 var runBoardDispatchTeam = runTeamWithOptions
@@ -114,6 +127,7 @@ func init() {
 	boardDispatchCmd.Flags().String("team-name", "", "override the team name used for dispatch")
 	boardDispatchCmd.Flags().IntP("max-workers", "w", 0, "override max workers from config")
 	boardDispatchCmd.Flags().Bool("until-empty", false, "keep dispatching runnable issues until the internal board is drained")
+	boardDispatchCmd.Flags().Int("max-attempts", defaultMaxDispatchAttempts, "dispatch attempts per issue before it is parked")
 
 	boardCmd.AddCommand(
 		boardInitCmd,
@@ -387,15 +401,21 @@ func runBoardDispatch(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("getting until-empty flag: %w", err)
 	}
 
+	maxAttempts, err := cmd.Flags().GetInt("max-attempts")
+	if err != nil {
+		return fmt.Errorf("getting max-attempts flag: %w", err)
+	}
+
 	return dispatchBoardIssues(
 		context.Background(),
 		cmd.OutOrStdout(),
 		localTracker,
 		boardDispatchOptions{
-			ConfigPath: cfgPath,
-			TeamName:   strings.TrimSpace(teamName),
-			MaxWorkers: maxWorkers,
-			UntilEmpty: untilEmpty,
+			ConfigPath:       cfgPath,
+			TeamName:         strings.TrimSpace(teamName),
+			MaxWorkers:       maxWorkers,
+			UntilEmpty:       untilEmpty,
+			MaxIssueAttempts: maxAttempts,
 		},
 		runBoardDispatchTeam,
 	)
@@ -408,9 +428,19 @@ func dispatchBoardIssues(
 	opts boardDispatchOptions,
 	runTeam func(teamRunOptions) error,
 ) error {
+	maxAttempts := opts.MaxIssueAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultMaxDispatchAttempts
+	}
+
 	dispatched := 0
+	attempts := map[string]int{}
 	for {
-		issueID, resolvedTeamName, found, err := dispatchNextBoardIssue(ctx, localTracker, opts, runTeam)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		issue, found, err := localTracker.FindDispatchableIssue(ctx, opts.TeamName)
 		if err != nil {
 			return err
 		}
@@ -426,38 +456,48 @@ func dispatchBoardIssues(
 			return nil
 		}
 
+		// A failed team run re-queues its issue as retry with the claim
+		// cleared, so FindDispatchableIssue immediately re-selects it. Park
+		// issues that exhausted their attempts so the drain terminates.
+		if attempts[issue.ID] >= maxAttempts {
+			if err := parkBoardIssue(ctx, localTracker, issue.ID, maxAttempts); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(out, "parked %s after %d dispatch attempts\n", issue.ID, maxAttempts)
+			continue
+		}
+		attempts[issue.ID]++
+
+		resolvedTeamName, err := dispatchBoardIssue(ctx, localTracker, issue, opts, runTeam)
+		if err != nil {
+			return err
+		}
+
 		dispatched++
-		_, _ = fmt.Fprintf(out, "dispatched %s to %s\n", issueID, resolvedTeamName)
+		_, _ = fmt.Fprintf(out, "dispatched %s to %s\n", issue.ID, resolvedTeamName)
 		if !opts.UntilEmpty {
 			return nil
 		}
 	}
 }
 
-func dispatchNextBoardIssue(
+func dispatchBoardIssue(
 	ctx context.Context,
 	localTracker *tracker.LocalTracker,
+	issue tracker.LocalBoardIssue,
 	opts boardDispatchOptions,
 	runTeam func(teamRunOptions) error,
-) (string, string, bool, error) {
-	issue, found, err := localTracker.FindDispatchableIssue(ctx, opts.TeamName)
-	if err != nil {
-		return "", "", false, err
-	}
-	if !found {
-		return "", "", false, nil
-	}
-
+) (string, error) {
 	resolvedTeamName := resolveTeamNameForIssue(issue, opts.TeamName)
 	if _, err := localTracker.AssignIssue(ctx, issue.ID, resolvedTeamName); err != nil {
-		return "", "", false, err
+		return "", err
 	}
 	if err := localTracker.PostComment(
 		ctx,
 		issue.ID,
 		fmt.Sprintf("dispatch requested for team %s", resolvedTeamName),
 	); err != nil {
-		return "", "", false, err
+		return "", err
 	}
 
 	if err := runTeam(teamRunOptions{
@@ -466,10 +506,34 @@ func dispatchNextBoardIssue(
 		IssueID:    issue.ID,
 		MaxWorkers: opts.MaxWorkers,
 	}); err != nil {
-		return "", "", false, fmt.Errorf("dispatching %s to %s: %w", issue.ID, resolvedTeamName, err)
+		return "", fmt.Errorf("dispatching %s to %s: %w", issue.ID, resolvedTeamName, err)
 	}
 
-	return issue.ID, resolvedTeamName, true, nil
+	return resolvedTeamName, nil
+}
+
+func parkBoardIssue(
+	ctx context.Context,
+	localTracker *tracker.LocalTracker,
+	issueID string,
+	maxAttempts int,
+) error {
+	if _, err := localTracker.UpdateIssue(ctx, issueID, func(issue *tracker.LocalBoardIssue) error {
+		if issue.TrackerMeta == nil {
+			issue.TrackerMeta = map[string]interface{}{}
+		}
+		issue.ClaimedBy = boardParkedClaim
+		issue.TrackerMeta["team_status"] = "parked"
+		issue.TrackerMeta["dispatch_attempts"] = maxAttempts
+		return nil
+	}); err != nil {
+		return err
+	}
+	return localTracker.PostComment(
+		ctx,
+		issueID,
+		fmt.Sprintf("parked after %d failed dispatch attempts; move the issue to retry to re-dispatch", maxAttempts),
+	)
 }
 
 func loadLocalBoardTracker(cmd *cobra.Command, allowPrefixOverride bool) (*tracker.LocalTracker, error) {

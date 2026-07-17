@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,6 +121,84 @@ func TestBoardDispatchUntilEmptyDrainsRunnableIssues(t *testing.T) {
 	child, err = localTracker.GetIssue(ctx, child.ID)
 	require.NoError(t, err)
 	assert.Equal(t, tracker.LocalBoardStateDone, child.State)
+}
+
+func TestBoardDispatchUntilEmptyParksIssuesThatKeepFailing(t *testing.T) {
+	boardDir := filepath.Join(t.TempDir(), "board")
+	cfgPath := writeBoardWorkflowConfig(t, boardDir)
+
+	localTracker := tracker.NewLocalTracker(tracker.LocalConfig{
+		BoardDir:    boardDir,
+		IssuePrefix: "CB",
+		Actor:       "test-bot",
+	})
+
+	// Bound the drain so a regression back to unbounded redispatch fails the
+	// test via context cancellation instead of hanging forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := localTracker.InitBoard(ctx)
+	require.NoError(t, err)
+
+	failing, err := localTracker.CreateIssueWithOptions(ctx, tracker.LocalIssueCreateOptions{
+		Title:    "Deterministically failing issue",
+		Assignee: "team-alpha",
+	})
+	require.NoError(t, err)
+
+	healthy, err := localTracker.CreateIssueWithOptions(ctx, tracker.LocalIssueCreateOptions{
+		Title:    "Healthy issue",
+		Assignee: "team-beta",
+	})
+	require.NoError(t, err)
+
+	failingRuns := 0
+	out := new(bytes.Buffer)
+	err = dispatchBoardIssues(
+		ctx,
+		out,
+		localTracker,
+		boardDispatchOptions{
+			ConfigPath:       cfgPath,
+			UntilEmpty:       true,
+			MaxIssueAttempts: 2,
+		},
+		func(opts teamRunOptions) error {
+			if opts.IssueID == failing.ID {
+				failingRuns++
+				// A pipeline that ends non-complete re-queues its issue for
+				// retry with the claim cleared, which the drain loop must not
+				// re-select forever.
+				return localTracker.UpdateIssueState(ctx, opts.IssueID, types.RetryQueued)
+			}
+			return localTracker.UpdateIssueState(ctx, opts.IssueID, types.Released)
+		},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 2, failingRuns)
+
+	output := out.String()
+	assert.Contains(t, output, fmt.Sprintf("parked %s after 2 dispatch attempts", failing.ID))
+	assert.Contains(t, output, "drained board after 3 dispatches")
+
+	parked, err := localTracker.GetIssue(ctx, failing.ID)
+	require.NoError(t, err)
+	assert.Equal(t, tracker.LocalBoardStateRetry, parked.State)
+	assert.Equal(t, boardParkedClaim, parked.ClaimedBy)
+	assert.Equal(t, "parked", parked.TrackerMeta["team_status"])
+
+	done, err := localTracker.GetIssue(ctx, healthy.ID)
+	require.NoError(t, err)
+	assert.Equal(t, tracker.LocalBoardStateDone, done.State)
+
+	// Moving a parked issue clears the claim, so operators can re-dispatch
+	// after fixing the underlying failure.
+	_, err = localTracker.MoveIssue(ctx, failing.ID, tracker.LocalBoardStateRetry)
+	require.NoError(t, err)
+	requeued, found, err := localTracker.FindDispatchableIssue(ctx, "")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, failing.ID, requeued.ID)
 }
 
 func TestBoardDispatchUntilEmptyCommandReportsDrainSummary(t *testing.T) {
