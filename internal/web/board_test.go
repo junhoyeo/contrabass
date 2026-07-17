@@ -123,6 +123,31 @@ func TestHandleCreateBoardIssueBadRequest(t *testing.T) {
 	assert.Equal(t, "invalid request body", readErrorMessage(t, rec))
 }
 
+func TestHandleCreateBoardIssueRejectsOversizedBody(t *testing.T) {
+	bp := &fakeBoardProvider{issues: map[string]tracker.LocalBoardIssue{}}
+	body := fmt.Sprintf(`{"title":"huge","description":%q}`, strings.Repeat("a", maxBoardRequestBytes))
+
+	rec := boardRequest(t, bp, http.MethodPost, "/api/v1/board/issues", body)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, bp.issues, "oversized payload must not be persisted")
+}
+
+func TestHandleUpdateBoardIssueRejectsOversizedBody(t *testing.T) {
+	bp := &fakeBoardProvider{
+		issues: map[string]tracker.LocalBoardIssue{
+			"CB-1": {ID: "CB-1", Identifier: "CB-1", Title: "Old title", State: tracker.LocalBoardStateTodo},
+		},
+	}
+	body := fmt.Sprintf(`{"description":%q}`, strings.Repeat("a", maxBoardRequestBytes))
+
+	rec := boardRequest(t, bp, http.MethodPatch, "/api/v1/board/issues/CB-1", body)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "Old title", bp.issues["CB-1"].Title)
+	assert.Empty(t, bp.issues["CB-1"].Description)
+}
+
 func TestHandleUpdateBoardIssue(t *testing.T) {
 	bp := &fakeBoardProvider{
 		issues: map[string]tracker.LocalBoardIssue{
@@ -365,7 +390,7 @@ func boardRequestWithServer(
 ) *httptest.ResponseRecorder {
 	t.Helper()
 
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req := newLocalWebRequest(method, path, strings.NewReader(body))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}

@@ -8,6 +8,10 @@ import (
 	"github.com/junhoyeo/contrabass/internal/tracker"
 )
 
+// maxBoardRequestBytes matches the streamable HTTP cap so a hostile client
+// cannot balloon memory (and the on-disk board store) with a huge payload.
+const maxBoardRequestBytes = 1 << 20
+
 type createBoardIssueRequest struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
@@ -66,6 +70,8 @@ func (s *Server) handleCreateBoardIssue(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxBoardRequestBytes)
+
 	var req createBoardIssueRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
@@ -93,6 +99,8 @@ func (s *Server) handleUpdateBoardIssue(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusBadRequest, "identifier is required")
 		return
 	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBoardRequestBytes)
 
 	var req updateBoardIssueRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

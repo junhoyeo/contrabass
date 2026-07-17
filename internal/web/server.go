@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,17 @@ import (
 )
 
 const defaultListenAddr = "localhost:8080"
+
+// allowedOriginsEnv is the escape hatch for serving the dashboard from a
+// different origin (e.g. behind a reverse proxy): a comma-separated list of
+// exact origins such as "https://dash.example.com", or "*" to disable the
+// origin/Host checks entirely. Same-origin and loopback origins are always
+// allowed without configuration.
+const allowedOriginsEnv = "CONTRABASS_ALLOWED_ORIGINS"
+
+// readHeaderTimeout bounds slowloris-style clients that trickle header bytes;
+// it must not bound the response so SSE streams stay open indefinitely.
+const readHeaderTimeout = 10 * time.Second
 
 type SnapshotProvider interface {
 	Snapshot() orchestrator.StateSnapshot
@@ -62,6 +75,11 @@ type Server struct {
 	timelineProvider TimelineProvider
 	mcpTokenMu       sync.Mutex
 	mcpTokens        map[string]mcpTokenRecord
+
+	// extraAllowedOrigins holds operator-configured origins from
+	// CONTRABASS_ALLOWED_ORIGINS; loopback and same-origin requests are
+	// accepted regardless of this list.
+	extraAllowedOrigins []string
 }
 
 func NewServer(
@@ -73,12 +91,25 @@ func NewServer(
 	listenAddr := normalizeListenAddr(addr)
 
 	return &Server{
-		hub:              hub,
-		dashboardFS:      dashboardFS,
-		listenAddr:       listenAddr,
-		snapshotProvider: provider,
-		mcpTokens:        make(map[string]mcpTokenRecord),
+		hub:                 hub,
+		dashboardFS:         dashboardFS,
+		listenAddr:          listenAddr,
+		snapshotProvider:    provider,
+		mcpTokens:           make(map[string]mcpTokenRecord),
+		extraAllowedOrigins: parseAllowedOrigins(os.Getenv(allowedOriginsEnv)),
 	}
+}
+
+func parseAllowedOrigins(raw string) []string {
+	var origins []string
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		origins = append(origins, strings.TrimSuffix(entry, "/"))
+	}
+	return origins
 }
 
 func normalizeListenAddr(addr string) string {
@@ -146,7 +177,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	}
 
 	mux := s.newMux()
-	s.httpServer = &http.Server{Handler: mux}
+	s.httpServer = &http.Server{Handler: mux, ReadHeaderTimeout: readHeaderTimeout}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -206,17 +237,83 @@ func (s *Server) newMux() *http.ServeMux {
 	return mux
 }
 
+// withCORS gates the plain REST/SSE routes. The dashboard is served from this
+// same server, so cross-origin access is unnecessary by default: only
+// same-origin, loopback, and operator-allowlisted origins pass, and the Host
+// check blocks DNS-rebinding requests that reach us under a foreign name.
 func (s *Server) withCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, Mcp-Protocol-Version")
+		if !s.isAllowedAPIRequest(r) {
+			writeJSONError(w, http.StatusForbidden, "origin not allowed")
+			return
+		}
+
+		setExactCORSHeaders(w, r)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) isAllowedAPIRequest(r *http.Request) bool {
+	if !s.isTrustedHost(r.Host) {
+		return false
+	}
+
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		// Non-browser clients (curl, CLI tooling) and same-origin GET
+		// navigations send no Origin header.
+		return true
+	}
+	if isAllowedExactOrigin(r) {
+		return true
+	}
+	if isLoopbackHost(originHost(origin)) {
+		return true
+	}
+	return s.isExtraAllowedOrigin(origin)
+}
+
+// isTrustedHost rejects requests whose Host header names neither a loopback
+// address, the configured listen host, nor an allowlisted origin's host —
+// the remaining DNS-rebinding vector once the Origin check is in place.
+func (s *Server) isTrustedHost(host string) bool {
+	h := hostWithoutPort(strings.TrimSpace(host))
+	if isLoopbackHost(h) {
+		return true
+	}
+	if listenHost := hostWithoutPort(s.listenAddr); listenHost != "" && strings.EqualFold(h, listenHost) {
+		return true
+	}
+	for _, allowed := range s.extraAllowedOrigins {
+		if allowed == "*" {
+			return true
+		}
+		if strings.EqualFold(h, originHost(allowed)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) isExtraAllowedOrigin(origin string) bool {
+	for _, allowed := range s.extraAllowedOrigins {
+		if allowed == "*" || strings.EqualFold(allowed, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func originHost(origin string) string {
+	u, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 func (s *Server) handleGetState(w http.ResponseWriter, _ *http.Request) {

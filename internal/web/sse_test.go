@@ -41,7 +41,8 @@ func TestHandleSSESetsHeadersAndSendsSnapshot(t *testing.T) {
 	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 	assert.Equal(t, "no-cache", resp.Header.Get("Cache-Control"))
 	assert.Equal(t, "keep-alive", resp.Header.Get("Connection"))
-	assert.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
+	// No Origin header on the request means no CORS grant is echoed.
+	assert.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
 
 	frame := readSSEFrame(t, reader)
 	assert.Contains(t, frame, "event: snapshot")
@@ -240,6 +241,31 @@ func TestHandleSSEReturns500WhenFlusherUnsupported(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, w.status)
 	assert.Contains(t, w.body.String(), "streaming unsupported")
+}
+
+func TestHandleSSEReturns503AfterHubShutdown(t *testing.T) {
+	source := make(chan WebEvent)
+	h := hub.NewHub(source)
+	done := make(chan struct{})
+	go func() {
+		h.Run(context.Background())
+		close(done)
+	}()
+	close(source)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for hub run loop to exit")
+	}
+
+	s := &Server{snapshotProvider: fakeSnapshotProvider{snapshot: orchestrator.StateSnapshot{}}, hub: h, dashboardFS: nil}
+	req := newLocalWebRequest(http.MethodGet, "/api/v1/events", nil)
+	rec := httptest.NewRecorder()
+
+	s.newMux().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Contains(t, rec.Body.String(), "event stream is no longer available")
 }
 
 func TestShouldSkipStaleEvent(t *testing.T) {

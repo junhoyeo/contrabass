@@ -69,7 +69,7 @@ func TestHandleGetIssueDetails_Success(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/issue-1/details", nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/v1/issues/issue-1/details", nil)
 	rec := httptest.NewRecorder()
 	s.newMux().ServeHTTP(rec, req)
 
@@ -86,7 +86,7 @@ func TestHandleGetIssueDetails_Success(t *testing.T) {
 func TestHandleGetIssueDetails_MissingIssue(t *testing.T) {
 	s := issueDetailTestServer()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/missing/details", nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/v1/issues/missing/details", nil)
 	rec := httptest.NewRecorder()
 	s.newMux().ServeHTTP(rec, req)
 
@@ -97,7 +97,7 @@ func TestHandleGetIssueDetails_MissingIssue(t *testing.T) {
 func TestHandleGetIssueDetails_ProviderUnavailable(t *testing.T) {
 	s := issueDetailTestServer()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/issue-1/details", nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/v1/issues/issue-1/details", nil)
 	rec := httptest.NewRecorder()
 	s.newMux().ServeHTTP(rec, req)
 
@@ -123,7 +123,7 @@ func TestHandleGetIssueTimeline_Success(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/issue-1/timeline", nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/v1/issues/issue-1/timeline", nil)
 	rec := httptest.NewRecorder()
 	s.newMux().ServeHTTP(rec, req)
 
@@ -138,7 +138,7 @@ func TestHandleGetIssueTimeline_MissingIssue(t *testing.T) {
 	s := issueDetailTestServer()
 	s.SetTimelineProvider(fakeTimelineProvider{timeline: &timeline.WorkflowTimelineSnapshot{IssueID: "missing"}})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/missing/timeline", nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/v1/issues/missing/timeline", nil)
 	rec := httptest.NewRecorder()
 	s.newMux().ServeHTTP(rec, req)
 
@@ -149,7 +149,7 @@ func TestHandleGetIssueTimeline_MissingIssue(t *testing.T) {
 func TestHandleGetIssueTimeline_ProviderUnavailable(t *testing.T) {
 	s := issueDetailTestServer()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/issue-1/timeline", nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/v1/issues/issue-1/timeline", nil)
 	rec := httptest.NewRecorder()
 	s.newMux().ServeHTTP(rec, req)
 
@@ -161,7 +161,7 @@ func TestHandleGetIssueTimeline_Error(t *testing.T) {
 	s := issueDetailTestServer()
 	s.SetTimelineProvider(fakeTimelineProvider{err: errors.New("read jsonl: permission denied")})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/issue-1/timeline", nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/v1/issues/issue-1/timeline", nil)
 	rec := httptest.NewRecorder()
 	s.newMux().ServeHTTP(rec, req)
 
