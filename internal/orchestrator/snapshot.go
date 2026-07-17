@@ -309,6 +309,14 @@ func classifyAgentStageWithPolicy(
 	var stage string
 	var step int
 
+	// A zero LastDiffChange means this is the first classification for the
+	// run: anchor the plateau clock at now, otherwise elapsed is measured
+	// from the zero time, a fresh run classifies as Reviewing (step 4), and
+	// the monotonic clamp locks it there for the whole run.
+	if state.LastDiffChange.IsZero() {
+		state.LastDiffChange = now
+	}
+
 	switch lastActivityKind {
 	case "turn/completed", "turn/failed", "turn/cancelled":
 		stage, step = "Wrapping", 5
