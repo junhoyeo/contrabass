@@ -744,9 +744,18 @@ server.serve_forever()
 
 func TestOpenCodeRunner_StaleRecoveryHonorsCallerDeadline(t *testing.T) {
 	// Ignore SIGINT so recovery must use its caller deadline instead of
-	// waiting for the runner's much longer shutdown budget.
-	staleCmd := exec.Command("sh", "-c", "trap '' INT; exec sleep 30")
+	// waiting for the runner's much longer shutdown budget. Wait until the
+	// trap is installed before injecting the process; otherwise CI can signal
+	// the shell during startup, let it exit early, and accidentally start the
+	// unavailable replacement binary.
+	readyFile := filepath.Join(t.TempDir(), "stale-server-ready")
+	staleCmd := exec.Command("sh", "-c", "trap '' INT; : > \"$READY_FILE\"; exec sleep 30")
+	staleCmd.Env = append(os.Environ(), "READY_FILE="+readyFile)
 	require.NoError(t, staleCmd.Start())
+	assert.Eventually(t, func() bool {
+		_, err := os.Stat(readyFile)
+		return err == nil
+	}, time.Second, 10*time.Millisecond, "stale server did not install its interrupt trap")
 
 	runner := NewOpenCodeRunner("opencode serve", 0, "", "", 5*time.Second)
 	workspace := t.TempDir()
@@ -761,9 +770,15 @@ func TestOpenCodeRunner_StaleRecoveryHonorsCallerDeadline(t *testing.T) {
 	_, _, err := runner.ensureServer(ctx, workspace)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Less(t, time.Since(start), time.Second)
-	assert.Eventually(t, func() bool {
-		return staleCmd.ProcessState != nil
-	}, time.Second, 10*time.Millisecond, "deadline recovery did not reap stale server")
+
+	// stopServer reaps killed children asynchronously after returning at the
+	// caller deadline. Reading Cmd.ProcessState here races with that Wait; the
+	// observable recovery contract is that this runner no longer retains the
+	// stale server or a replacement placeholder.
+	runner.mu.Lock()
+	_, cached := runner.servers[serverKey(workspace)]
+	runner.mu.Unlock()
+	assert.False(t, cached, "deadline recovery left a stale server cached")
 }
 
 // TestOpenCodeRunner_DrainsServerStdoutAfterStartup pins the pipe-drain

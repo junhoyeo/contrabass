@@ -256,6 +256,14 @@ func (r *OpenCodeRunner) ensureServer(ctx context.Context, workDir string) (stri
 					r.discardStartingServer(key, placeholder)
 					return "", 0, fmt.Errorf("reap unhealthy opencode server: %w", err)
 				}
+				// stopServer can return after the caller deadline while its
+				// best-effort reap completes in the background. Do not start a
+				// replacement after that deadline: besides violating cancellation,
+				// it could launch an unavailable binary during shutdown.
+				if err := ctx.Err(); err != nil {
+					r.discardStartingServer(key, placeholder)
+					return "", 0, err
+				}
 				return r.startAndPublishServer(ctx, key, workDir, argv, extraEnv, placeholder)
 			}
 
